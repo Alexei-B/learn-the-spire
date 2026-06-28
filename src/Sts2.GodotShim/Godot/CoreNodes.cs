@@ -80,6 +80,35 @@ public class Node : GodotObject
 
     public SceneTree GetTree() => SceneTree.Shared;
 
+    // Scene-tree mutation/query API. Headless we never build a node tree (UI nodes stay
+    // null/uninstantiated), so these are inert: no children, no parent, nothing in a tree.
+    // They are referenced by VFX/card-pile traversal helpers (GodotTreeExtensions, CardCmd,
+    // CardPileCmd, …) whose runtime branches are null-guarded and skipped headless; the members
+    // only need to exist so those method bodies JIT.
+    public enum InternalMode : long { Disabled, Front, Back }
+
+    public Godot.Collections.Array<Node> GetChildren(bool includeInternal = false) => new();
+
+    public void AddChild(Node node, bool forceReadableName = false, InternalMode @internal = InternalMode.Disabled) { }
+
+    public void AddSibling(Node sibling, bool forceReadableName = false) { }
+
+    public void RemoveChild(Node node) { }
+
+    public void MoveChild(Node childNode, int toIndex) { }
+
+    public Node? GetParent() => null;
+
+    public Node? GetParentOrNull() => null;
+
+    public bool IsAncestorOf(Node node) => false;
+
+    public bool IsInsideTree() => false;
+
+    public bool IsNodeReady() => false;
+
+    public void QueueFree() { }
+
     public double GetProcessDeltaTime() => 1.0 / 60.0;
 
     public double GetPhysicsProcessDeltaTime() => 1.0 / 60.0;
@@ -95,6 +124,7 @@ public class CanvasItem : Node
     public void Show() => Visible = true;
     public void Hide() => Visible = false;
     public void QueueRedraw() { }
+    public void MoveToFront() { }
 }
 
 public class Control : CanvasItem
