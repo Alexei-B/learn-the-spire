@@ -1,6 +1,8 @@
+using System;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
@@ -38,6 +40,12 @@ public static class GameRuntime
             TestMode.IsOn = true;
             NonInteractiveMode.AutoSlayerCheck = () => true;
 
+            // Quiet the game's stdout logger. It logs every card play, monster move, and
+            // reward at Info, which floods test/sim output (and makes a single play look
+            // duplicated when adjacent in the stream). Keep Warn+Error so genuine problems
+            // still surface. Set before anything else logs so boot chatter is quiet too.
+            QuietGameLogging(LogLevel.Warn);
+
             // Make missing localization (the tables live only in the .pck) degrade to
             // returning the key, so logging / incidental text formatting never throws.
             HarmonyPatches.EnsureApplied();
@@ -69,6 +77,19 @@ public static class GameRuntime
             ActionTypes.Initialize();
 
             _initialized = true;
+        }
+    }
+
+    /// <summary>
+    /// Raise the game's stdout log threshold to <paramref name="minLevel"/> for every
+    /// <see cref="LogType"/> (the per-type map overrides the global level, so set both).
+    /// </summary>
+    private static void QuietGameLogging(LogLevel minLevel)
+    {
+        Logger.GlobalLogLevel = minLevel;
+        foreach (LogType type in Enum.GetValues<LogType>())
+        {
+            Logger.SetLogLevelForType(type, minLevel);
         }
     }
 

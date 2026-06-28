@@ -43,7 +43,9 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 - **Boot** (`GameRuntime.EnsureInitialized`): mirrors the logic half of the game's
   `OneTimeInitialization`, skipping atlas/UI. Sets `TestMode.IsOn`,
   `NonInteractiveMode` (kills animation/delay/frame waits), mock saves, `ModelDb.Init`,
-  etc. See the file for the exact ordered sequence.
+  etc. See the file for the exact ordered sequence. Also raises the game's stdout log
+  threshold to `Warn` (it otherwise logs every card play/monster move/reward at `Info`,
+  flooding test/sim output); `Warn`+`Error` still surface.
 - **Unlocks**: a run is created with `UnlockState.all` (every epoch unlocked), so all
   content (cards/relics/events) is available and `StartedWithNeow` is true — the run opens on
   the Neow ancient event, like a fully-progressed save. No `SaveManager` epoch override is
