@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
 using Sts2.Harness;
 using Xunit.Abstractions;
@@ -64,6 +68,9 @@ internal static class AutoPlayer
                     // Default: take the first relic on offer.
                     host.Apply(host.ListOptions().First(o => o.Kind == OptionKind.TakeTreasureRelic));
                     break;
+                case GamePhase.RestSite:
+                    StepRest(host);
+                    break;
                 case GamePhase.Map:
                     StepMap(host, s, preferMapPointType, log);
                     break;
@@ -75,34 +82,134 @@ internal static class AutoPlayer
                     return s;
             }
         }
+        if (log is not null)
+        {
+            GameState s = host.GetState();
+            log.WriteLine($"BUDGET EXCEEDED at phase={s.Phase} floor={s.Floor} room={host.Run.CurrentRoom?.GetType().Name}");
+            if (s.Rewards is { } rv)
+            {
+                foreach (RewardView r in rv.Rewards)
+                {
+                    log.WriteLine($"  reward {r.Type} taken={r.Taken} gold={r.Gold} potion={r.PotionId} relic={r.RelicId} cards={r.Cards?.Count}");
+                }
+                log.WriteLine($"  potions=[{string.Join(",", s.Players[0].Potions)}]");
+            }
+            if (s.Combat is { } c)
+            {
+                foreach (EnemyView e in c.Enemies)
+                {
+                    string intents = string.Join(",", e.Intents.Select(i => $"{i.Type}({i.Damage}x{i.Hits})"));
+                    log.WriteLine($"  enemy {e.MonsterId} hp={e.CurrentHp}/{e.MaxHp} block={e.Block} hittable={e.IsHittable} intents=[{intents}]");
+                }
+                var pcs = s.Players[0].CombatState;
+                if (pcs is not null)
+                {
+                    log.WriteLine($"  energy={pcs.Energy}/{pcs.MaxEnergy} hand=[{string.Join(",", pcs.Hand.Select(h => $"{h.CardId}{(h.CanPlay ? "" : "*")}"))}]");
+                }
+            }
+        }
         throw new InvalidOperationException($"AutoPlayer exceeded {maxSteps} steps without stopping.");
     }
 
+    /// <summary>
+    /// Play one combat action. Strategy: block while a block card still has full utility (incoming
+    /// damage this turn exceeds the block we already have), then focus-fire attacks on the
+    /// lowest-HP enemy, then play any remaining utility, then end the turn. Works directly off the
+    /// live combat state (and faithful play via <see cref="GameHost.PlayCard"/>); mid-combat card
+    /// choices still surface to the outer loop as <see cref="GamePhase.Choice"/>.
+    /// </summary>
     private static void StepCombat(GameHost host)
     {
-        var options = host.ListOptions();
-        var plays = options.Where(o => o.Kind == OptionKind.PlayCard).ToList();
-        if (plays.Count == 0)
+        var combat = host.Combat!;
+        Player player = combat.Players.Single();
+        var pcs = player.PlayerCombatState!;
+        var playable = pcs.Hand.Cards.Where(c => c.CanPlay(out _, out _)).ToList();
+        if (playable.Count == 0)
         {
-            host.Apply(options.First(o => o.Kind == OptionKind.EndTurn));
+            host.EndTurn(player);
             return;
         }
 
-        // Focus-fire: among the playable cards, prefer an attack on the lowest-HP enemy so
-        // enemies die sooner and incoming damage drops. Non-targeted cards (block/buff) sort
-        // last but are still all played over successive steps before the turn ends.
-        var enemyHp = host.Combat?.Enemies.ToDictionary(e => e.CombatId ?? 0u, e => e.CurrentHp)
-            ?? new Dictionary<uint, int>();
-        GameOption best = plays
-            .OrderBy(o => o.TargetCombatId is { } id && enemyHp.TryGetValue(id, out int hp) ? hp : int.MaxValue)
-            .First();
-        host.Apply(best);
+        int incoming = IncomingDamage(host);
+
+        // 1) Block while it pays off in full (we are still taking more than we can block).
+        if (player.Creature.Block < incoming)
+        {
+            CardModel? blockCard = playable.FirstOrDefault(c => c.GainsBlock);
+            if (blockCard is not null && host.PlayCard(blockCard, null))
+            {
+                return;
+            }
+        }
+
+        // 2) Attack the lowest-HP hittable enemy (kill things fast to cut incoming damage).
+        CardModel? attack = playable.FirstOrDefault(c => c.TargetType == TargetType.AnyEnemy);
+        if (attack is not null)
+        {
+            Creature? target = combat.HittableEnemies.OrderBy(e => e.CurrentHp).FirstOrDefault();
+            if (target is not null && attack.IsValidTarget(target) && host.PlayCard(attack, target))
+            {
+                return;
+            }
+        }
+
+        // 3) Any other playable card (untargeted buffs/powers, or surplus block once safe).
+        CardModel? other = playable.FirstOrDefault(c => c.TargetType != TargetType.AnyEnemy);
+        if (other is not null && host.PlayCard(other, null))
+        {
+            return;
+        }
+
+        host.EndTurn(player);
+    }
+
+    /// <summary>Total damage the enemies' telegraphed attack intents would deal this turn.</summary>
+    private static int IncomingDamage(GameHost host)
+    {
+        CombatView? combat = host.GetState().Combat;
+        if (combat is null)
+        {
+            return 0;
+        }
+        int total = 0;
+        foreach (EnemyView enemy in combat.Enemies)
+        {
+            foreach (IntentView intent in enemy.Intents)
+            {
+                if (intent.Damage is int dmg)
+                {
+                    total += dmg * (intent.Hits ?? 1);
+                }
+            }
+        }
+        return total;
+    }
+
+    private static void StepRest(GameHost host)
+    {
+        var options = host.ListOptions();
+        PlayerState player = host.GetState().Players[0];
+        // Rest to heal when hurt; otherwise smith (upgrade a card); otherwise whatever is offered.
+        GameOption? heal = options.FirstOrDefault(o => o.RestOptionId == "HEAL");
+        if (heal is not null && player.CurrentHp < player.MaxHp)
+        {
+            host.Apply(heal);
+            return;
+        }
+        GameOption? smith = options.FirstOrDefault(o => o.RestOptionId == "SMITH");
+        host.Apply(smith ?? options.First());
     }
 
     private static void StepReward(GameHost host)
     {
         var options = host.ListOptions();
-        GameOption? take = options.FirstOrDefault(o => o.Kind == OptionKind.TakeReward);
+        bool potionSlotFree = host.GetState().Players[0].Potions.Any(p => p is null);
+
+        // Take card/relic/gold rewards; only take a potion when there's a free slot (taking one
+        // with full slots is a no-op and would otherwise loop). When nothing is takeable, proceed.
+        GameOption? take = options.FirstOrDefault(o =>
+            o.Kind == OptionKind.TakeReward
+            && (potionSlotFree || !o.Description.StartsWith("Take potion", StringComparison.Ordinal)));
         host.Apply(take ?? options.First(o => o.Kind == OptionKind.ProceedFromRewards));
     }
 

@@ -78,8 +78,15 @@ as the reference for what choices exist:
   normally does this); a skip ends the singleplayer voting so the player returns to the map.
   Tested by jumping the run location straight to the act's real Treasure node (the game's coord
   entry doesn't require adjacency), since playing forward to it isn't reliable yet (see M4).
+- **Rest sites** (rest/smith/and other options) — _done_: entering a rest site surfaces as
+  `GamePhase.RestSite`/`RestSiteView`. Unlike treasure there is no UI logic-half to reproduce — the
+  actions resolve directly through `RestSiteSynchronizer.ChooseLocalOption`: each usable option
+  surfaces as a `ChooseRestOption` (Rest heals 30% max HP; Smith raises a deck card choice through
+  the same selector seam as combat and upgrades the pick). Disabled options (Smith with no
+  upgradable cards) are omitted; after a successful action the game clears the rest, returning the
+  player to the map. The Smith card choice resumes its suspended `ChooseLocalOption` task on
+  `Apply(SelectCards)`. Tested via the same direct-jump-to-the-map-node approach as treasure.
 - **Shops** (inventory: cards/relics/potions, purchase, card-removal, exit).
-- **Rest sites** (rest/smith/and other options).
 - **Deck-management screens** (upgrade/transform/enchant/remove/duplicate).
 
 ## M4 — Full single-player run (acts + bosses)
@@ -89,11 +96,13 @@ as the reference for what choices exist:
 - **Win/lose terminal states**: victory screen, game-over, score.
 - Deliverable: a seeded run plays start → act-3 boss with greedy/random legal choices.
 - _In progress_: a greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through
-  events/combats/rewards/map moves via the public option API. On the standard seed it advances
-  several act-1 floors and then dies (`WalkthroughTests`) — the "beat the boss or die" loop runs,
-  but the greedy combat play is too weak to clear the act and many seeds still surface harness gaps
-  (un-handled content → pump timeouts / shim `TypeLoad`s). Reaching the boss needs a stronger combat
-  driver and the remaining M3 rooms (rest/shop) so a forward playthrough doesn't stall.
+  events/combats/rewards/rest/treasure/map moves via the public option API, with a block-then-attack
+  combat heuristic. With the player buffed to a huge HP pool it navigates ~10+ act-1 floors across
+  every implemented room type without the harness throwing (`WalkthroughTests`). Reaching the boss
+  is currently blocked by: (a) the **BygoneEffigy** elite, whose sleep/wake turn stalls the headless
+  enemy-turn pump (`EndTurn` times out) — an M2 combat-mechanic gap (enemy-turn effects/choices);
+  (b) **shops** (M3) which a forward path may route through; and (c) other un-handled content that
+  still surfaces on some seeds (pump timeouts / shim `TypeLoad`s).
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

@@ -70,6 +70,17 @@ internal static class TestNav
     }
 
     /// <summary>
+    /// Force the local player's HP for tests (e.g. buff to a huge pool so a greedy run survives a
+    /// full act, or lower current HP so a heal has room to act). Sets max HP first, then current.
+    /// </summary>
+    public static void SetHp(GameHost host, int maxHp, int currentHp)
+    {
+        var creature = host.Run.Players[0].Creature;
+        creature.SetMaxHpInternal(maxHp);
+        creature.SetCurrentHpInternal(currentHp);
+    }
+
+    /// <summary>
     /// Start a run, resolve the opening ancient event, and move into the first reachable room,
     /// which on the standard seeds is the first combat.
     /// </summary>

@@ -6,9 +6,10 @@ Orientation for working on the harness. Read the code for detail; this is the ma
 full combat (faithful play + enemy turns) → victory → **post-combat rewards** → back to the map,
 via the real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) covers the combat +
 map-move surface, the battle-rewards screen, **event rooms** (the opening ancient event and the
-shared regular-event path), and **treasure rooms** (open chest → pick/skip relic). A greedy
-end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the public API and gets
-several act-1 floors before the (weak) greedy combat dies. Remaining breadth (shops/rest/bosses/
+shared regular-event path), **treasure rooms** (open chest → pick/skip relic), and **rest sites**
+(rest/smith). A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the
+public API; buffed to a large HP pool it navigates ~10+ act-1 floors across every implemented room
+type before an elite's combat mechanic stalls the enemy-turn pump. Remaining breadth (shops/bosses/
 acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
@@ -118,6 +119,16 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   resulting `RelicsAwarded` event to `RelicCmd.Obtain` each awarded relic. A singleplayer skip is
   recorded then `OnRoomExited`'d to clear the pending relics so the player is back on the map.
   Leaving a treasure room (after take or skip) is a normal `MoveTo`.
+- **Rest sites** (`GamePhase.RestSite`): entering a `RestSiteRoom` runs
+  `RestSiteSynchronizer.BeginRestSite` (its rest/smith options). Unlike treasure there is no UI
+  logic-half to reproduce — the action resolves directly through the synchronizer. Each usable
+  option (`IsEnabled`) surfaces as a `ChooseRestOption`; `Apply` calls `ChooseLocalOption(index)`,
+  whose effect runs as a task pumped to quiescence or a suspended choice. Rest (`HealRestSiteOption`)
+  heals 30% max HP and offers any (usually empty) bonus rewards through the custom-reward gate;
+  Smith (`SmithRestSiteOption`) raises a deck card choice through the same `HarnessCardSelector` seam
+  as combat — surfaced as `GamePhase.Choice` and resolved by `Apply(SelectCards)`, which resumes the
+  suspended rest task. A successful action clears the remaining options, leaving the player on the
+  map (left via a normal `MoveTo`).
 - **Async→sync pump**: card plays drain the action queue
   (`ActionExecutor.FinishedExecutingActions`); the enemy turn resolves on fire-and-forget
   tasks, so `EndTurn` waits on a `TaskCompletionSource` wired to combat events
@@ -144,13 +155,13 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Shops, rest, deck-management screens, elites/bosses, acts 2–3, ascension, local multiplayer. The
+Shops, deck-management screens, elites/bosses, acts 2–3, ascension, local multiplayer. The
 `GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
 card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
-regular-event path), custom relic/event reward sets (`OfferCustom`), and treasure rooms. Still
-missing: events that start combat or raise mid-event card choices (exercised end-to-end),
+regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, and rest sites.
+Still missing: events that start combat or raise mid-event card choices (exercised end-to-end),
 multi-page events, the event `WillKillPlayer` hint; card-reward alternatives/reroll;
-enemy-turn-triggered choices; full multi-select subset enumeration (min &gt; 1 currently offers
-a single exact-minimum selection); and a combat driver strong enough to play a run to the boss (the
-greedy `AutoPlayer` dies in act 1, and much un-handled content still breaks a forward playthrough).
-→ `docs/plans/`. 
+enemy-turn-triggered choices and enemy moves whose turn stalls the headless pump (e.g. the
+BygoneEffigy elite's sleep/wake, which currently blocks a forward run from reaching the boss); full
+multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); and
+the remaining un-handled content that breaks a forward playthrough on some seeds. → `docs/plans/`. 
