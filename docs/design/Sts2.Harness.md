@@ -2,11 +2,12 @@
 
 Orientation for working on the harness. Read the code for detail; this is the map.
 
-**Status:** vertical slice works — headless boot → map → enter room → full combat
-(faithful play + enemy turns) → victory → **post-combat rewards** → back to the map, via the
-real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) covers the combat + map-move
-surface plus the battle-rewards screen. Remaining breadth (events/shops/rest/treasure/bosses/
-acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
+**Status:** vertical slice works — headless boot → **Neow ancient event** → map → enter room →
+full combat (faithful play + enemy turns) → victory → **post-combat rewards** → back to the map,
+via the real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) covers the combat +
+map-move surface, the battle-rewards screen, and **event rooms** (the opening ancient event and
+the shared regular-event path). Remaining breadth (shops/rest/treasure/bosses/acts 2–3/
+multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
 
@@ -43,6 +44,10 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   `OneTimeInitialization`, skipping atlas/UI. Sets `TestMode.IsOn`,
   `NonInteractiveMode` (kills animation/delay/frame waits), mock saves, `ModelDb.Init`,
   etc. See the file for the exact ordered sequence.
+- **Unlocks**: a run is created with `UnlockState.all` (every epoch unlocked), so all
+  content (cards/relics/events) is available and `StartedWithNeow` is true — the run opens on
+  the Neow ancient event, like a fully-progressed save. No `SaveManager` epoch override is
+  used (which would leak process-wide across runs).
 - **Localization**: real tables are only in the 1.9 GB `.pck`; Harmony patches make
   missing tables/keys return the key string (mechanics don't need display text).
 - **Drive** (`GameHost`): imperative primitives — `StartNewRun`, `EnterFirstRoom`,
@@ -75,6 +80,16 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   selector first for card rewards); `ProceedFromRewards` calls `SkipLocalRewardsSet` for any
   untaken rewards and returns to the map. All driven on the harness thread; the executor is
   unpaused between combat-end and the next room, so reward effects run.
+- **Events** (`GamePhase.Event`): an out-of-combat event room (the opening Neow ancient event,
+  or a regular map event) surfaces its `EventModel.CurrentOptions` as `ChooseEventOption` options
+  (unlocked, non-proceed ones, projected as `EventView`). `Apply` calls
+  `EventSynchronizer.ChooseLocalOption(index)`; the option's `Chosen()` effect runs as a
+  fire-and-forget task, which the harness awaits via `AwaitPendingOptionTasks` — returning early
+  if it blocks on a card choice (same selector seam as combat). `BeginEvent` is itself
+  fire-and-forget, so room entry waits (`WaitForEventReady`) for options to be generated. A
+  finished event — or one down to only a "proceed" option — is not actionable: the player leaves
+  by moving on the map (the in-game proceed drives the null `NMapScreen`, so we model leaving as a
+  normal `MoveTo`).
 - **Async→sync pump**: card plays drain the action queue
   (`ActionExecutor.FinishedExecutingActions`); the enemy turn resolves on fire-and-forget
   tasks, so `EndTurn` waits on a `TaskCompletionSource` wired to combat events
@@ -96,9 +111,11 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Events, shops, rest, treasure, elites/bosses, acts 2–3, ascension, local multiplayer. The
-`GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
-card-choice injection, and the post-combat battle-rewards screen; still missing: card-reward
-alternatives/reroll and custom (event/relic) reward sets, enemy-turn-triggered choices, and full
-multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection).
-→ `docs/plans/`.
+Shops, rest, treasure, deck-management screens, elites/bosses, acts 2–3, ascension, local
+multiplayer. The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
+surface, in-combat card-choice injection, the post-combat battle-rewards screen, and event rooms
+(opening ancient + regular-event path). Still missing: events that start combat or raise mid-event
+card choices (exercised end-to-end), multi-page events, the event `WillKillPlayer` hint;
+card-reward alternatives/reroll and custom (event/relic) reward sets; enemy-turn-triggered choices;
+and full multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum
+selection). → `docs/plans/`.

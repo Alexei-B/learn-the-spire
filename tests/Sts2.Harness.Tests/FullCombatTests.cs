@@ -21,13 +21,8 @@ public sealed class FullCombatTests
     [Fact]
     public async Task GreedyAutoCombat_FinishesTheFirstFight()
     {
-        GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
-        host.EnterFirstRoom();
+        GameHost host = TestNav.MoveIntoFirstCombat("TESTSEED");
         var rs = host.Run;
-        var firstMonster = (rs.CurrentMapPoint?.Children ?? rs.Map.StartingMapPoint.Children)
-            .OrderBy(p => p.coord.col).First();
-        host.MoveTo(firstMonster.coord);
-        Assert.True(host.InCombat);
 
         var t = Task.Run(() => PlayUntilCombatEnds(host, maxTurns: 50));
         int turns = await t.WaitAsync(TimeSpan.FromSeconds(60));

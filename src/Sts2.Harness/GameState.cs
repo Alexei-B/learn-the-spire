@@ -37,6 +37,12 @@ public enum GamePhase
     /// </summary>
     Reward,
 
+    /// <summary>
+    /// In an event room awaiting a choice (e.g. the run-opening Neow ancient event). Resolve via
+    /// the <see cref="OptionKind.ChooseEventOption"/> options from <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    Event,
+
     /// <summary>The run has ended with all players dead.</summary>
     GameOver,
 
@@ -74,6 +80,35 @@ public sealed record GameState
 
     /// <summary>The post-combat rewards on offer, or null when not on the rewards screen.</summary>
     public RewardsView? Rewards { get; init; }
+
+    /// <summary>The event in progress and its choices, or null when not in an actionable event.</summary>
+    public EventView? Event { get; init; }
+}
+
+/// <summary>An event room awaiting a choice, with its currently-offered options.</summary>
+public sealed record EventView
+{
+    /// <summary>The event model id (e.g. "NEOW").</summary>
+    public required string EventId { get; init; }
+
+    /// <summary>True when this is an ancient event (Neow-style run-start / map node).</summary>
+    public required bool IsAncient { get; init; }
+
+    /// <summary>The selectable options, in the same order as the resolving options.</summary>
+    public required IReadOnlyList<EventOptionView> Options { get; init; }
+}
+
+/// <summary>One selectable option on an event screen.</summary>
+public sealed record EventOptionView
+{
+    /// <summary>The index into the event's option list (the value passed back to resolve it).</summary>
+    public required int Index { get; init; }
+
+    /// <summary>The option's localization key (stable identifier for the choice).</summary>
+    public required string TextKey { get; init; }
+
+    /// <summary>The relic this option grants, if any; null otherwise.</summary>
+    public string? RelicId { get; init; }
 }
 
 /// <summary>The set of post-combat rewards offered to a player.</summary>

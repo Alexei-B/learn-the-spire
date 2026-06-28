@@ -16,17 +16,7 @@ public sealed class CardPlayTests
 
     public CardPlayTests(ITestOutputHelper output) => _out = output;
 
-    private static GameHost StartInCombat(string seed)
-    {
-        GameHost host = GameHost.StartNewRun(seed);
-        host.EnterFirstRoom();
-        var rs = host.Run;
-        var firstMonster = (rs.CurrentMapPoint?.Children ?? rs.Map.StartingMapPoint.Children)
-            .OrderBy(p => p.coord.col).First();
-        host.MoveTo(firstMonster.coord);
-        Assert.True(host.InCombat);
-        return host;
-    }
+    private static GameHost StartInCombat(string seed) => TestNav.MoveIntoFirstCombat(seed);
 
     [Fact]
     public void PlayingAnAttack_DamagesTheEnemy()

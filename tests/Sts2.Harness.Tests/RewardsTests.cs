@@ -35,11 +35,7 @@ public sealed class RewardsTests
 
     private void RunRewardsFlow()
     {
-        GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
-        host.EnterFirstRoom();
-        GameOption move = host.ListOptions().First(o => o.Kind == OptionKind.MoveTo);
-        host.Apply(move);
-        Assert.True(host.InCombat, "expected to land in combat after the first move");
+        GameHost host = TestNav.MoveIntoFirstCombat("TESTSEED");
 
         PlayUntilCombatEnds(host, maxTurns: 50);
         Assert.False(host.InCombat, "combat should have ended");
@@ -106,10 +102,7 @@ public sealed class RewardsTests
 
     private void RunSkipCardReward()
     {
-        GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
-        host.EnterFirstRoom();
-        host.Apply(host.ListOptions().First(o => o.Kind == OptionKind.MoveTo));
-        Assert.True(host.InCombat);
+        GameHost host = TestNav.MoveIntoFirstCombat("TESTSEED");
 
         PlayUntilCombatEnds(host, maxTurns: 50);
         Assert.Equal(GamePhase.Reward, host.GetState().Phase);

@@ -5,7 +5,6 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Runs;
-using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.TestSupport;
 using MegaCrit.Sts2.Core.Unlocks;
 
@@ -59,8 +58,10 @@ public sealed class GameHost
             RunManager.Instance.CleanUp();
         }
 
-        SaveManager save = SaveManager.Instance;
-        UnlockState unlock = save.GenerateUnlockStateFromProgress();
+        // The harness plays the full game: treat every epoch as unlocked so all content
+        // (cards/relics/events) is available and the run starts with the Neow ancient event
+        // (StartedWithNeow is derived from the run's unlock state — see RunManager).
+        UnlockState unlock = UnlockState.all;
 
         CharacterModel character = ModelDb.AllCharacters.First(); // Ironclad
         Player player = Player.CreateForNewRun(character, unlock, 1uL);
@@ -98,6 +99,9 @@ public sealed class GameHost
         rm.RunLocationTargetedBuffer.OnLocationChanged(Run.RunLocation);
         rm.MapSelectionSynchronizer.OnLocationChanged(Run.MapLocation);
         Pump(rm.EnterAct(0));
+        // With all epochs unlocked the run opens on the Neow ancient event; wait for its
+        // options to be generated (BeginEvent runs as a fire-and-forget task).
+        WaitForEventReady();
     }
 
     /// <summary>The current combat, or null if not in a battle.</summary>
@@ -113,8 +117,31 @@ public sealed class GameHost
     /// Move to a reachable map coordinate, entering its room. In headless mode this
     /// uses the logic path (RunManager.EnterMapCoord), not the map-screen UI.
     /// </summary>
-    public void MoveTo(MegaCrit.Sts2.Core.Map.MapCoord coord) =>
+    public void MoveTo(MegaCrit.Sts2.Core.Map.MapCoord coord)
+    {
         Pump(RunManager.Instance.EnterMapCoord(coord));
+        // If we entered an event room, wait for its options to be generated before returning.
+        WaitForEventReady();
+    }
+
+    /// <summary>
+    /// The local player's mutable event when the current room is an (out-of-combat) event room,
+    /// or null otherwise. Used to surface <see cref="GamePhase.Event"/> options.
+    /// </summary>
+    internal MegaCrit.Sts2.Core.Models.EventModel? CurrentEvent =>
+        RunManager.Instance.IsInProgress
+        && !InCombat
+        && Run.CurrentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom
+            ? RunManager.Instance.EventSynchronizer.GetLocalEvent()
+            : null;
+
+    /// <summary>
+    /// True when the current event is awaiting a real (non-proceed, unlocked) choice from the
+    /// player. A finished event — or one whose only remaining option is "proceed" — is not
+    /// actionable: the player leaves it by moving on the map.
+    /// </summary>
+    internal bool HasActionableEvent =>
+        CurrentEvent is { } e && e.CurrentOptions.Any(o => !o.IsLocked && !o.IsProceed);
 
     /// <summary>
     /// Play a card from hand at an optional target via the canonical player path
@@ -228,6 +255,12 @@ public sealed class GameHost
         if (PendingRewards is not null)
         {
             return BuildRewardOptions(player, PendingRewards);
+        }
+
+        // An event room awaiting a choice (e.g. the opening Neow ancient event).
+        if (HasActionableEvent)
+        {
+            return BuildEventOptions(player, CurrentEvent!);
         }
 
         if (InCombat)
@@ -355,6 +388,27 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Build the options for an event room: one per unlocked, non-proceed event option, in the
+    /// event's own option order (the index is preserved so <see cref="Apply"/> can resolve it
+    /// against the game's <c>EventSynchronizer.ChooseLocalOption</c> seam).
+    /// </summary>
+    private static IReadOnlyList<GameOption> BuildEventOptions(Player player, MegaCrit.Sts2.Core.Models.EventModel ev)
+    {
+        var options = new List<GameOption>();
+        IReadOnlyList<MegaCrit.Sts2.Core.Events.EventOption> current = ev.CurrentOptions;
+        for (int i = 0; i < current.Count; i++)
+        {
+            MegaCrit.Sts2.Core.Events.EventOption opt = current[i];
+            if (opt.IsLocked || opt.IsProceed)
+            {
+                continue;
+            }
+            options.Add(GameOption.ChooseEventOption(player, i, opt));
+        }
+        return options;
+    }
+
+    /// <summary>
     /// Resolve a chosen option against the live game and pump to quiescence. The option
     /// must have come from <see cref="ListOptions(ulong)"/> for the current state.
     /// </summary>
@@ -381,7 +435,19 @@ public sealed class GameHost
                 }
                 Selector.Resolve(option.SelectedCardModels!);
                 // The effect resumes on the thread pool; pump until it finishes or blocks again.
-                PumpCombatUntilIdleOrChoice();
+                // A choice raised mid-event resumes an event-option task rather than the combat
+                // action queue, so pump the matching surface.
+                if (InCombat)
+                {
+                    PumpCombatUntilIdleOrChoice();
+                }
+                else
+                {
+                    PumpEventUntilIdleOrChoice();
+                }
+                break;
+            case OptionKind.ChooseEventOption:
+                ApplyEventOption(option.Player!, option.EventOptionIndex!.Value);
                 break;
             case OptionKind.TakeReward:
                 TakeReward(option);
@@ -439,6 +505,75 @@ public sealed class GameHost
         }
         DrainActionQueue();
         PendingRewards = null;
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Events. Choosing an event option runs the option's effect on a thread-pool task via
+    // the game's EventSynchronizer; the harness blocks until it finishes (or surfaces a
+    // mid-effect card choice). Once the event is finished — or down to only a "proceed"
+    // option — the player leaves it by moving on the map (ProceedFromTerminal would drive
+    // the null map UI, so we model leaving as a normal MoveTo).
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Choose an event option by its index into the live event's <c>CurrentOptions</c>, then
+    /// pump until the option's effect finishes or blocks on a card choice.
+    /// </summary>
+    private void ApplyEventOption(Player player, int index)
+    {
+        RunManager.Instance.EventSynchronizer.ChooseLocalOption(index);
+        PumpEventUntilIdleOrChoice();
+        // The option may have entered and resolved a combat (shared events); offer its rewards.
+        TryOfferCombatRewards();
+    }
+
+    /// <summary>
+    /// Drive an event option's effect to completion. The effect runs as a fire-and-forget
+    /// option task (see <c>EventSynchronizer.ChooseOptionForEvent</c>); we await those tasks
+    /// but return early if the effect blocks on a card choice, so a blocked choice surfaces
+    /// instead of deadlocking. Mirrors <see cref="PumpCombatUntilIdleOrChoice"/>.
+    /// </summary>
+    private void PumpEventUntilIdleOrChoice(int timeoutMs = 10000)
+    {
+        System.Threading.Tasks.Task optionTasks =
+            RunManager.Instance.EventSynchronizer.AwaitPendingOptionTasks();
+        System.Threading.Tasks.Task pending = Selector.PendingSignal;
+        int idx = System.Threading.Tasks.Task.WaitAny(new[] { optionTasks, pending }, timeoutMs);
+        if (idx < 0)
+        {
+            throw new System.TimeoutException(
+                "Timed out resolving an event option (waiting for it to finish or raise a card choice).");
+        }
+        // If no choice is pending the option finished; drain anything it enqueued.
+        if (Selector.Pending is null)
+        {
+            DrainActionQueue();
+        }
+    }
+
+    /// <summary>
+    /// After entering a room, if it is an event room, wait until the event has been initialized
+    /// (options generated, or already finished). <c>EventModel.BeginEvent</c> runs as a
+    /// fire-and-forget task, so its options may not be ready the instant room entry returns.
+    /// A no-op for non-event rooms.
+    /// </summary>
+    private void WaitForEventReady(int timeoutMs = 10000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            DrainActionQueue();
+            MegaCrit.Sts2.Core.Models.EventModel? ev = CurrentEvent;
+            if (ev is null || ev.IsFinished || ev.CurrentOptions.Count > 0)
+            {
+                return;
+            }
+            if (sw.ElapsedMilliseconds > timeoutMs)
+            {
+                throw new System.TimeoutException("Timed out waiting for the event room to initialize.");
+            }
+            System.Threading.Thread.Sleep(5);
+        }
     }
 
     private Player GetPlayer(ulong playerId) =>

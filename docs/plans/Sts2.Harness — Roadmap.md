@@ -56,7 +56,15 @@ Turn the imperative `GameHost` primitives into the intended clean interface.
 ## M3 — Non-combat rooms
 Drive each room/screen type through `ListOptions`/`Apply`, using `AutoSlay.Handlers.*`
 as the reference for what choices exist:
-- **Events** + **ancient events** (Neow-style relic/blessing choice at run start).
+- **Events** + **ancient events** — _in progress_: all epochs are now unlocked at boot
+  (`UnlockState.all`), so every run opens on the **Neow ancient event**. Event rooms surface as
+  `GamePhase.Event`/`EventView` with one `ChooseEventOption` per unlocked, non-proceed option;
+  `Apply` resolves it through the game's `EventSynchronizer.ChooseLocalOption` seam (running the
+  option's effect on a thread-pool task, pumped to quiescence or a surfaced card choice). Once an
+  event finishes — or is down to only a "proceed" option — the player leaves it by moving on the
+  map. The shared `EventRoom` path covers regular map events too (same projection/seam); still to
+  do: events that start combat (shared events) and that raise mid-event card choices, exercised
+  end-to-end; multi-page events; the `WillKillPlayer` flag in the projection.
 - **Shops** (inventory: cards/relics/potions, purchase, card-removal, exit).
 - **Rest sites** (rest/smith/and other options).
 - **Treasure** (chests/relic pick).

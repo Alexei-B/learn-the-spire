@@ -37,6 +37,7 @@ internal static class GameStateProjection
             Map = ProjectMap(run),
             PendingChoice = pending is null ? null : ProjectPendingChoice(pending),
             Rewards = host.PendingRewards is null ? null : ProjectRewards(host.PendingRewards),
+            Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!) : null,
         };
     }
 
@@ -61,6 +62,10 @@ internal static class GameStateProjection
         if (host.PendingRewards is not null)
         {
             return GamePhase.Reward;
+        }
+        if (host.HasActionableEvent)
+        {
+            return GamePhase.Event;
         }
         // No room yet, or sitting on a map point we can move off of: treat as Map when
         // there is somewhere to go, otherwise as an unmodelled room/screen.
@@ -124,6 +129,32 @@ internal static class GameStateProjection
             MinSelect = pending.MinSelect,
             MaxSelect = pending.MaxSelect,
         };
+
+    private static EventView ProjectEvent(MegaCrit.Sts2.Core.Models.EventModel ev)
+    {
+        var options = new List<EventOptionView>();
+        IReadOnlyList<MegaCrit.Sts2.Core.Events.EventOption> current = ev.CurrentOptions;
+        for (int i = 0; i < current.Count; i++)
+        {
+            MegaCrit.Sts2.Core.Events.EventOption opt = current[i];
+            if (opt.IsLocked || opt.IsProceed)
+            {
+                continue;
+            }
+            options.Add(new EventOptionView
+            {
+                Index = i,
+                TextKey = opt.TextKey,
+                RelicId = opt.Relic?.Id.Entry,
+            });
+        }
+        return new EventView
+        {
+            EventId = ev.Id.Entry,
+            IsAncient = ev is MegaCrit.Sts2.Core.Models.AncientEventModel,
+            Options = options,
+        };
+    }
 
     private static RewardsView ProjectRewards(MegaCrit.Sts2.Core.Rewards.RewardsSet set) =>
         new() { Rewards = set.Rewards.Select(ProjectReward).ToList() };

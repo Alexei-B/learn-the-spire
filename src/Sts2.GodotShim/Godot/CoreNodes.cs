@@ -20,6 +20,11 @@ public class GodotObject : IDisposable
     // Referenced by NonInteractiveMode-gated frame-wait branches; never executed headless.
     public SignalAwaiter ToSignal(GodotObject source, StringName signal) =>
         throw new InvalidOperationException("ToSignal is not available in the headless shim (no frame loop).");
+
+    // Validity checks on engine objects. Headless we never hold disposed native handles, so a
+    // non-null managed reference is always "valid" (and null is not). Used widely by logic that
+    // guards against freed UI nodes (e.g. event-option hover tips).
+    public static bool IsInstanceValid(GodotObject? instance) => instance is not null;
 }
 
 public class RefCounted : GodotObject { }
@@ -156,6 +161,9 @@ public class VBoxContainer : BoxContainer { }
 public class HBoxContainer : BoxContainer { }
 public class CenterContainer : Container { }
 public class GridContainer : Container { }
+public class FlowContainer : Container { }
+public class HFlowContainer : FlowContainer { }
+public class VFlowContainer : FlowContainer { }
 public class Button : Control { }
 public class TextureButton : Control { }
 public class Sprite2D : Node2D { }

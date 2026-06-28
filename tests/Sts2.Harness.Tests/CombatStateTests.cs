@@ -18,17 +18,8 @@ public sealed class CombatStateTests
     [Fact]
     public void Combat_ExposesHandEnemiesAndIntents()
     {
-        GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
-        host.EnterFirstRoom();
-
-        // Move into the first room until we land in combat.
-        var rs = host.Run;
-        var firstMonster = (rs.CurrentMapPoint?.Children ?? rs.Map.StartingMapPoint.Children)
-            .OrderBy(p => p.coord.col)
-            .First();
-        host.MoveTo(firstMonster.coord);
-
-        Assert.True(host.InCombat, "Expected to be in combat after moving to a monster node.");
+        // Resolve the opening Neow ancient event, then move into the first combat.
+        GameHost host = TestNav.MoveIntoFirstCombat("TESTSEED");
         CombatState combat = host.Combat!;
 
         Player player = combat.Players.Single();

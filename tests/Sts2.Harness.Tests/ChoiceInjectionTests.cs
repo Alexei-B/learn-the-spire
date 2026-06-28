@@ -108,13 +108,5 @@ public sealed class ChoiceInjectionTests
         Assert.True(after.Players[0].CombatState!.Hand.Count < handCountBeforePlay);
     }
 
-    private static GameHost MoveIntoFirstCombat(string seed)
-    {
-        GameHost host = GameHost.StartNewRun(seed);
-        host.EnterFirstRoom();
-        GameOption move = host.ListOptions().First(o => o.Kind == OptionKind.MoveTo);
-        host.Apply(move);
-        Assert.True(host.InCombat, "expected to land in combat after the first move");
-        return host;
-    }
+    private static GameHost MoveIntoFirstCombat(string seed) => TestNav.MoveIntoFirstCombat(seed);
 }

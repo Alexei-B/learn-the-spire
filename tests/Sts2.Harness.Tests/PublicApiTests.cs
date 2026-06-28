@@ -20,8 +20,7 @@ public sealed class PublicApiTests
     [Fact]
     public void GetState_OnMap_ProjectsRunAndMap()
     {
-        GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
-        host.EnterFirstRoom();
+        GameHost host = TestNav.StartOnMap("TESTSEED");
 
         GameState state = host.GetState();
 
@@ -43,8 +42,7 @@ public sealed class PublicApiTests
     [Fact]
     public void ListOptions_OnMap_OffersReachableMoves()
     {
-        GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
-        host.EnterFirstRoom();
+        GameHost host = TestNav.StartOnMap("TESTSEED");
 
         var options = host.ListOptions();
         foreach (GameOption o in options)
@@ -141,14 +139,5 @@ public sealed class PublicApiTests
         return turns;
     }
 
-    private static GameHost MoveIntoFirstCombat(string seed)
-    {
-        GameHost host = GameHost.StartNewRun(seed);
-        host.EnterFirstRoom();
-        // The first reachable map point on the opening seed is a monster room.
-        GameOption move = host.ListOptions().First(o => o.Kind == OptionKind.MoveTo);
-        host.Apply(move);
-        Assert.True(host.InCombat, "expected to land in combat after the first move");
-        return host;
-    }
+    private static GameHost MoveIntoFirstCombat(string seed) => TestNav.MoveIntoFirstCombat(seed);
 }

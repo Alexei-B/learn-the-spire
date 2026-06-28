@@ -19,8 +19,8 @@ public sealed class MapExplorationTests
     [Fact]
     public async Task Map_IsReadable_AndCanMoveIntoFirstRoom()
     {
-        GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
-        host.EnterFirstRoom();
+        // With all epochs unlocked the run opens on the Neow ancient event; resolve it to reach the map.
+        GameHost host = TestNav.StartOnMap("TESTSEED");
 
         var rs = host.Run;
         _out.WriteLine($"CurrentRoom={rs.CurrentRoom?.GetType().Name} curCoord={rs.CurrentMapCoord} act={rs.CurrentActIndex}");

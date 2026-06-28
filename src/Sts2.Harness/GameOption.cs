@@ -23,6 +23,9 @@ public enum OptionKind
     /// <summary>Resolve a pending mid-effect card choice with a (possibly empty) set of cards.</summary>
     SelectCards,
 
+    /// <summary>Choose one option in an event room (e.g. a Neow blessing).</summary>
+    ChooseEventOption,
+
     /// <summary>Take one reward from the post-combat rewards screen (gold/potion/relic/card).</summary>
     TakeReward,
 
@@ -57,6 +60,12 @@ public sealed class GameOption
     /// <summary>The cards this <see cref="OptionKind.SelectCards"/> option will select; empty = skip.</summary>
     public IReadOnlyList<CardView>? SelectedCards { get; }
 
+    /// <summary>The index into the event's options for <see cref="OptionKind.ChooseEventOption"/>; null otherwise.</summary>
+    public int? EventOptionIndex { get; }
+
+    /// <summary>The relic an event option grants (e.g. a Neow blessing), if any; null otherwise.</summary>
+    public string? EventOptionRelicId { get; }
+
     // Live references used by GameHost.Apply. Not part of the serializable surface.
     internal CardModel? CardModel { get; }
     internal Creature? Target { get; }
@@ -75,6 +84,8 @@ public sealed class GameOption
         uint? targetCombatId = null,
         Coord? coord = null,
         IReadOnlyList<CardView>? selectedCards = null,
+        int? eventOptionIndex = null,
+        string? eventOptionRelicId = null,
         CardModel? cardModel = null,
         Creature? target = null,
         MapCoord? mapCoord = null,
@@ -89,6 +100,8 @@ public sealed class GameOption
         TargetCombatId = targetCombatId;
         Coord = coord;
         SelectedCards = selectedCards;
+        EventOptionIndex = eventOptionIndex;
+        EventOptionRelicId = eventOptionRelicId;
         CardModel = cardModel;
         Target = target;
         MapCoord = mapCoord;
@@ -124,6 +137,22 @@ public sealed class GameOption
         return new GameOption(
             OptionKind.SelectCards, player.NetId, desc,
             selectedCards: cards, selectedCardModels: cardModels, player: player);
+    }
+
+    /// <summary>
+    /// Choose an event option at the given index into the event's option list. Carries the
+    /// option's loc key and any relic it grants for display.
+    /// </summary>
+    internal static GameOption ChooseEventOption(
+        Player player, int index, MegaCrit.Sts2.Core.Events.EventOption option)
+    {
+        string? relicId = option.Relic?.Id.Entry;
+        string desc = relicId is not null
+            ? $"Event option {option.TextKey} (relic {relicId})"
+            : $"Event option {option.TextKey}";
+        return new GameOption(
+            OptionKind.ChooseEventOption, player.NetId, desc,
+            eventOptionIndex: index, eventOptionRelicId: relicId, player: player);
     }
 
     /// <summary>
