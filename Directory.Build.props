@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Path to the local, gitignored copies of the game's binaries. -->
+    <GameLibDir>$(MSBuildThisFileDirectory)lib</GameLibDir>
+  </PropertyGroup>
+</Project>

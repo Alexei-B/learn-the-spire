@@ -1,0 +1,92 @@
+# Sts2.Harness — Roadmap to a Full Emulator
+
+High-level remaining work to take the harness from the current vertical slice to a
+complete, deterministic Slay the Spire 2 emulator: local multiplayer (multiple agents),
+ascension, full 3-act runs, bosses — the whole game. Each milestone is roughly
+independently shippable and ordered by dependency. Detail lives in the code and
+`docs/design/Sts2.Harness.md`.
+
+Conventions for every milestone: grow the GodotSharp shim only as real JIT/load errors
+demand; add seeded tests; keep `RunState.ToSerializable()` round-tripping.
+
+---
+
+## M0 — Done (vertical slice)
+Headless boot, map gen, move into a room, full combat (faithful play, enemy turns,
+victory), reading combat/run state. 7 tests green.
+
+## M1 — Public API surface (in progress)
+Turn the imperative `GameHost` primitives into the intended clean interface.
+- **`GameState` read model** — _done (combat + map)_: immutable DTOs (`GameState.cs`,
+  projected by `GameStateProjection`) covering phase, per-player status/deck/relics/potions/
+  gold, combat piles/energy/powers, enemies + intents, and the act's map graph + reachable
+  moves. Captured via `GameHost.GetState()`; detached & serializable. Shop/reward/event
+  projections wait on those rooms (M2–M3).
+- **`ListOptions(playerId)`** — _done (combat + map)_: `GameHost.ListOptions` enumerates
+  combat card-plays × legal targets + end-turn, or map moves, as a uniform `GameOption`.
+  Potions and screen choices follow with their rooms.
+- **`Apply(option)`** — _done_: `GameHost.Apply` resolves the option via the existing
+  primitives and pumps to quiescence.
+- **Choice-context injection** — _not started_: replace the player `PlayerChoiceContext`
+  with a harness-controlled one so mid-effect decisions (discover, card-select, etc.)
+  surface through `ListOptions`/`Apply` instead of blocking. This is the central new
+  mechanism and the main remaining M1 work.
+
+## M2 — Combat completeness
+- **Battle rewards**: gold, potions, card reward (pick/skip), relic; the post-combat
+  `RewardsSet` flow and proceeding back to the map.
+- **Potions**: use (targeted/untargeted), discard.
+- **Mid-combat player choices**: discover/scry/select-card/choose-enemy effects via the
+  injected choice context.
+- **Effect coverage sweep**: exercise many cards/relics/powers (each may surface a few
+  more gated visual members to stub). Track via a broad combat fuzz test.
+
+## M3 — Non-combat rooms
+Drive each room/screen type through `ListOptions`/`Apply`, using `AutoSlay.Handlers.*`
+as the reference for what choices exist:
+- **Events** + **ancient events** (Neow-style relic/blessing choice at run start).
+- **Shops** (inventory: cards/relics/potions, purchase, card-removal, exit).
+- **Rest sites** (rest/smith/and other options).
+- **Treasure** (chests/relic pick).
+- **Deck-management screens** (upgrade/transform/enchant/remove/duplicate).
+
+## M4 — Full single-player run (acts + bosses)
+- **Map navigation breadth**: full path listing, elites, and end-of-act flow.
+- **Act transitions**: act 1 → 2 → 3, including the boss → next-act handoff and rewards.
+- **Bosses & elites**: boss encounters and boss relic rewards.
+- **Win/lose terminal states**: victory screen, game-over, score.
+- Deliverable: a seeded run plays start → act-3 boss with greedy/random legal choices.
+
+## M5 — Ascension & game modes
+- Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the
+  ascension modifiers (HP, enemy scaling, double bosses, etc.).
+- Confirm `GameMode` variants (Standard; Daily/Custom later) behave.
+
+## M6 — Local multiplayer (multiple agents)
+The action/choice model is already per-player (`ActionQueueSet`,
+`PlayerChoiceSynchronizer`, `IPlayerCollection`); wire it up for N local players.
+- Create runs with multiple `Player`s; `SetUpNewMultiplayer` (or single-process "fake
+  multiplayer") path.
+- **Per-player `ListOptions`/`Apply`** routed by player id; shared vs per-player choices
+  (e.g. map voting `VoteForMapCoordAction`, shared relic grab-bag).
+- Synchronize turn structure across players in combat.
+- One process still hosts one game; multiple agents drive multiple players in it.
+
+## M7 — Determinism, snapshots & persistence
+- Wire `RunState.ToSerializable()` ↔ `FromSerializable` into the harness for
+  snapshot/restore and replay.
+- Verify a master seed reproduces a full run bit-for-bit (RNG stream coverage).
+- Define the save/replay format used by the test corpus.
+
+## M8 — Testing & hardening
+- **Seeded property-style E2E**: parameterized by (input-RNG seed, game seed); random
+  legal play of full runs; assert invariants (HP/energy/pile sanity, state advances, no
+  exceptions). Persist failing seed pairs into a replayed regression corpus.
+- **Shim completeness**: keep the value-type copies faithful; ensure every native call
+  throws (never AccessViolation).
+- **Performance**: measure runs/sec; remove incidental allocations/waits on the hot path.
+
+## Out of scope (future, separate system)
+Multi-process orchestration and the RL/agent training framework. The API (read /
+list-options / apply, per-player) is being shaped to enable them, but they are not part
+of the emulator itself.

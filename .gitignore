@@ -1,0 +1,17 @@
+# Decompiled game source — reference only, never committed (copyrighted)
+refsrc/
+
+# Copies of the game's binaries we reference at build time — never committed
+lib/
+
+# .NET build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+.vs/
+
+# Test / regression artifacts that are environment-specific
+TestResults/
