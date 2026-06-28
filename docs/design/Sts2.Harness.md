@@ -162,6 +162,15 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   `RewardsCmd.OfferCustom` — the same custom-reward gate as relics/events, so payouts surface as the
   normal reward screen (an item only pays out when its whole footprint is uncovered). The pumps wait on
   a Crystal-Sphere signal too, so a raised minigame returns control instead of deadlocking.
+- **Potions** (`UsePotion`/`DiscardPotion` options): a player's belt potions surface in the combat
+  Play phase and out of combat on the map/shop (not on the reward/event/treasure/rest/choice screens
+  — the game blocks potion use there). `Apply` of a use enqueues a `UsePotionAction` via the faithful
+  `PotionModel.EnqueueManualUse` (the path the UI's potion popup drives), then pumps to quiescence (a
+  potion raising a card choice surfaces it; one that ends combat triggers its rewards); a targeted
+  (AnyEnemy) potion in combat expands to one option per valid enemy, everything else is a single
+  untargeted use (Self resolves to the owner). Discard enqueues a `DiscardPotionGameAction`. Usability
+  mirrors the game's potion popup: AnyTime usable anywhere, CombatOnly only in combat, None/Automatic
+  never manually, gated further by `PassesCustomUsabilityCheck`/`CanRemovePotions`.
 - **Async→sync pump**: card plays drain the action queue
   (`ActionExecutor.FinishedExecutingActions`); the enemy turn resolves on fire-and-forget
   tasks, so `EndTurn` waits on a `TaskCompletionSource` wired to combat events
@@ -192,7 +201,7 @@ Deck-management screens, elites/bosses, acts 2–3, ascension, local multiplayer
 `GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
 card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, rest sites,
-and shops.
+shops, and potion use/discard.
 Still missing: events that start combat (exercised end-to-end), multi-page events, and the event
 `WillKillPlayer` hint; card-reward alternatives/reroll; enemy-turn-triggered choices; full
 multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); and the

@@ -102,6 +102,18 @@ internal static class TestNav
     }
 
     /// <summary>
+    /// Give the local player a potion by id (class name, e.g. "FirePotion"), placed in the first
+    /// free belt slot. Returns the live mutable potion so tests can read its properties.
+    /// </summary>
+    public static MegaCrit.Sts2.Core.Models.PotionModel GivePotion(GameHost host, string potionId)
+    {
+        MegaCrit.Sts2.Core.Models.PotionModel potion = ModelDb.AllPotions
+            .First(p => p.Id.Entry == potionId || p.GetType().Name == potionId).ToMutable();
+        host.Run.Players[0].AddPotionInternal(potion);
+        return potion;
+    }
+
+    /// <summary>
     /// Start a run, resolve the opening ancient event, and move into the first reachable room,
     /// which on the standard seeds is the first combat.
     /// </summary>

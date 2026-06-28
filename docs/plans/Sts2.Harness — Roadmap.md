@@ -50,7 +50,15 @@ Turn the imperative `GameHost` primitives into the intended clean interface.
   seam: the offering effect is suspended until the agent takes/skips and proceeds (otherwise `Offer`
   auto-takes them all in TestMode). Remaining: card-reward alternatives (Skip-as-heal/sacrifice
   relics), reroll, and the more exotic reward sets (Orrery, Calling Bell, …) as encountered.
-- **Potions**: use (targeted/untargeted), discard.
+- **Potions** — _done_: a player's potions surface as `UsePotion`/`DiscardPotion` options in combat
+  (Play phase) and out of combat on the map/shop (not on the reward/event/treasure/rest screens,
+  where the game blocks potion use). Use runs the faithful manual path (`PotionModel.EnqueueManualUse`,
+  the same the UI's potion popup drives); a targeted (AnyEnemy) potion in combat expands to one
+  option per valid enemy, everything else is a single untargeted use (Self → owner). Discard enqueues
+  a `DiscardPotionGameAction`. Usage gating mirrors the game (AnyTime anywhere; CombatOnly only in
+  combat; None/Automatic never manually; plus `PassesCustomUsabilityCheck`/`CanRemovePotions`).
+  `PotionTests` cover an AnyTime heal used out of combat, a CombatOnly potion gated out of combat but
+  still discardable, discard, and a targeted attack potion thrown at a chosen enemy in combat.
 - **Mid-combat player choices**: discover/scry/select-card/choose-enemy effects via the
   injected choice context.
 - **Effect coverage sweep**: exercise many cards/relics/powers (each may surface a few

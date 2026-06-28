@@ -431,6 +431,42 @@ public sealed class GameHost
     }
 
     // ---------------------------------------------------------------------------------
+    // Potions. Using a potion enqueues a UsePotionAction via the faithful manual-use path
+    // (PotionModel.EnqueueManualUse, the same the UI's potion popup drives); discarding enqueues a
+    // DiscardPotionGameAction. Both run on the action queue in or out of combat, so we pump it to
+    // quiescence (a potion that raises a card choice — e.g. a discovery potion — surfaces it, and one
+    // that ends combat triggers its rewards).
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Use (drink/throw) the potion the option points at, optionally at its target, then pump the
+    /// action queue to quiescence (or to a raised card choice). Offers combat rewards if the potion
+    /// ended the fight.
+    /// </summary>
+    private void UsePotion(GameOption option)
+    {
+        MegaCrit.Sts2.Core.Models.PotionModel potion = option.PotionModel
+            ?? throw new InvalidOperationException("Use-potion option carried no potion.");
+        potion.EnqueueManualUse(option.Target);
+        PumpCombatUntilIdleOrChoice();
+        TryOfferCombatRewards();
+    }
+
+    /// <summary>
+    /// Discard the potion in the option's belt slot (no effect), then drain the action queue. Works
+    /// in and out of combat (the action records which, for turn-order correctness).
+    /// </summary>
+    private void DiscardPotion(GameOption option)
+    {
+        int slot = option.PotionSlot
+            ?? throw new InvalidOperationException("Discard-potion option carried no slot.");
+        var action = new MegaCrit.Sts2.Core.GameActions.DiscardPotionGameAction(
+            option.Player!, (uint)slot, InCombat);
+        RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(action);
+        PumpCombatUntilIdleOrChoice();
+    }
+
+    // ---------------------------------------------------------------------------------
     // Post-combat rewards. The faithful victory→rewards flow is driven by the combat UI
     // node (NCombatUi.OnCombatWon → CombatRoom.OfferRoomEndRewards), which is null in the
     // headless harness. We reproduce its logic half: once a won combat has fully ended we
@@ -574,20 +610,86 @@ public sealed class GameHost
                 }
             }
 
+            AddPotionOptions(player, options);
             options.Add(GameOption.EndTurnOption(player));
             return options;
         }
 
-        // Out of combat: map room choices.
+        // Out of combat: map room choices, plus any anytime potion actions.
         foreach (MegaCrit.Sts2.Core.Map.MapPoint point in GameStateProjection.ReachablePoints(Run))
         {
             options.Add(GameOption.MoveToOption(player, point.coord));
         }
+        AddPotionOptions(player, options);
         return options;
     }
 
     /// <summary>List options for the first (or only) player. Convenience for single-player.</summary>
     public IReadOnlyList<GameOption> ListOptions() => ListOptions(Run.Players[0].NetId);
+
+    /// <summary>
+    /// Append the given player's potion actions (use/discard) to <paramref name="options"/>. Usable
+    /// in combat (during the Play phase) and out of combat on the map/shop; not offered on the
+    /// reward/event/treasure/rest/choice screens (the game blocks potion use there). A targeted
+    /// (AnyEnemy) potion in combat expands to one use option per valid enemy; everything else is a
+    /// single untargeted use. Discard is offered whenever the potion can be removed.
+    /// </summary>
+    private void AddPotionOptions(Player player, List<GameOption> options)
+    {
+        System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Models.PotionModel?> slots = player.PotionSlots;
+        for (int i = 0; i < slots.Count; i++)
+        {
+            if (slots[i] is not { } potion)
+            {
+                continue;
+            }
+            if (CanUsePotionNow(potion))
+            {
+                if (InCombat && potion.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
+                {
+                    foreach (MegaCrit.Sts2.Core.Entities.Creatures.Creature enemy in Combat!.HittableEnemies)
+                    {
+                        if (potion.IsValidTarget(enemy))
+                        {
+                            options.Add(GameOption.UsePotionOption(player, i, potion, enemy));
+                        }
+                    }
+                }
+                else
+                {
+                    options.Add(GameOption.UsePotionOption(player, i, potion, target: null));
+                }
+            }
+            if (CanDiscardPotionNow(potion))
+            {
+                options.Add(GameOption.DiscardPotionOption(player, i, potion));
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when the potion can be manually used right now: it is not already queued, its owner is
+    /// alive and allowed to remove potions, it passes its custom usability check, and its usage
+    /// window is open (AnyTime always; CombatOnly only in combat; None/Automatic never manually).
+    /// </summary>
+    private bool CanUsePotionNow(MegaCrit.Sts2.Core.Models.PotionModel potion)
+    {
+        if (potion.IsQueued || potion.Owner.Creature.IsDead
+            || !potion.Owner.CanRemovePotions || !potion.PassesCustomUsabilityCheck)
+        {
+            return false;
+        }
+        return potion.Usage switch
+        {
+            MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime => true,
+            MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly => InCombat,
+            _ => false,
+        };
+    }
+
+    /// <summary>True when the potion can be discarded now (not queued, owner alive and able to remove potions).</summary>
+    private static bool CanDiscardPotionNow(MegaCrit.Sts2.Core.Models.PotionModel potion) =>
+        !potion.IsQueued && !potion.Owner.Creature.IsDead && potion.Owner.CanRemovePotions;
 
     /// <summary>
     /// Build the options that resolve a pending card choice. Single-select choices enumerate
@@ -753,6 +855,7 @@ public sealed class GameHost
         {
             options.Add(GameOption.MoveToOption(player, point.coord));
         }
+        AddPotionOptions(player, options);
         return options;
     }
 
@@ -855,6 +958,12 @@ public sealed class GameHost
                 break;
             case OptionKind.BuyShopItem:
                 BuyShopItem(option);
+                break;
+            case OptionKind.UsePotion:
+                UsePotion(option);
+                break;
+            case OptionKind.DiscardPotion:
+                DiscardPotion(option);
                 break;
             case OptionKind.ClickCrystalSphereCell:
                 ClickCrystalSphereCell(option.CrystalSphereCell!.Value.Col, option.CrystalSphereCell.Value.Row);

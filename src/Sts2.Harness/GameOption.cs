@@ -44,6 +44,12 @@ public enum OptionKind
     /// <summary>Buy one item from a merchant shop (card/relic/potion or the card-removal service).</summary>
     BuyShopItem,
 
+    /// <summary>Use (drink/throw) a potion from a belt slot, optionally at a target enemy.</summary>
+    UsePotion,
+
+    /// <summary>Discard a potion from a belt slot without using it.</summary>
+    DiscardPotion,
+
     /// <summary>Spend a divination on a Crystal Sphere grid cell (clears it, or a 3×3 area with the Big tool).</summary>
     ClickCrystalSphereCell,
 
@@ -105,6 +111,12 @@ public sealed class GameOption
     /// <summary>The gold price of a <see cref="OptionKind.BuyShopItem"/> option; null otherwise.</summary>
     public int? ShopItemCost { get; }
 
+    /// <summary>The belt slot index a potion option acts on (<see cref="OptionKind.UsePotion"/>/<see cref="OptionKind.DiscardPotion"/>); null otherwise.</summary>
+    public int? PotionSlot { get; }
+
+    /// <summary>The model id of the potion a potion option acts on; null otherwise.</summary>
+    public string? PotionId { get; }
+
     /// <summary>The grid cell a <see cref="OptionKind.ClickCrystalSphereCell"/> option clears; null otherwise.</summary>
     public Coord? CrystalSphereCell { get; }
 
@@ -127,6 +139,9 @@ public sealed class GameOption
     /// <summary>The shop entry a <see cref="OptionKind.BuyShopItem"/> option purchases; null otherwise.</summary>
     internal MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry? ShopEntry { get; }
 
+    /// <summary>The potion a potion option acts on; null otherwise.</summary>
+    internal PotionModel? PotionModel { get; }
+
     private GameOption(
         OptionKind kind,
         ulong playerId,
@@ -144,6 +159,8 @@ public sealed class GameOption
         string? shopItemType = null,
         string? shopItemId = null,
         int? shopItemCost = null,
+        int? potionSlot = null,
+        string? potionId = null,
         Coord? crystalSphereCell = null,
         string? crystalSphereTool = null,
         CardModel? cardModel = null,
@@ -153,6 +170,7 @@ public sealed class GameOption
         IReadOnlyList<CardModel>? selectedCardModels = null,
         Reward? reward = null,
         MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry? shopEntry = null,
+        PotionModel? potionModel = null,
         MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType? crystalSphereToolValue = null)
     {
         Kind = kind;
@@ -171,6 +189,8 @@ public sealed class GameOption
         ShopItemType = shopItemType;
         ShopItemId = shopItemId;
         ShopItemCost = shopItemCost;
+        PotionSlot = potionSlot;
+        PotionId = potionId;
         CrystalSphereCell = crystalSphereCell;
         CrystalSphereTool = crystalSphereTool;
         CardModel = cardModel;
@@ -180,6 +200,7 @@ public sealed class GameOption
         SelectedCardModels = selectedCardModels;
         Reward = reward;
         ShopEntry = shopEntry;
+        PotionModel = potionModel;
         CrystalSphereToolValue = crystalSphereToolValue;
     }
 
@@ -272,6 +293,26 @@ public sealed class GameOption
             card: card, shopItemType: itemType, shopItemId: itemId, shopItemCost: cost,
             player: player, shopEntry: entry);
     }
+
+    /// <summary>
+    /// Use (drink/throw) the potion in the given belt slot, optionally at a target enemy. Carries the
+    /// live potion for resolution and the target's combat id for display.
+    /// </summary>
+    internal static GameOption UsePotionOption(Player player, int slot, PotionModel potion, Creature? target)
+    {
+        string desc = target?.Monster is not null
+            ? $"Use potion {potion.Id.Entry} -> {target.Monster.Id.Entry}"
+            : $"Use potion {potion.Id.Entry}";
+        return new GameOption(
+            OptionKind.UsePotion, player.NetId, desc,
+            targetCombatId: target?.CombatId, potionSlot: slot, potionId: potion.Id.Entry,
+            target: target, player: player, potionModel: potion);
+    }
+
+    /// <summary>Discard the potion in the given belt slot without using it.</summary>
+    internal static GameOption DiscardPotionOption(Player player, int slot, PotionModel potion) =>
+        new(OptionKind.DiscardPotion, player.NetId, $"Discard potion {potion.Id.Entry}",
+            potionSlot: slot, potionId: potion.Id.Entry, player: player, potionModel: potion);
 
     /// <summary>Spend a divination clearing the Crystal Sphere grid cell at (x, y) with the active tool.</summary>
     internal static GameOption ClickCrystalSphereCellOption(Player player, int x, int y) =>
