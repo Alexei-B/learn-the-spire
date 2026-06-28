@@ -845,6 +845,12 @@ public sealed class GameHost
             {
                 continue;
             }
+            // A potion can only be bought when the belt has a free slot; the game's purchase fails
+            // (PotionProcureFailureReason.FailureSpace) otherwise, so don't offer it as buyable.
+            if (entry is MegaCrit.Sts2.Core.Entities.Merchant.MerchantPotionEntry && !player.HasOpenPotionSlots)
+            {
+                continue;
+            }
             (string type, string id, MegaCrit.Sts2.Core.Models.CardModel? card) = ClassifyShopEntry(entry);
             CardView? view = card is null ? null : GameStateProjection.ProjectCard(card, canPlay: false);
             options.Add(GameOption.BuyShopItemOption(player, entry, type, id, view));
@@ -1036,7 +1042,11 @@ public sealed class GameHost
 
         if (resolve is null)
         {
-            return; // post-combat terminal set: the player is back on the map.
+            // Post-combat terminal set. If this was an act-ending boss room, advance to the next
+            // act (or, on the final act, into the Architect victory event) instead of returning to
+            // the now-empty map. Otherwise the player is back on the map.
+            TryAdvanceActAfterBoss();
+            return;
         }
 
         // Custom set: the offering effect is suspended in RewardsSet.Offer awaiting this; the set
@@ -1064,6 +1074,94 @@ public sealed class GameHost
     }
 
     // ---------------------------------------------------------------------------------
+    // Act transitions. After an act's boss is beaten and its rewards are dismissed, the in-game
+    // rewards screen's proceed button votes to move to the next act (NRewardsScreen →
+    // ActChangeSynchronizer.SetLocalPlayerReady → MoveToNextAct → RunManager.EnterNextAct). The
+    // harness reproduces the logic half: when the player proceeds from a boss room reached via real
+    // map navigation, it drives EnterNextAct directly (single-player has no other voters to wait on,
+    // so we skip the fire-and-forget vote action and pump the real transition synchronously, the
+    // same way EnterFirstRoom drives EnterAct). EnterNextAct enters the next act's map, or — on the
+    // final act — the Architect victory event room.
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// If the player just dismissed the rewards of an act-ending boss (a Boss room they reached by
+    /// travelling to the boss map node), advance to the next act. A boss entered out of band (via
+    /// <see cref="EnterEncounterDebug"/>, not standing on the boss node) just returns to the map, as
+    /// does the first boss of a double-boss act (the player travels on to the second boss).
+    /// </summary>
+    private void TryAdvanceActAfterBoss()
+    {
+        if (Run.CurrentRoom is not MegaCrit.Sts2.Core.Rooms.CombatRoom room
+            || room.RoomType != MegaCrit.Sts2.Core.Rooms.RoomType.Boss)
+        {
+            return;
+        }
+        MegaCrit.Sts2.Core.Map.ActMap map = Run.Map;
+        if (Run.CurrentMapCoord is not { } coord)
+        {
+            return; // not standing on a map node (e.g. a debug-entered encounter)
+        }
+        bool onBossNode = map.BossMapPoint.coord.Equals(coord)
+            || (map.SecondBossMapPoint is { } sb && sb.coord.Equals(coord));
+        if (!onBossNode)
+        {
+            return;
+        }
+        // In a double-boss act, the first boss (at BossMapPoint) does not end the act — the player
+        // travels on to the second boss — so only the second boss advances. Mirrors CombatManager's
+        // victory check (SecondBossMapPoint == null ? at BossMapPoint : at SecondBossMapPoint).
+        bool isFirstOfDoubleBoss =
+            map.SecondBossMapPoint is not null && map.BossMapPoint.coord.Equals(coord);
+        if (isFirstOfDoubleBoss)
+        {
+            return;
+        }
+        AdvanceToNextAct();
+    }
+
+    /// <summary>
+    /// Drive the transition into the next act (or the Architect victory event on the final act).
+    /// Mirrors <c>ActChangeSynchronizer.MoveToNextAct</c>: bump the act-floor counter, then pump the
+    /// real <c>RunManager.EnterNextAct</c> to completion. Afterwards the player is on the next act's
+    /// map, or in the Architect event room (whose options we initialize like any other event room).
+    /// </summary>
+    private void AdvanceToNextAct()
+    {
+        Run.ActFloor++;
+        Pump(RunManager.Instance.EnterNextAct());
+        // The per-room one-shot guards refer to the act we just left; reset them for the new act.
+        _rewardedRoom = null;
+        _openedTreasureRoom = null;
+        // The final act enters the Architect victory event instead of a map; wait for its options.
+        WaitForEventReady();
+    }
+
+    /// <summary>
+    /// Block until the run reaches its terminal game-over state. Used after the Architect victory
+    /// event's proceed votes to win the run: that runs on a fire-and-forget task chain
+    /// (EnterNextAct → WinRun → kill all players), so we drain and poll until every player is dead.
+    /// </summary>
+    private void WaitForGameOver(int timeoutMs = 10000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!Run.IsGameOver)
+        {
+            DrainActionQueue();
+            if (Run.IsGameOver)
+            {
+                break;
+            }
+            if (sw.ElapsedMilliseconds > timeoutMs)
+            {
+                throw new System.TimeoutException(
+                    "Timed out waiting for the run to end after the Architect victory.");
+            }
+            System.Threading.Thread.Sleep(5);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
     // Events. Choosing an event option runs the option's effect on a thread-pool task via
     // the game's EventSynchronizer; the harness blocks until it finishes (or surfaces a
     // mid-effect card choice). Once the event is finished — or down to only a "proceed"
@@ -1077,10 +1175,25 @@ public sealed class GameHost
     /// </summary>
     private void ApplyEventOption(Player player, int index)
     {
+        // The Architect victory event ends the run: its final option votes to move to the next act,
+        // which (in the final act's victory room) wins the run and kills all players. That vote — and
+        // only that option, not the dialogue advances before it — bumps the act-floor counter (see
+        // ActChangeSynchronizer.MoveToNextAct), so a change here flags the run-ending choice.
+        int actFloorBefore = Run.ActFloor;
+
         RunManager.Instance.EventSynchronizer.ChooseLocalOption(index);
         PumpEventUntilIdleOrChoice();
         // The option may have entered and resolved a combat (shared events); offer its rewards.
         TryOfferCombatRewards();
+
+        // If this option triggered the act-change vote in the Architect's victory room, the win runs
+        // on a fire-and-forget task chain (EnterNextAct → WinRun → kill all players); pump until the
+        // run reaches its terminal game-over state.
+        if (Run.ActFloor != actFloorBefore
+            && Run.CurrentRoom is { IsVictoryRoom: true } && !Run.IsGameOver)
+        {
+            WaitForGameOver();
+        }
     }
 
     /// <summary>

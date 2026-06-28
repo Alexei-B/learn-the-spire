@@ -95,6 +95,13 @@ public sealed record GameState
     public required int ActIndex { get; init; }
     public required int Floor { get; init; }
     public required bool IsGameOver { get; init; }
+
+    /// <summary>
+    /// True once the run has been won (the act-3 boss is beaten and the Architect's victory event
+    /// has ended the run). A won run is also <see cref="IsGameOver"/> — the game ends a victory by
+    /// killing the players — so this distinguishes a victorious end from a death.
+    /// </summary>
+    public required bool IsVictory { get; init; }
     public required IReadOnlyList<PlayerState> Players { get; init; }
 
     /// <summary>The current battle, or null when not in combat.</summary>

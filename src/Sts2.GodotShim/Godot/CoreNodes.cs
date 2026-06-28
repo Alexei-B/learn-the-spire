@@ -25,6 +25,12 @@ public class GodotObject : IDisposable
     // non-null managed reference is always "valid" (and null is not). Used widely by logic that
     // guards against freed UI nodes (e.g. event-option hover tips).
     public static bool IsInstanceValid(GodotObject? instance) => instance is not null;
+
+    // Dynamic call-by-name into the engine. Only reached on TestMode-gated audio/vfx paths that
+    // early-return before invoking it headless (e.g. NAudioManager.PlayOneShot/StopAllLoops), so an
+    // inert default suffices — and it must merely *exist* for those methods to JIT once an inert
+    // stand-in singleton makes them reachable.
+    public Variant Call(StringName method, params Variant[] args) => default;
 }
 
 public class RefCounted : GodotObject { }
@@ -155,6 +161,12 @@ public class CanvasItem : Node
     public bool Visible { get; set; } = true;
     public int ZIndex { get; set; }
 
+    // Godot exposes the Visible property as explicit SetVisible/IsVisible methods, and the game's
+    // (real-GodotSharp-compiled) IL calls those directly — e.g. monster setup toggling sprite
+    // visibility (Crusher.AfterAddedToRoom). Route them through the same backing as the property.
+    public void SetVisible(bool visible) => Visible = visible;
+    public bool IsVisible() => Visible;
+
     public void Show() => Visible = true;
     public void Hide() => Visible = false;
     public void QueueRedraw() { }
@@ -236,7 +248,12 @@ public class HFlowContainer : FlowContainer { }
 public class VFlowContainer : FlowContainer { }
 public class Button : Control { }
 public class TextureButton : Control { }
-public class Sprite2D : Node2D { }
+public class Sprite2D : Node2D
+{
+    // Some monsters swap their sprite mid-fight (e.g. DecimillipedeSegment.ChangePhobiaModeTexture);
+    // the texture swap is purely visual, so storing it inertly is enough to let the move run.
+    public Texture2D? Texture { get; set; }
+}
 public class Marker2D : Node2D { }
 // Particle VFX node. Referenced as the base of card-glow/treasure/boss VFX nodes and loaded by
 // some monster moves (e.g. the CeremonialBeast act-1 boss) and card visuals (e.g. event-granted

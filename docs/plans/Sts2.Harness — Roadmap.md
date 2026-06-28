@@ -132,20 +132,35 @@ as the reference for what choices exist:
   restock (a bought relic slot refills instead of clearing) both work through the game logic.
 - **Deck-management screens** (upgrade/transform/enchant/remove/duplicate).
 
-## M4 — Full single-player run (acts + bosses)
-- **Map navigation breadth**: full path listing, elites, and end-of-act flow.
-- **Act transitions**: act 1 → 2 → 3, including the boss → next-act handoff and rewards.
-- **Bosses & elites**: boss encounters and boss relic rewards.
-- **Win/lose terminal states**: victory screen, game-over, score.
-- Deliverable: a seeded run plays start → act-3 boss with greedy/random legal choices.
-- _In progress_: a greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through
-  events/combats/rewards/rest/treasure/**shops**/map moves via the public option API, with a
-  block-then-attack combat heuristic. With the player buffed to a huge HP pool it now plays **all of
-  act 1 and beats the act-1 boss** (CeremonialBeast, floor 17) entirely through the public option
-  API (`WalkthroughTests`): beating the boss leaves no reachable map moves (the act 1 → 2 transition
-  below is still unbuilt), surfacing as the terminal `GamePhase.Other` "won the act" state the test
-  asserts. The remaining M4 work is the **end-of-act / act transition** flow (boss → next-act
-  handoff, boss relic rewards) and acts 2–3. Two earlier blockers are fixed: the **BygoneEffigy** elite, whose wake move
+## M4 — Full single-player run (acts + bosses) — _done (default acts)_
+- **Map navigation breadth**: full path listing, elites, and end-of-act flow. _done_
+- **Act transitions**: act 1 → 2 → 3, including the boss → next-act handoff. _done_
+- **Bosses & elites**: boss encounters across all three acts. _done_
+- **Win/lose terminal states**: game-over, and a flagged victory. _done_
+- Deliverable: a seeded run plays start → act-3 boss → **win** with greedy legal choices. _done_
+- **Act transition / victory** — _done_: dismissing the rewards of an act's boss (a Boss room reached
+  by travelling to the boss map node) drives the real `RunManager.EnterNextAct` — the logic half of
+  the rewards-screen proceed that the game routes through `ActChangeSynchronizer.SetLocalPlayerReady`
+  (`GameHost.TryAdvanceActAfterBoss`/`AdvanceToNextAct`). Non-final acts land on the next act's map;
+  the final act enters the **Architect victory event** (`TheArchitect`), whose proceed option votes to
+  win the run, killing the players on a fire-and-forget chain that the harness pumps to game-over
+  (`WaitForGameOver`). A won run surfaces as `GamePhase.GameOver` with `GameState.IsVictory` true
+  (distinguished from a death by `RunManager.WinTime`). `WalkthroughTests` now drives a full three-act
+  run **start → act-3 boss → Architect → win** entirely through the public option API.
+- **Full act-2 / act-3 content enumeration** — _done_: `Act2FightsTests`/`Act3FightsTests` enumerate
+  every Hive (20) and Glory (18) encounter, and `Act2EventsTests`/`Act3EventsTests` every Hive (10)
+  and Glory (7) event, each driven to a terminal state through the public option API via the
+  `EnterEncounterDebug`/`EnterEventDebug` seams. All resolve except two documented, deferred cases:
+  **KnowledgeDemonBoss** (the only monster that raises a *player card choice during the enemy turn* —
+  enemy-turn-triggered choices are still un-built) and the **Trial** event (its Accept option drives
+  the event through the null `NEventRoom` portrait UI, which cascades through `NEventLayout`). Closing
+  these surfaced several content-specific shim/UI gaps (see the design doc): `CanvasItem.SetVisible`/
+  `Sprite2D.Texture`/`GodotObject.Call`/`Variant(GodotObject)` in the shim; an inert
+  `NAudioManager.Instance` (unguarded death-SFX derefs, all `TestMode`-gated to no-ops); an inert
+  KaiserCrab boss background with its cosmetic anim methods no-op'd (the `Crusher`/`Rocket` two-part
+  boss reaches into a UI background node that *throws* headless); a generalized
+  `NGame.Instance.ScreenShakeTrauma` IL-strip now covering Amalgamator as well as PunchOff; and a
+  no-op for SoulNexus's death-animation handler. Two earlier blockers are fixed: the **BygoneEffigy** elite, whose wake move
   stalled the enemy-turn pump because `TalkCmd.Play` NRE'd on a null `SaveManager.Instance.PrefsSave`
   (`GameRuntime` now calls `InitPrefsDataForTest`; `BygoneEffigyTests`); and the **AromaOfChaos**
   event, whose option generation NRE'd in `CharacterModel.AddDetailsTo` because the option text keys
@@ -160,9 +175,10 @@ as the reference for what choices exist:
   the long fight ends in a *survivable* game-over — a legitimate loss, not a harness fault). The
   earlier boss blocker is fixed: the **CeremonialBeast** act-1 boss's `Godot.GpuParticles2D`
   `TypeLoadException` is closed (the type and `ParticleProcessMaterial`/`Vector3` it pulls in are now
-  in the shim), so all three Overgrowth bosses are now fightable headless. Remaining before a forward
-  run reaches/beats the boss organically: **shops** (M3) which a forward path may route through, and
-  other un-handled content on some seeds.
+  in the shim), so all three Overgrowth bosses are now fightable headless.
+  Remaining for M4 breadth: the **alternate index-1/2 acts** (only the default Hive/Glory are wired
+  today — `ActModel.GetDefaultList`), **boss relic / alternate reward** sets, **score**, and the two
+  deferred content cases above (enemy-turn choices; the Trial portrait UI).
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

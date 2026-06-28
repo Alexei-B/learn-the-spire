@@ -78,20 +78,128 @@ internal static class HarmonyPatches
                     nameof(MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere.NCrystalSphereScreen.ShowScreen)),
                 prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(ShowCrystalSphereScreenPrefix)));
 
-            // PunchOff's "Nab" option calls NGame.Instance.ScreenShakeTrauma — a callvirt on the null
-            // headless UI singleton that NREs *before* the relic reward / SetEventFinished that follow
-            // it, so the event can't resolve. Making NGame.Instance non-null would defeat the hundreds
-            // of NGame.Instance?.… guards the logic relies on, so instead strip just this one cosmetic
-            // call from the option's IL (its async state machine's MoveNext).
-            Type nabStateMachine = typeof(PunchOff)
-                .GetNestedTypes(BindingFlags.NonPublic)
-                .First(t => t.Name.Contains("Nab") && typeof(IAsyncStateMachine).IsAssignableFrom(t));
+            // Several event options call NGame.Instance.ScreenShakeTrauma — a callvirt on the null
+            // headless UI singleton that NREs *before* the option's actual effect (relic reward,
+            // SetEventFinished, …), so the event can't resolve. Making NGame.Instance non-null would
+            // defeat the hundreds of NGame.Instance?.… guards the logic relies on, so instead strip
+            // just this cosmetic call from each affected option's IL (its async state machine's
+            // MoveNext). PunchOff's "Nab" and Amalgamator's two combine options each carry one.
+            StripScreenShake(harmony, typeof(PunchOff), "Nab");
+            StripScreenShake(harmony, typeof(Amalgamator), "CombineStrikes", "CombineDefends");
+
+            ApplyKaiserCrabBackgroundPatches(harmony);
+
+            // SoulNexus (an act-3 elite) sets a death animation in its Died handler via
+            // NCombatRoom.Instance.GetCreatureNode(…) — an unguarded callvirt on the null headless
+            // combat-room UI singleton, which NREs the moment the creature dies, faulting the kill.
+            // The handler is purely cosmetic (the only other line just unsubscribes itself, harmless
+            // to skip since the creature dies once), so no-op it. (Several other monsters reach for
+            // NCombatRoom.Instance.GetCreatureNode too, but only on paths never hit headless.)
             harmony.Patch(
-                AccessTools.Method(nabStateMachine, "MoveNext"),
-                transpiler: new HarmonyMethod(typeof(HarmonyPatches), nameof(StripScreenShakeTranspiler)));
+                AccessTools.Method(
+                    typeof(MegaCrit.Sts2.Core.Models.Monsters.SoulNexus), "AfterDeath",
+                    new[] { typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) }),
+                prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
+
+            // NAudioManager.Instance is NGame.Instance?.AudioManager — null headless. SfxCmd guards
+            // its audio calls on NonInteractiveMode, but a handful of sites dereference the singleton
+            // *unguarded* (monster death SFX in BeforeDeath, game-over music in CreatureCmd), which
+            // NREs on the null instance. Every playback method early-returns on TestMode.IsOn (true
+            // here), so handing the getter an inert instance makes those calls no-op — no audio plays.
+            harmony.Patch(
+                AccessTools.PropertyGetter(
+                    typeof(MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager), "Instance"),
+                prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(AudioManagerInstancePrefix)));
 
             _applied = true;
         }
+    }
+
+    // The KaiserCrab boss (Crusher) reaches into a UI background node for all its visuals: its
+    // Background getter resolves NCombatRoom.Instance.Background (or NBestiary's layout), both null
+    // headless, so it *throws* — and it is touched on creature setup (AfterAddedToRoom), on every HP
+    // change, on death, and on every move. None of it is mechanical. So we hand the getter a single
+    // inert NKaiserCrabBossBackground (constructor skipped, never added to a scene) and no-op that
+    // type's cosmetic anim methods (which would otherwise NRE on the uninitialized animation nodes),
+    // leaving the move/damage/death *logic* — which runs after these calls — to execute normally.
+    private static readonly object _crabBgGate = new();
+    private static MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground? _inertCrabBg;
+
+    private static void ApplyKaiserCrabBackgroundPatches(Harmony harmony)
+    {
+        // The KaiserCrab boss is two monsters — Crusher (left/body) and Rocket (right arm) — each
+        // with its own throwing Background getter onto the same UI node. Patch both to the inert one.
+        foreach (Type monster in new[]
+                 {
+                     typeof(MegaCrit.Sts2.Core.Models.Monsters.Crusher),
+                     typeof(MegaCrit.Sts2.Core.Models.Monsters.Rocket),
+                 })
+        {
+            harmony.Patch(
+                AccessTools.PropertyGetter(monster, "Background"),
+                prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(CrusherBackgroundPrefix)));
+        }
+
+        // No-op the node's animation-playback methods (PlayAttackAnim/PlayHurtAnim/PlayArmDeathAnim/
+        // PlayBodyDeathAnim/PlayRight…) — the only ones Crusher calls, and all purely visual (they
+        // touch live Godot animation state we never build). We match by the "Play" prefix so we do
+        // NOT touch the source-generated marshalling overrides (InvokeGodotClassMethod, _Ready, …),
+        // which reference native-interop types the shim deliberately omits. SetVisible et al. live on
+        // the shim's CanvasItem and work on the inert instance as-is.
+        Type bg = typeof(MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground);
+        foreach (MethodInfo m in bg.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Instance
+                     | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            if (!m.Name.StartsWith("Play", StringComparison.Ordinal)
+                || m.IsAbstract || m.IsGenericMethodDefinition || m.GetMethodBody() is null)
+            {
+                continue;
+            }
+            if (m.ReturnType == typeof(void))
+            {
+                harmony.Patch(m, prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
+            }
+            else if (typeof(System.Threading.Tasks.Task).IsAssignableFrom(m.ReturnType))
+            {
+                harmony.Patch(m, prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipTaskPrefix)));
+            }
+        }
+    }
+
+    private static bool CrusherBackgroundPrefix(
+        ref MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground __result)
+    {
+        lock (_crabBgGate)
+        {
+            _inertCrabBg ??= (MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground)
+                RuntimeHelpers.GetUninitializedObject(
+                    typeof(MegaCrit.Sts2.Core.Nodes.Vfx.Backgrounds.NKaiserCrabBossBackground));
+        }
+        __result = _inertCrabBg;
+        return false;
+    }
+
+    private static readonly object _audioGate = new();
+    private static MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager? _inertAudio;
+
+    private static bool AudioManagerInstancePrefix(
+        ref MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager __result)
+    {
+        lock (_audioGate)
+        {
+            _inertAudio ??= (MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager)
+                RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager));
+        }
+        __result = _inertAudio;
+        return false;
+    }
+
+    private static bool SkipVoidPrefix() => false;
+
+    private static bool SkipTaskPrefix(ref System.Threading.Tasks.Task __result)
+    {
+        __result = System.Threading.Tasks.Task.CompletedTask;
+        return false;
     }
 
     // If a loc table is missing, hand back an empty one named after the request so
@@ -138,6 +246,22 @@ internal static class HarmonyPatches
         GameHost.CrystalSphereScreenHook?.Invoke(grid);
         __result = null!;
         return false;
+    }
+
+    // Strip the cosmetic NGame.Instance.ScreenShakeTrauma call from each named async option's
+    // compiler-generated state machine (the option methods are `async Task`, so the call lives in a
+    // nested IAsyncStateMachine's MoveNext, matched by the option method name).
+    private static void StripScreenShake(Harmony harmony, Type containing, params string[] methodNameFragments)
+    {
+        Type[] nested = containing.GetNestedTypes(BindingFlags.NonPublic | BindingFlags.Public);
+        foreach (string fragment in methodNameFragments)
+        {
+            Type stateMachine = nested.First(t =>
+                t.Name.Contains(fragment) && typeof(IAsyncStateMachine).IsAssignableFrom(t));
+            harmony.Patch(
+                AccessTools.Method(stateMachine, "MoveNext"),
+                transpiler: new HarmonyMethod(typeof(HarmonyPatches), nameof(StripScreenShakeTranspiler)));
+        }
     }
 
     // Replace `NGame.Instance.ScreenShakeTrauma(strength)` with two pops: the receiver

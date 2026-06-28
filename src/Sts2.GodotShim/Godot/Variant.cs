@@ -44,6 +44,7 @@ public struct Variant : IDisposable
     public static implicit operator Variant(Color from) => new() { _obj = from };
     public static implicit operator Variant(StringName from) => new() { _obj = from };
     public static implicit operator Variant(NodePath from) => new() { _obj = from };
+    public static implicit operator Variant(GodotObject from) => new() { _obj = from };
 
     public readonly T As<T>() => _obj is T t ? t : default!;
 

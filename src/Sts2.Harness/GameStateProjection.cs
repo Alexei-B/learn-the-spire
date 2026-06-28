@@ -32,6 +32,7 @@ internal static class GameStateProjection
             ActIndex = run.CurrentActIndex,
             Floor = run.TotalFloor,
             IsGameOver = run.IsGameOver,
+            IsVictory = run.IsGameOver && RunManager.Instance.WinTime > 0,
             Players = run.Players.Select(p => ProjectPlayer(p, combat)).ToList(),
             Combat = combat is null ? null : ProjectCombat(combat),
             Map = ProjectMap(run),

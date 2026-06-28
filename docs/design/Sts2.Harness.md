@@ -9,14 +9,16 @@ map-move surface, the battle-rewards screen, **event rooms** (the opening ancien
 shared regular-event path), **treasure rooms** (open chest → pick/skip relic), **rest sites**
 (rest/smith), **shops** (buy cards/relics/potions, card removal, leave), and **potion use/discard**.
 A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the public API;
-buffed to a large HP pool it now plays **all of act 1 and beats the act-1 boss** (CeremonialBeast,
-floor 17) through the option API (`WalkthroughTests`), ending on the terminal end-of-act state (the
-act 1 → 2 transition is M4, not yet built). Separately, `Act1FightsTests` / `Act1EventsTests` enumerate *every*
-act-1 fight and event (both index-0 acts plus shared events) and drive each to a terminal state in
-isolation; all 42 fights (including all three Overgrowth bosses — the `GpuParticles2D` shim gap that
-once blocked the act-1 boss is closed) and every event resolve, including the Crystal Sphere minigame
-and PunchOff. Remaining breadth (acts 2–3/multiplayer/ascension) is **not built**; see
-`docs/plans/`.
+buffed to a large HP pool it now plays a **full three-act run start → act-3 boss → the Architect
+victory event → win** through the option API (`WalkthroughTests`), ending on `GamePhase.GameOver`
+with `GameState.IsVictory`. The act 1→2→3 handoff is driven by reproducing the logic half of the
+boss rewards-screen proceed (act transition / victory — see Key mechanisms). Separately,
+`Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests` enumerate *every* fight and event of all three
+default acts (plus act 1's index-0 alternate and the shared events) and drive each to a terminal
+state in isolation; all resolve except two documented, deferred cases — **KnowledgeDemonBoss** (the
+only monster that raises a player card choice during the *enemy* turn) and the **Trial** event (its
+Accept option drives the null `NEventRoom` portrait UI). Remaining breadth (alternate index-1/2
+acts/multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
 
@@ -119,6 +121,19 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   finished event — or one down to only a "proceed" option — is not actionable: the player leaves
   by moving on the map (the in-game proceed drives the null `NMapScreen`, so we model leaving as a
   normal `MoveTo`).
+- **Act transition & victory**: in-game, dismissing an act-boss rewards screen votes to move to the
+  next act (`NRewardsScreen` → `ActChangeSynchronizer.SetLocalPlayerReady` → `RunManager.EnterNextAct`).
+  The harness reproduces the logic half: `ProceedFromRewards` on a Boss room *reached by travelling to
+  the boss map node* (`TryAdvanceActAfterBoss`; a debug-entered encounter or the first of a double-boss
+  is excluded) drives `EnterNextAct` directly (`AdvanceToNextAct`), pumped synchronously like
+  `EnterFirstRoom` does for `EnterAct` — single-player has no other voters to wait on. A non-final act
+  lands on the next act's map; the **final act** enters the `TheArchitect` victory **event room**
+  (`IsVictoryRoom`). The Architect event plays like any other (`ChooseEventOption`s advance its
+  dialogue); its final option's effect votes to move to the next act, which — now in the victory room —
+  *wins the run* (`RunManager.WinRun` → kill all players) on a fire-and-forget chain. `ApplyEventOption`
+  detects that option (it bumps the act-floor counter, unlike the dialogue advances) and pumps to the
+  terminal game-over (`WaitForGameOver`). A won run is `GamePhase.GameOver` with `GameState.IsVictory`
+  (true iff `RunManager.WinTime > 0`, set when the act-3 boss falls), distinguishing it from a death.
 - **Treasure rooms** (`GamePhase.Treasure`): entering a `TreasureRoom` runs
   `TreasureRoomRelicSynchronizer.BeginRelicPicking` (its relics), but the chest-open flow and relic
   award are normally driven by the null `NTreasureRoom`/`NTreasureRoomRelicCollection` UI, so the
@@ -199,29 +214,33 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Deck-management screens, elites/bosses, acts 2–3, ascension, local multiplayer. The
-`GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
-card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
+Deck-management screens, the **alternate index-1/2 acts** (only the default Hive/Glory are wired —
+`ActModel.GetDefaultList`), boss relic / alternate reward sets and score, ascension, local
+multiplayer. The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface,
+in-combat card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, rest sites,
-shops, and potion use/discard.
-Still missing: events that start combat (exercised end-to-end), multi-page events, and the event
-`WillKillPlayer` hint; card-reward alternatives/reroll; enemy-turn-triggered choices; full
-multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); and the
-remaining un-handled content that breaks a forward playthrough on some seeds. (Every act-1 fight and
-event now resolves through the public option API — see the full act-1 content sweep below.)
+shops, potion use/discard, the act 1→2→3 transition, and the Architect victory.
+Still missing: multi-page events and the event `WillKillPlayer` hint; card-reward alternatives/reroll;
+**enemy-turn-triggered choices** (KnowledgeDemonBoss); full multi-select subset enumeration (min &gt; 1
+currently offers a single exact-minimum selection); and a faithful headless stand-in for the event
+**portrait UI** (`NEventRoom`/`NEventLayout`, which the Trial event drives).
 
-**Full act-1 content sweep.** `Act1FightsTests` / `Act1EventsTests` enumerate *every* act-1 fight
-and event (both index-0 acts — Overgrowth + Underdocks — plus the shared events) and drive each to a
-terminal state through the public option API, entering each directly via `GameHost.EnterEncounterDebug`
-/ `EnterEventDebug` (test/dev seams over the game's `EnterRoomDebug`). All 42 fights and every event
-resolve without the harness throwing — including the two that needed UI seams (the Crystal Sphere
-minigame, above, and PunchOff, whose unguarded `NGame.Instance.ScreenShakeTrauma` is stripped from its
-option's IL by a Harmony transpiler rather than making the null UI singleton non-null). This closed
-several shim gaps:
-`GpuParticles2D` + `ParticleProcessMaterial` + the `Vector3` value type (copied verbatim, minus its
-Basis-only helpers), and `Node.GetNode`/`GetNodeOrNull`/`GetChildCount`, `CanvasItem.GetViewportRect`,
-`Node2D.RotationDegrees` — all on TestMode-gated/visual paths that only need to JIT. The
-`GpuParticles2D` gap had blocked the CeremonialBeast act-1 boss; all three Overgrowth bosses are now
-fightable headless. (Earlier forward-run blockers also fixed: the BygoneEffigy elite's enemy-turn
-stall — see Boot, prefs save — and the AromaOfChaos event-option NRE — see Localization.)
+**Full content sweep (all three default acts).** `Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests`
+enumerate *every* fight and event of the default acts (plus act 1's index-0 alternate Underdocks and
+the shared events) and drive each to a terminal state through the public option API, entering each
+directly via `GameHost.EnterEncounterDebug` / `EnterEventDebug` (test/dev seams over the game's
+`EnterRoomDebug`). All resolve without the harness throwing except the two deferred cases noted above
+(KnowledgeDemonBoss, Trial), which are explicitly excluded with documented reasons. Reaching this
+closed several content-specific shim/UI gaps, each on a TestMode-gated or purely-visual path:
+- shim value/inert members: `CanvasItem.SetVisible`/`IsVisible`, `Sprite2D.Texture`,
+  `GodotObject.Call(StringName, Variant[])`, `Variant(GodotObject)` (act-1 closed
+  `GpuParticles2D`/`ParticleProcessMaterial`/`Vector3` and `Node.GetNode`/`GetViewportRect`/…);
+- an inert `NAudioManager.Instance` (Harmony-patched getter): a few monsters deref it *unguarded* for
+  death SFX, unlike `SfxCmd`'s `NonInteractiveMode` guard; every playback method early-returns on
+  `TestMode.IsOn`, so the inert instance makes them no-op;
+- the **KaiserCrab** two-part boss (`Crusher`+`Rocket`) reaches into a UI background node that
+  *throws* headless — its `Background` getter is patched to one inert `NKaiserCrabBossBackground` and
+  that node's `Play*` anim methods are no-op'd;
+- the `NGame.Instance.ScreenShakeTrauma` IL-strip transpiler (generalized) covers Amalgamator's combine
+  options as well as PunchOff; and SoulNexus's unguarded death-animation handler is no-op'd.
 → `docs/plans/`. 
