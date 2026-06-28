@@ -37,6 +37,9 @@ public enum OptionKind
 
     /// <summary>Skip the treasure room's relics without taking any, then proceed via the map.</summary>
     SkipTreasure,
+
+    /// <summary>Choose a rest-site action (rest/smith/…).</summary>
+    ChooseRestOption,
 }
 
 /// <summary>
@@ -78,6 +81,12 @@ public sealed class GameOption
     /// <summary>The index into the treasure room's relics for <see cref="OptionKind.TakeTreasureRelic"/>; null otherwise.</summary>
     public int? TreasureRelicIndex { get; }
 
+    /// <summary>The rest-site option id for <see cref="OptionKind.ChooseRestOption"/> (e.g. "HEAL"); null otherwise.</summary>
+    public string? RestOptionId { get; }
+
+    /// <summary>The index into the rest site's options for <see cref="OptionKind.ChooseRestOption"/>; null otherwise.</summary>
+    public int? RestOptionIndex { get; }
+
     // Live references used by GameHost.Apply. Not part of the serializable surface.
     internal CardModel? CardModel { get; }
     internal Creature? Target { get; }
@@ -100,6 +109,8 @@ public sealed class GameOption
         string? eventOptionRelicId = null,
         string? treasureRelicId = null,
         int? treasureRelicIndex = null,
+        string? restOptionId = null,
+        int? restOptionIndex = null,
         CardModel? cardModel = null,
         Creature? target = null,
         MapCoord? mapCoord = null,
@@ -118,6 +129,8 @@ public sealed class GameOption
         EventOptionRelicId = eventOptionRelicId;
         TreasureRelicId = treasureRelicId;
         TreasureRelicIndex = treasureRelicIndex;
+        RestOptionId = restOptionId;
+        RestOptionIndex = restOptionIndex;
         CardModel = cardModel;
         Target = target;
         MapCoord = mapCoord;
@@ -194,4 +207,9 @@ public sealed class GameOption
 
     internal static GameOption SkipTreasureOption(Player player) =>
         new(OptionKind.SkipTreasure, player.NetId, "Skip treasure relics", player: player);
+
+    /// <summary>Choose the rest-site option at the given index (e.g. rest or smith).</summary>
+    internal static GameOption ChooseRestOption(Player player, int index, string optionId) =>
+        new(OptionKind.ChooseRestOption, player.NetId, $"Rest option {optionId}",
+            restOptionId: optionId, restOptionIndex: index, player: player);
 }

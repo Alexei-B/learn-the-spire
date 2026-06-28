@@ -39,6 +39,7 @@ internal static class GameStateProjection
             Rewards = host.PendingRewards is null ? null : ProjectRewards(host.PendingRewards),
             Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!) : null,
             Treasure = host.HasTreasureChoice ? ProjectTreasure(host) : null,
+            RestSite = host.HasRestChoice ? ProjectRestSite() : null,
         };
     }
 
@@ -67,6 +68,10 @@ internal static class GameStateProjection
         if (host.HasTreasureChoice)
         {
             return GamePhase.Treasure;
+        }
+        if (host.HasRestChoice)
+        {
+            return GamePhase.RestSite;
         }
         if (host.HasActionableEvent)
         {
@@ -171,6 +176,21 @@ internal static class GameStateProjection
                 ? Array.Empty<string>()
                 : relics.Select(r => r.Id.Entry).ToList(),
         };
+    }
+
+    private static RestSiteView ProjectRestSite()
+    {
+        var options = new List<RestSiteOptionView>();
+        System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption> rest =
+            RunManager.Instance.RestSiteSynchronizer.GetLocalOptions();
+        for (int i = 0; i < rest.Count; i++)
+        {
+            if (rest[i].IsEnabled)
+            {
+                options.Add(new RestSiteOptionView { Index = i, OptionId = rest[i].OptionId });
+            }
+        }
+        return new RestSiteView { Options = options };
     }
 
     private static RewardsView ProjectRewards(MegaCrit.Sts2.Core.Rewards.RewardsSet set) =>

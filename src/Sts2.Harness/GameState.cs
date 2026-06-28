@@ -50,6 +50,12 @@ public enum GamePhase
     /// </summary>
     Treasure,
 
+    /// <summary>
+    /// At a rest site with a rest action still available (rest/smith/…). Resolve via the
+    /// <see cref="OptionKind.ChooseRestOption"/> options from <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    RestSite,
+
     /// <summary>The run has ended with all players dead.</summary>
     GameOver,
 
@@ -93,6 +99,26 @@ public sealed record GameState
 
     /// <summary>The treasure-room relics to pick from, or null when not in a treasure room.</summary>
     public TreasureView? Treasure { get; init; }
+
+    /// <summary>The rest-site options available, or null when not at a rest site.</summary>
+    public RestSiteView? RestSite { get; init; }
+}
+
+/// <summary>A rest site with the rest actions still available to choose.</summary>
+public sealed record RestSiteView
+{
+    /// <summary>The selectable options (rest/smith/…), in the same order as the resolving options.</summary>
+    public required IReadOnlyList<RestSiteOptionView> Options { get; init; }
+}
+
+/// <summary>One selectable rest-site action.</summary>
+public sealed record RestSiteOptionView
+{
+    /// <summary>The index passed back to resolve it (its position in the live option list).</summary>
+    public required int Index { get; init; }
+
+    /// <summary>The option id (e.g. "HEAL", "SMITH").</summary>
+    public required string OptionId { get; init; }
 }
 
 /// <summary>A treasure room with its chest opened: the relics still available to pick.</summary>

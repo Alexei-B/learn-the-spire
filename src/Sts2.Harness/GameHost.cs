@@ -51,6 +51,10 @@ public sealed class GameHost
     // suspends on a custom reward screen so ProceedFromRewards can resume it. Null otherwise.
     private System.Threading.Tasks.Task? _treasureExtraRewardsTask;
 
+    // A rest-site option resolution (ChooseLocalOption) task, kept in flight when it suspends on a
+    // mid-effect card choice (e.g. Smith's upgrade selection) so Apply can resume it. Null otherwise.
+    private System.Threading.Tasks.Task? _restChoiceTask;
+
     // Custom rewards offered mid-effect by a relic/event (RewardsCmd.OfferCustom, e.g.
     // Kaleidoscope's two bonus card rewards). Unlike a post-combat set, the offering effect's
     // task is *suspended* inside RewardsSet.Offer until the agent takes/skips and proceeds, so
@@ -235,6 +239,26 @@ public sealed class GameHost
         && Selector.Pending is null
         && TreasureSync.CurrentRelics is { Count: > 0 };
 
+    /// <summary>The current room as a rest site, or null when not standing in one.</summary>
+    internal MegaCrit.Sts2.Core.Rooms.RestSiteRoom? CurrentRestSiteRoom =>
+        RunManager.Instance.IsInProgress && !InCombat
+            ? Run.CurrentRoom as MegaCrit.Sts2.Core.Rooms.RestSiteRoom
+            : null;
+
+    private MegaCrit.Sts2.Core.Multiplayer.Game.RestSiteSynchronizer RestSiteSync =>
+        RunManager.Instance.RestSiteSynchronizer;
+
+    /// <summary>
+    /// True while at a rest site that still has at least one usable action. Choosing one consumes
+    /// the rest action (the game clears the remaining options), after which the player is back on
+    /// the map.
+    /// </summary>
+    internal bool HasRestChoice =>
+        CurrentRestSiteRoom is not null
+        && PendingRewards is null
+        && Selector.Pending is null
+        && RestSiteSync.GetLocalOptions().Any(o => o.IsEnabled);
+
     /// <summary>
     /// Play a card from hand at an optional target via the canonical player path
     /// (CardModel.TryManualPlay), which validates targeting, spends energy, and runs
@@ -353,6 +377,12 @@ public sealed class GameHost
         if (HasTreasureChoice)
         {
             return BuildTreasureOptions(player);
+        }
+
+        // A rest site: choose a rest action (rest/smith/…).
+        if (HasRestChoice)
+        {
+            return BuildRestOptions(player);
         }
 
         // An event room awaiting a choice (e.g. the opening Neow ancient event).
@@ -527,6 +557,26 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Build the options for a rest site: one per usable (enabled) option, carrying its live index
+    /// so <see cref="Apply"/> can resolve it via <c>RestSiteSynchronizer.ChooseLocalOption</c>.
+    /// Disabled options (e.g. Smith with no upgradable cards) are omitted.
+    /// </summary>
+    private IReadOnlyList<GameOption> BuildRestOptions(Player player)
+    {
+        var options = new List<GameOption>();
+        System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption> rest =
+            RestSiteSync.GetLocalOptions();
+        for (int i = 0; i < rest.Count; i++)
+        {
+            if (rest[i].IsEnabled)
+            {
+                options.Add(GameOption.ChooseRestOption(player, i, rest[i].OptionId));
+            }
+        }
+        return options;
+    }
+
+    /// <summary>
     /// Resolve a chosen option against the live game and pump to quiescence. The option
     /// must have come from <see cref="ListOptions(ulong)"/> for the current state.
     /// </summary>
@@ -553,11 +603,19 @@ public sealed class GameHost
                 }
                 Selector.Resolve(option.SelectedCardModels!);
                 // The effect resumes on the thread pool; pump until it finishes or blocks again.
-                // A choice raised mid-event resumes an event-option task rather than the combat
-                // action queue, so pump the matching surface.
+                // A choice raised mid-event or mid-rest-action resumes that effect's task rather
+                // than the combat action queue, so pump the matching surface.
                 if (InCombat)
                 {
                     PumpCombatUntilIdleOrChoice();
+                }
+                else if (_restChoiceTask is { IsCompleted: false } restTask)
+                {
+                    PumpRoomTaskUntilIdleOrChoice(restTask);
+                    if (_restChoiceTask.IsCompleted)
+                    {
+                        _restChoiceTask = null;
+                    }
                 }
                 else
                 {
@@ -578,6 +636,9 @@ public sealed class GameHost
                 break;
             case OptionKind.SkipTreasure:
                 PickTreasureRelic(null);
+                break;
+            case OptionKind.ChooseRestOption:
+                ChooseRestOption(option.RestOptionIndex!.Value);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(option), option.Kind, "Unknown option kind.");
@@ -849,6 +910,30 @@ public sealed class GameHost
         if (!EffectSuspended)
         {
             DrainActionQueue();
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Rest sites. Entering a RestSiteRoom calls RestSiteSynchronizer.BeginRestSite (generating the
+    // rest/smith options). Unlike treasure, the action resolves directly through the synchronizer —
+    // ChooseLocalOption runs the option's effect (heal, or Smith's deck upgrade) — so there is no
+    // UI logic-half to reproduce. Smith raises a card choice through the same selector seam as
+    // combat; Heal's (usually empty) reward offer goes through the custom-reward gate. After a
+    // successful choice the game clears the remaining options, leaving the player on the map.
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Choose the rest-site option at <paramref name="index"/> (into the synchronizer's live option
+    /// list). The option's effect runs as a task; pump it until it finishes or suspends on a card
+    /// choice (Smith) so the choice surfaces instead of deadlocking.
+    /// </summary>
+    private void ChooseRestOption(int index)
+    {
+        _restChoiceTask = RestSiteSync.ChooseLocalOption(index);
+        PumpRoomTaskUntilIdleOrChoice(_restChoiceTask);
+        if (_restChoiceTask.IsCompleted)
+        {
+            _restChoiceTask = null;
         }
     }
 
