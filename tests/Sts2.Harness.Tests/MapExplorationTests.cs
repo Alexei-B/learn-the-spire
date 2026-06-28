@@ -17,7 +17,7 @@ public sealed class MapExplorationTests
     public MapExplorationTests(ITestOutputHelper output) => _out = output;
 
     [Fact]
-    public void Map_IsReadable_AndCanMoveIntoFirstRoom()
+    public async Task Map_IsReadable_AndCanMoveIntoFirstRoom()
     {
         GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
         host.EnterFirstRoom();
@@ -42,14 +42,13 @@ public sealed class MapExplorationTests
         _out.WriteLine($"Moving to ({chosen.coord.col},{chosen.coord.row}) {chosen.PointType}");
 
         Task move = Task.Run(() => host.MoveTo(chosen.coord));
-        bool finished = move.Wait(TimeSpan.FromSeconds(20));
-        if (!finished)
+        try
+        {
+            await move.WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        catch (TimeoutException)
         {
             Assert.Fail("MoveTo did not return within 20s.");
-        }
-        if (move.IsFaulted)
-        {
-            throw move.Exception!.Flatten().InnerExceptions.First();
         }
 
         _out.WriteLine($"After move: CurrentRoom={rs.CurrentRoom?.GetType().Name} curCoord={rs.CurrentMapCoord} combatInProgress={CombatManager.Instance.IsInProgress}");

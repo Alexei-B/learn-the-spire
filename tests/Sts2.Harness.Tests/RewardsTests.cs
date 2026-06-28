@@ -26,14 +26,11 @@ public sealed class RewardsTests
     public RewardsTests(ITestOutputHelper output) => _out = output;
 
     [Fact]
-    public void WinningCombat_OffersRewards_TakeGoldAndCard_ThenProceedToMap()
+    public async Task WinningCombat_OffersRewards_TakeGoldAndCard_ThenProceedToMap()
     {
-        var t = Task.Run(RunRewardsFlow);
-        Assert.True(t.Wait(TimeSpan.FromSeconds(90)), "rewards flow did not finish within 90s");
-        if (t.IsFaulted)
-        {
-            throw t.Exception!.Flatten().InnerExceptions.First();
-        }
+        // The harness drives the game with blocking calls, so run it off the test thread and
+        // bound it with a non-blocking timeout (await rethrows any failure unwrapped).
+        await Task.Run(RunRewardsFlow).WaitAsync(TimeSpan.FromSeconds(90));
     }
 
     private void RunRewardsFlow()
@@ -102,14 +99,9 @@ public sealed class RewardsTests
     }
 
     [Fact]
-    public void ProceedingFromRewards_SkipsUntakenCard_LeavingDeckUnchanged()
+    public async Task ProceedingFromRewards_SkipsUntakenCard_LeavingDeckUnchanged()
     {
-        var t = Task.Run(RunSkipCardReward);
-        Assert.True(t.Wait(TimeSpan.FromSeconds(90)), "skip-card flow did not finish within 90s");
-        if (t.IsFaulted)
-        {
-            throw t.Exception!.Flatten().InnerExceptions.First();
-        }
+        await Task.Run(RunSkipCardReward).WaitAsync(TimeSpan.FromSeconds(90));
     }
 
     private void RunSkipCardReward()

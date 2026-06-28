@@ -23,14 +23,9 @@ public sealed class ChoiceInjectionTests
     public ChoiceInjectionTests(ITestOutputHelper output) => _out = output;
 
     [Fact]
-    public void Discovery_SurfacesChoice_AndApplyResolvesIt()
+    public async Task Discovery_SurfacesChoice_AndApplyResolvesIt()
     {
-        var t = Task.Run(RunDiscoveryChoice);
-        Assert.True(t.Wait(TimeSpan.FromSeconds(60)), "choice flow did not finish within 60s");
-        if (t.IsFaulted)
-        {
-            throw t.Exception!.Flatten().InnerExceptions.First();
-        }
+        await Task.Run(RunDiscoveryChoice).WaitAsync(TimeSpan.FromSeconds(60));
     }
 
     private void RunDiscoveryChoice()
@@ -83,14 +78,9 @@ public sealed class ChoiceInjectionTests
     }
 
     [Fact]
-    public void Skipping_AChoice_AddsNothing()
+    public async Task Skipping_AChoice_AddsNothing()
     {
-        var t = Task.Run(RunDiscoverySkip);
-        Assert.True(t.Wait(TimeSpan.FromSeconds(60)), "skip flow did not finish within 60s");
-        if (t.IsFaulted)
-        {
-            throw t.Exception!.Flatten().InnerExceptions.First();
-        }
+        await Task.Run(RunDiscoverySkip).WaitAsync(TimeSpan.FromSeconds(60));
     }
 
     private void RunDiscoverySkip()

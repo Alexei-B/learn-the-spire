@@ -19,7 +19,7 @@ public sealed class FullCombatTests
     public FullCombatTests(ITestOutputHelper output) => _out = output;
 
     [Fact]
-    public void GreedyAutoCombat_FinishesTheFirstFight()
+    public async Task GreedyAutoCombat_FinishesTheFirstFight()
     {
         GameHost host = GameHost.StartNewRun(seed: "TESTSEED");
         host.EnterFirstRoom();
@@ -30,13 +30,9 @@ public sealed class FullCombatTests
         Assert.True(host.InCombat);
 
         var t = Task.Run(() => PlayUntilCombatEnds(host, maxTurns: 50));
-        Assert.True(t.Wait(TimeSpan.FromSeconds(60)), "combat did not finish within 60s");
-        if (t.IsFaulted)
-        {
-            throw t.Exception!.Flatten().InnerExceptions.First();
-        }
+        int turns = await t.WaitAsync(TimeSpan.FromSeconds(60));
 
-        _out.WriteLine($"Combat ended after {t.Result} turns. inCombat={host.InCombat} room={rs.CurrentRoom?.GetType().Name} playerHp={rs.Players[0].Creature.CurrentHp}/{rs.Players[0].Creature.MaxHp}");
+        _out.WriteLine($"Combat ended after {turns} turns. inCombat={host.InCombat} room={rs.CurrentRoom?.GetType().Name} playerHp={rs.Players[0].Creature.CurrentHp}/{rs.Players[0].Creature.MaxHp}");
 
         Assert.False(host.InCombat, "combat should have ended");
         // Player should have survived this easy opening fight.

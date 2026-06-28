@@ -100,19 +100,15 @@ public sealed class PublicApiTests
     }
 
     [Fact]
-    public void ListOptionsApply_DrivesAFullCombatToVictory()
+    public async Task ListOptionsApply_DrivesAFullCombatToVictory()
     {
         GameHost host = MoveIntoFirstCombat("TESTSEED");
 
         var t = Task.Run(() => PlayGreedily(host, maxTurns: 50));
-        Assert.True(t.Wait(TimeSpan.FromSeconds(60)), "combat did not finish within 60s");
-        if (t.IsFaulted)
-        {
-            throw t.Exception!.Flatten().InnerExceptions.First();
-        }
+        int turns = await t.WaitAsync(TimeSpan.FromSeconds(60));
 
         GameState end = host.GetState();
-        _out.WriteLine($"after {t.Result} turns: phase={end.Phase} playerHp={end.Players[0].CurrentHp}");
+        _out.WriteLine($"after {turns} turns: phase={end.Phase} playerHp={end.Players[0].CurrentHp}");
         Assert.False(host.InCombat, "combat should have ended");
         Assert.True(end.Players[0].CurrentHp > 0, "player should have survived the opening fight");
     }
