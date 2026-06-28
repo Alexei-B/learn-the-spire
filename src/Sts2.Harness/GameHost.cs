@@ -24,6 +24,17 @@ public sealed class GameHost
     public string Seed { get; private init; } = "";
 
     /// <summary>
+    /// The harness-controlled card selector installed as the game's <c>CardSelectCmd.Selector</c>.
+    /// Surfaces mid-effect card choices so they resolve through <see cref="ListOptions(ulong)"/>
+    /// / <see cref="Apply"/> instead of a UI screen.
+    /// </summary>
+    internal HarnessCardSelector Selector { get; private init; } = null!;
+
+    // The CardSelectCmd selector stack is process-wide; track our scope so a new run can
+    // replace the previous run's selector cleanly.
+    private static IDisposable? _selectorScope;
+
+    /// <summary>
     /// Create and start a fresh single-player run with the given seed.
     /// Mirrors the game's own NSceneBootstrapper flow, minus all UI/asset steps.
     /// </summary>
@@ -56,7 +67,13 @@ public sealed class GameHost
         RunManager.Instance.SetUpNewSingleplayer(runState, shouldSave: false);
         RunManager.Instance.Launch();
 
-        return new GameHost { Run = runState, Seed = seed };
+        // Install our card selector so mid-effect choices route to the harness. Disposing the
+        // previous scope clears the process-wide selector stack before we claim it.
+        _selectorScope?.Dispose();
+        var selector = new HarnessCardSelector();
+        _selectorScope = MegaCrit.Sts2.Core.Commands.CardSelectCmd.UseSelector(selector);
+
+        return new GameHost { Run = runState, Seed = seed, Selector = selector };
     }
 
     /// <summary>
@@ -99,8 +116,13 @@ public sealed class GameHost
     public bool PlayCard(MegaCrit.Sts2.Core.Models.CardModel card, MegaCrit.Sts2.Core.Entities.Creatures.Creature? target)
     {
         bool enqueued = card.TryManualPlay(target);
-        DrainActionQueue();
-        return enqueued;
+        if (!enqueued)
+        {
+            return false;
+        }
+        // The play runs on the thread pool; pump until it finishes or blocks on a card choice.
+        PumpCombatUntilIdleOrChoice();
+        return true;
     }
 
     /// <summary>
@@ -135,6 +157,14 @@ public sealed class GameHost
     {
         Player player = GetPlayer(playerId);
         var options = new List<GameOption>();
+
+        // A mid-effect card choice takes precedence over everything else: until it is
+        // resolved, the game is blocked and no other action can be taken.
+        PendingChoice? pending = Selector.Pending;
+        if (pending is not null)
+        {
+            return BuildChoiceOptions(player, pending);
+        }
 
         if (InCombat)
         {
@@ -184,6 +214,43 @@ public sealed class GameHost
     public IReadOnlyList<GameOption> ListOptions() => ListOptions(Run.Players[0].NetId);
 
     /// <summary>
+    /// Build the options that resolve a pending card choice. Single-select choices enumerate
+    /// one option per card (plus a skip when the choice allows selecting none). Multi-select
+    /// choices (min &gt; 1) currently offer a single exact-minimum selection so play never
+    /// blocks; full subset enumeration is future work.
+    /// </summary>
+    private static IReadOnlyList<GameOption> BuildChoiceOptions(Player player, PendingChoice pending)
+    {
+        var options = new List<GameOption>();
+        var views = pending.Options
+            .Select(c => GameStateProjection.ProjectCard(c, canPlay: false))
+            .ToList();
+
+        if (pending.MinSelect <= 1)
+        {
+            for (int i = 0; i < pending.Options.Count; i++)
+            {
+                options.Add(GameOption.SelectCardsOption(
+                    player, new[] { pending.Options[i] }, new[] { views[i] }));
+            }
+            if (pending.MinSelect == 0)
+            {
+                options.Add(GameOption.SelectCardsOption(
+                    player,
+                    System.Array.Empty<MegaCrit.Sts2.Core.Models.CardModel>(),
+                    System.Array.Empty<CardView>()));
+            }
+        }
+        else
+        {
+            var cards = pending.Options.Take(pending.MinSelect).ToList();
+            var cardViews = views.Take(pending.MinSelect).ToList();
+            options.Add(GameOption.SelectCardsOption(player, cards, cardViews));
+        }
+        return options;
+    }
+
+    /// <summary>
     /// Resolve a chosen option against the live game and pump to quiescence. The option
     /// must have come from <see cref="ListOptions(ulong)"/> for the current state.
     /// </summary>
@@ -203,6 +270,15 @@ public sealed class GameHost
             case OptionKind.MoveTo:
                 MoveTo(option.MapCoord!.Value);
                 break;
+            case OptionKind.SelectCards:
+                if (Selector.Pending is null)
+                {
+                    throw new InvalidOperationException("No card choice is pending to resolve.");
+                }
+                Selector.Resolve(option.SelectedCardModels!);
+                // The effect resumes on the thread pool; pump until it finishes or blocks again.
+                PumpCombatUntilIdleOrChoice();
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(option), option.Kind, "Unknown option kind.");
         }
@@ -211,6 +287,34 @@ public sealed class GameHost
     private Player GetPlayer(ulong playerId) =>
         Run.Players.FirstOrDefault(p => p.NetId == playerId)
             ?? throw new ArgumentException($"No player with net id {playerId} in this run.", nameof(playerId));
+
+    private enum CombatPumpResult
+    {
+        /// <summary>The action queue drained; nothing more to resolve.</summary>
+        Idle,
+
+        /// <summary>The current effect is blocked on a card choice (see <see cref="Selector"/>).</summary>
+        ChoicePending,
+    }
+
+    /// <summary>
+    /// Drive the action queue until it either drains or the running effect blocks on a card
+    /// choice. The effect runs on a thread-pool continuation, so we wait on whichever happens
+    /// first: the queue-drained task or the selector's pending-choice signal.
+    /// </summary>
+    private CombatPumpResult PumpCombatUntilIdleOrChoice(int timeoutMs = 10000)
+    {
+        System.Threading.Tasks.Task drain = RunManager.Instance.ActionExecutor.FinishedExecutingActions();
+        System.Threading.Tasks.Task pending = Selector.PendingSignal;
+        int idx = System.Threading.Tasks.Task.WaitAny(new[] { drain, pending }, timeoutMs);
+        if (idx < 0)
+        {
+            throw new System.TimeoutException(
+                "Timed out pumping the action queue (waiting for the queue to drain or a card choice).");
+        }
+        // If the queue drained there is no suspended effect, so no choice can be pending.
+        return Selector.Pending is not null ? CombatPumpResult.ChoicePending : CombatPumpResult.Idle;
+    }
 
     /// <summary>Drive the game's action executor until its queue is empty.</summary>
     private static void DrainActionQueue() =>

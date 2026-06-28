@@ -52,9 +52,17 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 - **Public API** (the read/list/apply trio, built on those primitives):
   `GetState()` → immutable serializable `GameState` DTOs (`GameState.cs`,
   projected by `GameStateProjection`); `ListOptions(playerId)` → `IReadOnlyList<GameOption>`
-  (combat card-plays × legal targets + end-turn, or map moves); `Apply(GameOption)` →
-  resolves the option and pumps to quiescence. `GameOption` carries a serializable
-  description plus internal live references for `Apply`.
+  (combat card-plays × legal targets + end-turn, map moves, or — when a choice is pending —
+  `SelectCards` options); `Apply(GameOption)` → resolves the option and pumps to quiescence.
+  `GameOption` carries a serializable description plus internal live references for `Apply`.
+- **Choice-context injection** (`HarnessCardSelector`): the game's `CardSelectCmd.Selector`
+  seam is replaced with a harness selector. When an effect requests a mid-effect card
+  selection (discover/scry/exhaust/search) it calls `GetSelectedCards`, which records a
+  `PendingChoice` and blocks the effect's thread-pool task. The harness's combat pump waits
+  on whichever comes first — queue drained, or a choice pending — so a blocked choice returns
+  control instead of deadlocking; `GetState`/`ListOptions` then surface it (`GamePhase.Choice`)
+  and `Apply` resolves it, resuming the effect. Post-combat card-reward selection
+  (`GetSelectedCardReward`) is stubbed to pick the first option until rewards land (M2).
 - **Async→sync pump**: card plays drain the action queue
   (`ActionExecutor.FinishedExecutingActions`); the enemy turn resolves on fire-and-forget
   tasks, so `EndTurn` waits on a `TaskCompletionSource` wired to combat events
@@ -76,7 +84,8 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Choice-context injection (mid-effect decisions surfaced through `ListOptions`/`Apply`);
-rewards, events, shops, rest, treasure, elites/bosses, acts 2–3, ascension, local
-multiplayer. The `GameState` read model and `ListOptions`/`Apply` exist but only span the
-combat + map-move surface so far. → `docs/plans/`.
+Rewards, events, shops, rest, treasure, elites/bosses, acts 2–3, ascension, local
+multiplayer. The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
+surface plus in-combat card-choice injection; still missing: card-reward selection,
+enemy-turn-triggered choices, and full multi-select subset enumeration (min &gt; 1 currently
+offers a single exact-minimum selection). → `docs/plans/`.

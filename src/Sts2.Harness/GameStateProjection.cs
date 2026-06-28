@@ -22,7 +22,8 @@ internal static class GameStateProjection
     {
         RunState run = host.Run;
         CombatState? combat = host.Combat;
-        GamePhase phase = DeterminePhase(host, run);
+        PendingChoice? pending = host.Selector.Pending;
+        GamePhase phase = DeterminePhase(host, run, pending);
 
         return new GameState
         {
@@ -34,10 +35,11 @@ internal static class GameStateProjection
             Players = run.Players.Select(p => ProjectPlayer(p, combat)).ToList(),
             Combat = combat is null ? null : ProjectCombat(combat),
             Map = ProjectMap(run),
+            PendingChoice = pending is null ? null : ProjectPendingChoice(pending),
         };
     }
 
-    private static GamePhase DeterminePhase(GameHost host, RunState run)
+    private static GamePhase DeterminePhase(GameHost host, RunState run, PendingChoice? pending)
     {
         if (!RunManager.Instance.IsInProgress)
         {
@@ -46,6 +48,10 @@ internal static class GameStateProjection
         if (run.IsGameOver)
         {
             return GamePhase.GameOver;
+        }
+        if (pending is not null)
+        {
+            return GamePhase.Choice;
         }
         if (host.InCombat)
         {
@@ -105,6 +111,14 @@ internal static class GameStateProjection
             CanPlay = canPlay,
         };
     }
+
+    private static PendingChoiceView ProjectPendingChoice(PendingChoice pending) =>
+        new()
+        {
+            Options = pending.Options.Select(c => ProjectCard(c, canPlay: false)).ToList(),
+            MinSelect = pending.MinSelect,
+            MaxSelect = pending.MaxSelect,
+        };
 
     private static PowerView ProjectPower(PowerModel power) =>
         new() { PowerId = power.Id.Entry, Amount = power.Amount };

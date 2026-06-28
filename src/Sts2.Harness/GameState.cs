@@ -22,6 +22,13 @@ public enum GamePhase
     /// <summary>In a battle.</summary>
     Combat,
 
+    /// <summary>
+    /// The game is blocked on a mid-effect card choice (discover, scry, exhaust, …).
+    /// Resolve it via the <see cref="OptionKind.SelectCards"/> options from
+    /// <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    Choice,
+
     /// <summary>The run has ended with all players dead.</summary>
     GameOver,
 
@@ -53,6 +60,22 @@ public sealed record GameState
 
     /// <summary>The current act's map graph and the player's position on it.</summary>
     public MapView? Map { get; init; }
+
+    /// <summary>A mid-effect card choice the game is blocked on, or null if none.</summary>
+    public PendingChoiceView? PendingChoice { get; init; }
+}
+
+/// <summary>A mid-effect card choice the game is waiting on (e.g. discover/exhaust).</summary>
+public sealed record PendingChoiceView
+{
+    /// <summary>The cards to choose from, in the same order as the resolving options.</summary>
+    public required IReadOnlyList<CardView> Options { get; init; }
+
+    /// <summary>Minimum cards to select; 0 means the choice may be skipped.</summary>
+    public required int MinSelect { get; init; }
+
+    /// <summary>Maximum cards that may be selected.</summary>
+    public required int MaxSelect { get; init; }
 }
 
 /// <summary>Run-level state for one player (persists across combats).</summary>

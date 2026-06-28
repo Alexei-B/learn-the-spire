@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Map;
@@ -16,6 +18,9 @@ public enum OptionKind
 
     /// <summary>Move to a reachable map coordinate, entering its room.</summary>
     MoveTo,
+
+    /// <summary>Resolve a pending mid-effect card choice with a (possibly empty) set of cards.</summary>
+    SelectCards,
 }
 
 /// <summary>
@@ -42,11 +47,15 @@ public sealed class GameOption
     /// <summary>The destination for <see cref="OptionKind.MoveTo"/>; null otherwise.</summary>
     public Coord? Coord { get; }
 
+    /// <summary>The cards this <see cref="OptionKind.SelectCards"/> option will select; empty = skip.</summary>
+    public IReadOnlyList<CardView>? SelectedCards { get; }
+
     // Live references used by GameHost.Apply. Not part of the serializable surface.
     internal CardModel? CardModel { get; }
     internal Creature? Target { get; }
     internal MapCoord? MapCoord { get; }
     internal Player? Player { get; }
+    internal IReadOnlyList<CardModel>? SelectedCardModels { get; }
 
     private GameOption(
         OptionKind kind,
@@ -55,10 +64,12 @@ public sealed class GameOption
         CardView? card = null,
         uint? targetCombatId = null,
         Coord? coord = null,
+        IReadOnlyList<CardView>? selectedCards = null,
         CardModel? cardModel = null,
         Creature? target = null,
         MapCoord? mapCoord = null,
-        Player? player = null)
+        Player? player = null,
+        IReadOnlyList<CardModel>? selectedCardModels = null)
     {
         Kind = kind;
         PlayerId = playerId;
@@ -66,10 +77,12 @@ public sealed class GameOption
         Card = card;
         TargetCombatId = targetCombatId;
         Coord = coord;
+        SelectedCards = selectedCards;
         CardModel = cardModel;
         Target = target;
         MapCoord = mapCoord;
         Player = player;
+        SelectedCardModels = selectedCardModels;
     }
 
     internal static GameOption PlayCardOption(Player player, CardModel cardModel, CardView card, Creature? target)
@@ -89,4 +102,15 @@ public sealed class GameOption
     internal static GameOption MoveToOption(Player player, MapCoord coord) =>
         new(OptionKind.MoveTo, player.NetId, $"Move to ({coord.col},{coord.row})",
             coord: Sts2.Harness.Coord.From(coord), mapCoord: coord, player: player);
+
+    internal static GameOption SelectCardsOption(
+        Player player, IReadOnlyList<CardModel> cardModels, IReadOnlyList<CardView> cards)
+    {
+        string desc = cardModels.Count == 0
+            ? "Skip selection"
+            : "Select " + string.Join(", ", cardModels.Select(c => c.Id.Entry));
+        return new GameOption(
+            OptionKind.SelectCards, player.NetId, desc,
+            selectedCards: cards, selectedCardModels: cardModels, player: player);
+    }
 }

@@ -27,10 +27,14 @@ Turn the imperative `GameHost` primitives into the intended clean interface.
   Potions and screen choices follow with their rooms.
 - **`Apply(option)`** — _done_: `GameHost.Apply` resolves the option via the existing
   primitives and pumps to quiescence.
-- **Choice-context injection** — _not started_: replace the player `PlayerChoiceContext`
-  with a harness-controlled one so mid-effect decisions (discover, card-select, etc.)
-  surface through `ListOptions`/`Apply` instead of blocking. This is the central new
-  mechanism and the main remaining M1 work.
+- **Choice-context injection** — _done (in-combat card selections)_: `HarnessCardSelector`
+  replaces the game's `CardSelectCmd.Selector`, so mid-effect card selections (discover,
+  exhaust, search, scry, …) record a `PendingChoice`, surface through `GetState`
+  (`GamePhase.Choice`) / `ListOptions` (`SelectCards` options), and resolve via `Apply`. The
+  combat pump waits on queue-drain-or-choice so a blocked effect returns control instead of
+  deadlocking. Remaining: post-combat card-reward selection (with M2 rewards), enemy-turn-
+  triggered player choices, and full multi-select subset enumeration (min &gt; 1 currently
+  offers one exact-minimum selection).
 
 ## M2 — Combat completeness
 - **Battle rewards**: gold, potions, card reward (pick/skip), relic; the post-combat
