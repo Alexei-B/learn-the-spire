@@ -43,9 +43,7 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 - **Boot** (`GameRuntime.EnsureInitialized`): mirrors the logic half of the game's
   `OneTimeInitialization`, skipping atlas/UI. Sets `TestMode.IsOn`,
   `NonInteractiveMode` (kills animation/delay/frame waits), mock saves, `ModelDb.Init`,
-  etc. See the file for the exact ordered sequence. Also raises the game's stdout log
-  threshold to `Warn` (it otherwise logs every card play/monster move/reward at `Info`,
-  flooding test/sim output); `Warn`+`Error` still surface.
+  etc. See the file for the exact ordered sequence.
 - **Unlocks**: a run is created with `UnlockState.all` (every epoch unlocked), so all
   content (cards/relics/events) is available and `StartedWithNeow` is true — the run opens on
   the Neow ancient event, like a fully-progressed save. No `SaveManager` epoch override is
@@ -82,6 +80,16 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   selector first for card rewards); `ProceedFromRewards` calls `SkipLocalRewardsSet` for any
   untaken rewards and returns to the map. All driven on the harness thread; the executor is
   unpaused between combat-end and the next room, so reward effects run.
+- **Custom rewards** (relic/event `RewardsCmd.OfferCustom`, e.g. Kaleidoscope's two bonus card
+  rewards): these go through `RewardsSet.Offer`, which in `TestMode` auto-takes every reward unless
+  a `RewardsSet.testSelector` is installed. The harness installs one (`OnCustomRewardsOffered`):
+  it surfaces the set as `GamePhase.Reward` (same `RewardsView`/`TakeReward`/`ProceedFromRewards`
+  options as battle rewards) and **blocks the offering effect's task** until the agent resolves —
+  the same suspend-and-surface pattern as the card-choice selector. `ProceedFromRewards`
+  distinguishes the two: for a custom set it completes the set, unblocks the effect, and pumps it
+  to quiescence (the effect then continues — e.g. the Neow option finishes); for a post-combat set
+  it just returns to the map. The pumps wait on the custom-reward signal too, so a suspended offer
+  returns control instead of deadlocking.
 - **Events** (`GamePhase.Event`): an out-of-combat event room (the opening Neow ancient event,
   or a regular map event) surfaces its `EventModel.CurrentOptions` as `ChooseEventOption` options
   (unlocked, non-proceed ones, projected as `EventView`). `Apply` calls
@@ -105,13 +113,11 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   manual-play path for correctness.
 - **The shim is incomplete by design** — each new system surfaces a few more Godot
   members / gated visual branches to stub. Expected cost of breadth.
-- **`OfferCustom` rewards auto-take in TestMode**: `RewardsSet.Offer()` (used by relic/event
-  custom rewards like Kaleidoscope's bonus cards, Orrery, Calling Bell) **auto-selects every
-  reward** when `TestMode.IsOn` (no UI, no `testSelector`) — e.g. taking Kaleidoscope at Neow
-  silently adds two cards rather than letting the agent choose. The post-combat path avoids this
-  by using `GenerateForRoomEnd` + `BeginRewardsSet` instead of `Offer`. Surfacing custom reward
-  sets through the API (via the `RewardsSet.testSelector` seam) is not built yet; until then test
-  helpers pick blessings whose relics have no upon-pickup effect.
+- **`OfferCustom` rewards would auto-take in TestMode**: `RewardsSet.Offer()` (used by relic/event
+  custom rewards like Kaleidoscope's bonus cards) **auto-selects every reward** when `TestMode.IsOn`
+  if no `RewardsSet.testSelector` is installed. The harness installs one (see Custom rewards under
+  Key mechanisms) so the agent chooses instead. The post-combat path is separate — it uses
+  `GenerateForRoomEnd` + `BeginRewardsSet`, not `Offer`.
 
 ## Determinism
 
@@ -123,8 +129,8 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 Shops, rest, treasure, deck-management screens, elites/bosses, acts 2–3, ascension, local
 multiplayer. The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
 surface, in-combat card-choice injection, the post-combat battle-rewards screen, and event rooms
-(opening ancient + regular-event path). Still missing: events that start combat or raise mid-event
-card choices (exercised end-to-end), multi-page events, the event `WillKillPlayer` hint;
-card-reward alternatives/reroll and custom (event/relic) reward sets; enemy-turn-triggered choices;
-and full multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum
-selection). → `docs/plans/`.
+(opening ancient + regular-event path), and custom relic/event reward sets (`OfferCustom`). Still
+missing: events that start combat or raise mid-event card choices (exercised end-to-end),
+multi-page events, the event `WillKillPlayer` hint; card-reward alternatives/reroll;
+enemy-turn-triggered choices; and full multi-select subset enumeration (min &gt; 1 currently offers
+a single exact-minimum selection). → `docs/plans/`.

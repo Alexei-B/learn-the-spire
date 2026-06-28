@@ -45,8 +45,11 @@ Turn the imperative `GameHost` primitives into the intended clean interface.
   `TakeReward` options (card rewards expand to one option per offered card; picking one stages it
   through the `GetSelectedCardReward` seam) and a `ProceedFromRewards` option that skips any
   untaken rewards and returns to the map. Surfaced via `GetState` (`RewardsView`) /
-  `ListOptions`, resolved by `Apply`. Remaining: card-reward alternatives (Skip-as-heal/sacrifice
-  relics), reroll, and event/relic custom reward sets (Orrery, Calling Bell, …).
+  `ListOptions`, resolved by `Apply`. Relic/event **custom reward sets** (`RewardsCmd.OfferCustom`,
+  e.g. Kaleidoscope's bonus card rewards) are also surfaced now, via the `RewardsSet.testSelector`
+  seam: the offering effect is suspended until the agent takes/skips and proceeds (otherwise `Offer`
+  auto-takes them all in TestMode). Remaining: card-reward alternatives (Skip-as-heal/sacrifice
+  relics), reroll, and the more exotic reward sets (Orrery, Calling Bell, …) as encountered.
 - **Potions**: use (targeted/untargeted), discard.
 - **Mid-combat player choices**: discover/scry/select-card/choose-enemy effects via the
   injected choice context.

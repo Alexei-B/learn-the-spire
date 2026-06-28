@@ -43,6 +43,36 @@ public sealed class GameHost
     // per fight even while the player lingers on the rewards screen before moving on.
     private MegaCrit.Sts2.Core.Rooms.AbstractRoom? _rewardedRoom;
 
+    // Custom rewards offered mid-effect by a relic/event (RewardsCmd.OfferCustom, e.g.
+    // Kaleidoscope's two bonus card rewards). Unlike a post-combat set, the offering effect's
+    // task is *suspended* inside RewardsSet.Offer until the agent takes/skips and proceeds, so
+    // the agent makes the same explicit take-or-skip choice rather than the rewards being
+    // silently auto-taken (which is what RewardsSet.Offer does in TestMode without a selector).
+    private readonly object _rewardGate = new();
+    private System.Threading.Tasks.TaskCompletionSource? _customRewardResolve;
+    private System.Threading.Tasks.TaskCompletionSource _customRewardSignal = NewSignal();
+
+    private static System.Threading.Tasks.TaskCompletionSource NewSignal() =>
+        new(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private System.Threading.Tasks.Task CustomRewardSignal
+    {
+        get { lock (_rewardGate) { return _customRewardSignal.Task; } }
+    }
+
+    /// <summary>True while a custom (blocking) reward set is awaiting the agent's resolution.</summary>
+    private bool CustomRewardPending
+    {
+        get { lock (_rewardGate) { return _customRewardResolve is not null; } }
+    }
+
+    /// <summary>
+    /// True when an effect is suspended waiting on the agent — either a mid-effect card choice or
+    /// a custom rewards set. The combat/event pumps return control (rather than draining) so the
+    /// suspended decision surfaces instead of deadlocking.
+    /// </summary>
+    private bool EffectSuspended => Selector.Pending is not null || CustomRewardPending;
+
     /// <summary>
     /// Create and start a fresh single-player run with the given seed.
     /// Mirrors the game's own NSceneBootstrapper flow, minus all UI/asset steps.
@@ -84,7 +114,38 @@ public sealed class GameHost
         var selector = new HarnessCardSelector();
         _selectorScope = MegaCrit.Sts2.Core.Commands.CardSelectCmd.UseSelector(selector);
 
-        return new GameHost { Run = runState, Seed = seed, Selector = selector };
+        var host = new GameHost { Run = runState, Seed = seed, Selector = selector };
+
+        // Intercept relic/event custom reward sets (RewardsSet.Offer): without a selector the
+        // game auto-takes them all in TestMode. Route them through the harness so the agent
+        // chooses. The hook is process-wide; the latest run owns it.
+        MegaCrit.Sts2.Core.Rewards.RewardsSet.testSelector = host.OnCustomRewardsOffered;
+
+        return host;
+    }
+
+    /// <summary>
+    /// The game's <c>RewardsSet.testSelector</c> seam: invoked by <c>RewardsSet.Offer</c> (used by
+    /// relic/event custom rewards) on the offering effect's thread-pool task. Surfaces the set as
+    /// <see cref="GamePhase.Reward"/> and blocks that task until the agent takes/skips and proceeds,
+    /// at which point <see cref="ProceedFromRewards"/> completes the returned task so the effect
+    /// resumes. Mirrors the card-choice injection (<see cref="HarnessCardSelector"/>).
+    /// </summary>
+    internal System.Threading.Tasks.Task OnCustomRewardsOffered(MegaCrit.Sts2.Core.Rewards.RewardsSet set)
+    {
+        System.Threading.Tasks.TaskCompletionSource resolve = NewSignal();
+        lock (_rewardGate)
+        {
+            if (PendingRewards is not null)
+            {
+                throw new InvalidOperationException(
+                    "A rewards set is already pending when a custom reward was offered.");
+            }
+            PendingRewards = set;
+            _customRewardResolve = resolve;
+            _customRewardSignal.TrySetResult();
+        }
+        return resolve.Task;
     }
 
     /// <summary>
@@ -489,8 +550,9 @@ public sealed class GameHost
 
     /// <summary>
     /// Leave the rewards screen, skipping any rewards not yet taken (mirrors clicking proceed:
-    /// the synchronizer marks the remaining rewards skipped and completes the set), and return
-    /// to the map.
+    /// the synchronizer marks the remaining rewards skipped and completes the set). For a
+    /// post-combat set this returns to the map; for a custom (relic/event) set it resumes the
+    /// effect that was suspended offering it, pumping it to quiescence.
     /// </summary>
     private void ProceedFromRewards()
     {
@@ -504,7 +566,37 @@ public sealed class GameHost
             sync.SkipLocalRewardsSet();
         }
         DrainActionQueue();
-        PendingRewards = null;
+
+        System.Threading.Tasks.TaskCompletionSource? resolve;
+        lock (_rewardGate)
+        {
+            resolve = _customRewardResolve;
+            _customRewardResolve = null;
+            PendingRewards = null;
+            if (resolve is not null)
+            {
+                _customRewardSignal = NewSignal();
+            }
+        }
+
+        if (resolve is null)
+        {
+            return; // post-combat terminal set: the player is back on the map.
+        }
+
+        // Custom set: the offering effect is suspended in RewardsSet.Offer awaiting this; the set
+        // is now completed, so unblock it and pump the effect to quiescence (it may finish, raise
+        // another choice, or — in combat — continue the action queue).
+        resolve.TrySetResult();
+        if (InCombat)
+        {
+            PumpCombatUntilIdleOrChoice();
+        }
+        else
+        {
+            PumpEventUntilIdleOrChoice();
+        }
+        TryOfferCombatRewards();
     }
 
     // ---------------------------------------------------------------------------------
@@ -537,15 +629,15 @@ public sealed class GameHost
     {
         System.Threading.Tasks.Task optionTasks =
             RunManager.Instance.EventSynchronizer.AwaitPendingOptionTasks();
-        System.Threading.Tasks.Task pending = Selector.PendingSignal;
-        int idx = System.Threading.Tasks.Task.WaitAny(new[] { optionTasks, pending }, timeoutMs);
+        int idx = System.Threading.Tasks.Task.WaitAny(
+            new[] { optionTasks, Selector.PendingSignal, CustomRewardSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(
-                "Timed out resolving an event option (waiting for it to finish or raise a card choice).");
+                "Timed out resolving an event option (waiting for it to finish, raise a card choice, or offer rewards).");
         }
-        // If no choice is pending the option finished; drain anything it enqueued.
-        if (Selector.Pending is null)
+        // If nothing is suspended the option finished; drain anything it enqueued.
+        if (!EffectSuspended)
         {
             DrainActionQueue();
         }
@@ -597,15 +689,15 @@ public sealed class GameHost
     private CombatPumpResult PumpCombatUntilIdleOrChoice(int timeoutMs = 10000)
     {
         System.Threading.Tasks.Task drain = RunManager.Instance.ActionExecutor.FinishedExecutingActions();
-        System.Threading.Tasks.Task pending = Selector.PendingSignal;
-        int idx = System.Threading.Tasks.Task.WaitAny(new[] { drain, pending }, timeoutMs);
+        int idx = System.Threading.Tasks.Task.WaitAny(
+            new[] { drain, Selector.PendingSignal, CustomRewardSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(
-                "Timed out pumping the action queue (waiting for the queue to drain or a card choice).");
+                "Timed out pumping the action queue (waiting for the queue to drain, a card choice, or rewards).");
         }
-        // If the queue drained there is no suspended effect, so no choice can be pending.
-        return Selector.Pending is not null ? CombatPumpResult.ChoicePending : CombatPumpResult.Idle;
+        // If the queue drained there is no suspended effect; otherwise a choice/reward is pending.
+        return EffectSuspended ? CombatPumpResult.ChoicePending : CombatPumpResult.Idle;
     }
 
     /// <summary>Drive the game's action executor until its queue is empty.</summary>
