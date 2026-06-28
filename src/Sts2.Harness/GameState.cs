@@ -57,6 +57,13 @@ public enum GamePhase
     RestSite,
 
     /// <summary>
+    /// In a merchant shop: cards/relics/potions to buy, a card-removal service, and the freedom
+    /// to leave by moving on. Resolve via the <see cref="OptionKind.BuyShopItem"/> options (and a
+    /// <see cref="OptionKind.MoveTo"/> to leave) from <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    Shop,
+
+    /// <summary>
     /// Playing the Crystal Sphere event minigame: spend divinations to uncover grid cells, fully
     /// revealing items to earn their rewards. Resolve via the
     /// <see cref="OptionKind.ClickCrystalSphereCell"/> / <see cref="OptionKind.SetCrystalSphereTool"/>
@@ -111,6 +118,9 @@ public sealed record GameState
     /// <summary>The rest-site options available, or null when not at a rest site.</summary>
     public RestSiteView? RestSite { get; init; }
 
+    /// <summary>The merchant shop inventory, or null when not in a shop.</summary>
+    public ShopView? Shop { get; init; }
+
     /// <summary>The Crystal Sphere minigame in progress, or null when not playing it.</summary>
     public CrystalSphereView? CrystalSphere { get; init; }
 }
@@ -158,6 +168,40 @@ public sealed record CrystalSphereItemView
 
     /// <summary>True once every cell of the footprint is uncovered (the reward is earned).</summary>
     public required bool Revealed { get; init; }
+}
+
+/// <summary>
+/// A merchant shop's inventory: the cards, relics and potions on offer, plus the card-removal
+/// service. Each item carries its price and whether the player can currently afford it. Only
+/// affordable, in-stock items surface as <see cref="OptionKind.BuyShopItem"/> options; this view
+/// lists the full inventory so an agent can see what is unaffordable too.
+/// </summary>
+public sealed record ShopView
+{
+    /// <summary>The player's current gold (mirrors <see cref="PlayerState.Gold"/> for convenience).</summary>
+    public required int Gold { get; init; }
+
+    /// <summary>Every still-stocked item on offer (cards/relics/potions + card removal).</summary>
+    public required IReadOnlyList<ShopItemView> Items { get; init; }
+}
+
+/// <summary>One purchasable entry in a shop.</summary>
+public sealed record ShopItemView
+{
+    /// <summary>The kind of item: "Card", "Relic", "Potion", or "CardRemoval".</summary>
+    public required string ItemType { get; init; }
+
+    /// <summary>The model id of the card/relic/potion, or "CardRemoval" for the removal service.</summary>
+    public required string ItemId { get; init; }
+
+    /// <summary>The current price in gold (after relic discounts like The Courier).</summary>
+    public required int Cost { get; init; }
+
+    /// <summary>True when the player has enough gold to buy it.</summary>
+    public required bool Affordable { get; init; }
+
+    /// <summary>The card on offer, for an item of type "Card"; null otherwise.</summary>
+    public CardView? Card { get; init; }
 }
 
 /// <summary>A rest site with the rest actions still available to choose.</summary>

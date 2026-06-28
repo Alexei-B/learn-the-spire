@@ -109,7 +109,19 @@ as the reference for what choices exist:
   upgradable cards) are omitted; after a successful action the game clears the rest, returning the
   player to the map. The Smith card choice resumes its suspended `ChooseLocalOption` task on
   `Apply(SelectCards)`. Tested via the same direct-jump-to-the-map-node approach as treasure.
-- **Shops** (inventory: cards/relics/potions, purchase, card-removal, exit).
+- **Shops** — _done_: entering a `MerchantRoom` builds the per-player `MerchantInventory` (cards/
+  relics/potions + a card-removal service); no synchronizer or UI logic-half runs on entry, so the
+  inventory simply exists. It surfaces as `GamePhase.Shop`/`ShopView` (every stocked item with its
+  price + affordability), with one `BuyShopItem` option per in-stock, affordable item plus the
+  reachable map moves to leave. `Apply` of a buy runs the entry's faithful purchase path
+  (`MerchantEntry.OnTryPurchaseWrapper`), which pays gold and grants the item through the same
+  commands as rewards (`CardPileCmd.Add`/`RelicCmd.Obtain`/`PotionCmd.TryToProcure`). The
+  **card-removal** service raises a deck card choice through the same `HarnessCardSelector` seam as
+  combat/Smith (surfaced as `GamePhase.Choice`, resolved by `Apply(SelectCards)`); on success the
+  harness marks the entry used (`SetUsed`, the logic half of the null `NMerchantCardRemoval`), so it
+  is single-use per shop. Relic hooks that change shop behaviour are exercised by **The Courier**
+  (`ShopTests`): its `ModifyMerchantPrice` discount (card-removal 75 → 60) and `ShouldRefillMerchantEntry`
+  restock (a bought relic slot refills instead of clearing) both work through the game logic.
 - **Deck-management screens** (upgrade/transform/enchant/remove/duplicate).
 
 ## M4 — Full single-player run (acts + bosses)

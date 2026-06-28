@@ -55,6 +55,13 @@ public sealed class GameHost
     // mid-effect card choice (e.g. Smith's upgrade selection) so Apply can resume it. Null otherwise.
     private System.Threading.Tasks.Task? _restChoiceTask;
 
+    // A shop card-removal purchase task, kept in flight while it suspends on the deck card choice it
+    // raises (the removal picks a card to remove), so Apply(SelectCards) can resume it. Null otherwise.
+    // The matching entry is held so the harness can mark it used on success (the UI node that would
+    // normally do that is null headless).
+    private System.Threading.Tasks.Task<bool>? _shopRemovalTask;
+    private MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardRemovalEntry? _shopRemovalEntry;
+
     // Custom rewards offered mid-effect by a relic/event (RewardsCmd.OfferCustom, e.g.
     // Kaleidoscope's two bonus card rewards). Unlike a post-combat set, the offering effect's
     // task is *suspended* inside RewardsSet.Offer until the agent takes/skips and proceeds, so
@@ -356,6 +363,40 @@ public sealed class GameHost
         && Selector.Pending is null
         && RestSiteSync.GetLocalOptions().Any(o => o.IsEnabled);
 
+    /// <summary>The current room as a merchant shop, or null when not standing in one.</summary>
+    internal MegaCrit.Sts2.Core.Rooms.MerchantRoom? CurrentMerchantRoom =>
+        RunManager.Instance.IsInProgress && !InCombat
+            ? Run.CurrentRoom as MegaCrit.Sts2.Core.Rooms.MerchantRoom
+            : null;
+
+    /// <summary>
+    /// True while standing in a merchant shop and able to act on it. A shop is never "consumed":
+    /// the player can keep buying affordable items or leave by moving on the map, so this stays
+    /// true for the whole visit (unless a reward/card choice is mid-resolution).
+    /// </summary>
+    internal bool HasShopChoice =>
+        CurrentMerchantRoom is not null
+        && PendingRewards is null
+        && Selector.Pending is null;
+
+    /// <summary>
+    /// Classify a merchant entry into (item-type, model-id, card) for the option/projection layer.
+    /// The card is non-null only for card entries.
+    /// </summary>
+    internal static (string type, string id, MegaCrit.Sts2.Core.Models.CardModel? card) ClassifyShopEntry(
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry entry) => entry switch
+    {
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardEntry c =>
+            ("Card", c.CreationResult?.Card.Id.Entry ?? "?", c.CreationResult?.Card),
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantRelicEntry r =>
+            ("Relic", r.Model?.Id.Entry ?? "?", null),
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantPotionEntry p =>
+            ("Potion", p.Model?.Id.Entry ?? "?", null),
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardRemovalEntry =>
+            ("CardRemoval", "CardRemoval", null),
+        _ => ("Unknown", "?", null),
+    };
+
     /// <summary>
     /// Play a card from hand at an optional target via the canonical player path
     /// (CardModel.TryManualPlay), which validates targeting, spends energy, and runs
@@ -487,6 +528,12 @@ public sealed class GameHost
         if (HasRestChoice)
         {
             return BuildRestOptions(player);
+        }
+
+        // A merchant shop: buy affordable items / card removal, or leave by moving on the map.
+        if (HasShopChoice)
+        {
+            return BuildShopOptions(player);
         }
 
         // An event room awaiting a choice (e.g. the opening Neow ancient event).
@@ -681,6 +728,35 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Build the options for a merchant shop: one buy option per in-stock, affordable item (cards,
+    /// relics, potions, and the card-removal service), plus the reachable map moves so the player
+    /// can leave. Unaffordable/out-of-stock items are omitted from the actionable set (they are
+    /// still visible in <see cref="ShopView"/>).
+    /// </summary>
+    private IReadOnlyList<GameOption> BuildShopOptions(Player player)
+    {
+        var options = new List<GameOption>();
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory inv = CurrentMerchantRoom!.GetLocalInventory();
+        foreach (MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry entry in inv.AllEntries)
+        {
+            if (!entry.IsStocked || !entry.EnoughGold)
+            {
+                continue;
+            }
+            (string type, string id, MegaCrit.Sts2.Core.Models.CardModel? card) = ClassifyShopEntry(entry);
+            CardView? view = card is null ? null : GameStateProjection.ProjectCard(card, canPlay: false);
+            options.Add(GameOption.BuyShopItemOption(player, entry, type, id, view));
+        }
+
+        // The shop is left by moving on the map (there is no separate proceed step headless).
+        foreach (MegaCrit.Sts2.Core.Map.MapPoint point in GameStateProjection.ReachablePoints(Run))
+        {
+            options.Add(GameOption.MoveToOption(player, point.coord));
+        }
+        return options;
+    }
+
+    /// <summary>
     /// Build the options for the Crystal Sphere minigame: one click option per still-hidden cell
     /// (cleared with the active tool), plus a switch-tool option for the tool not currently active.
     /// </summary>
@@ -749,6 +825,11 @@ public sealed class GameHost
                         _restChoiceTask = null;
                     }
                 }
+                else if (_shopRemovalTask is { IsCompleted: false } shopTask)
+                {
+                    PumpRoomTaskUntilIdleOrChoice(shopTask);
+                    FinishShopRemovalIfDone();
+                }
                 else
                 {
                     PumpEventUntilIdleOrChoice();
@@ -771,6 +852,9 @@ public sealed class GameHost
                 break;
             case OptionKind.ChooseRestOption:
                 ChooseRestOption(option.RestOptionIndex!.Value);
+                break;
+            case OptionKind.BuyShopItem:
+                BuyShopItem(option);
                 break;
             case OptionKind.ClickCrystalSphereCell:
                 ClickCrystalSphereCell(option.CrystalSphereCell!.Value.Col, option.CrystalSphereCell.Value.Row);
@@ -1073,6 +1157,68 @@ public sealed class GameHost
         {
             _restChoiceTask = null;
         }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Merchant shops. Entering a MerchantRoom builds a MerchantInventory per player (cards/relics/
+    // potions + a card-removal service). There is no synchronizer or UI logic-half to reproduce on
+    // entry; the inventory just exists. Buying runs the entry's faithful purchase path
+    // (MerchantEntry.OnTryPurchaseWrapper), which pays gold and grants the item through the same
+    // commands as rewards (CardPileCmd.Add / RelicCmd.Obtain / PotionCmd.TryToProcure). The
+    // card-removal service raises a deck card choice through the same selector seam as combat/Smith.
+    // A relic like The Courier restocks slots after purchase (Hook.ShouldRefillMerchantEntry) and
+    // discounts prices (Hook.ModifyMerchantPrice) — both handled by the game logic. The player
+    // leaves by moving on the map.
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Buy the item the given option points at. Card/relic/potion purchases run the entry's purchase
+    /// task to quiescence; the card-removal service suspends on a deck card choice (resolved via
+    /// <see cref="Apply"/>'s <see cref="OptionKind.SelectCards"/> path, after which the entry is
+    /// marked used since the UI node that would normally do so is null headless).
+    /// </summary>
+    private void BuyShopItem(GameOption option)
+    {
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry entry = option.ShopEntry
+            ?? throw new InvalidOperationException("Buy option carried no shop entry.");
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory inv = CurrentMerchantRoom!.GetLocalInventory();
+
+        if (entry is MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardRemovalEntry removal)
+        {
+            _shopRemovalEntry = removal;
+            _shopRemovalTask = removal.OnTryPurchaseWrapper(inv);
+            PumpRoomTaskUntilIdleOrChoice(_shopRemovalTask);
+            FinishShopRemovalIfDone();
+            return;
+        }
+
+        System.Threading.Tasks.Task<bool> task = entry.OnTryPurchaseWrapper(inv);
+        PumpRoomTaskUntilIdleOrChoice(task);
+        // Card/relic/potion purchases resolve through the action queue (no card choice), so the task
+        // is complete here; surface any failure rather than silently swallowing it.
+        if (task.IsCompleted && !task.GetAwaiter().GetResult())
+        {
+            throw new InvalidOperationException($"Shop purchase was rejected: {option.Description}");
+        }
+    }
+
+    /// <summary>
+    /// If the in-flight card-removal purchase has completed, clear the tracking state and — on a
+    /// successful removal — mark the entry used (single-use per shop), reproducing the logic half of
+    /// <c>NMerchantCardRemoval.OnCardRemovalUsed</c>.
+    /// </summary>
+    private void FinishShopRemovalIfDone()
+    {
+        if (_shopRemovalTask is not { IsCompleted: true } task)
+        {
+            return;
+        }
+        if (task.GetAwaiter().GetResult())
+        {
+            _shopRemovalEntry?.SetUsed();
+        }
+        _shopRemovalTask = null;
+        _shopRemovalEntry = null;
     }
 
     // ---------------------------------------------------------------------------------

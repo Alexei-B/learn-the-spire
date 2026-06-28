@@ -40,6 +40,7 @@ internal static class GameStateProjection
             Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!) : null,
             Treasure = host.HasTreasureChoice ? ProjectTreasure(host) : null,
             RestSite = host.HasRestChoice ? ProjectRestSite() : null,
+            Shop = host.HasShopChoice ? ProjectShop(host) : null,
             CrystalSphere = host.PendingCrystalSphere is { } mg ? ProjectCrystalSphere(mg) : null,
         };
     }
@@ -77,6 +78,10 @@ internal static class GameStateProjection
         if (host.HasRestChoice)
         {
             return GamePhase.RestSite;
+        }
+        if (host.HasShopChoice)
+        {
+            return GamePhase.Shop;
         }
         if (host.HasActionableEvent)
         {
@@ -237,6 +242,29 @@ internal static class GameStateProjection
             }
         }
         return true;
+    }
+
+    private static ShopView ProjectShop(GameHost host)
+    {
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory inv = host.CurrentMerchantRoom!.GetLocalInventory();
+        var items = new List<ShopItemView>();
+        foreach (MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry entry in inv.AllEntries)
+        {
+            if (!entry.IsStocked)
+            {
+                continue;
+            }
+            (string type, string id, CardModel? card) = GameHost.ClassifyShopEntry(entry);
+            items.Add(new ShopItemView
+            {
+                ItemType = type,
+                ItemId = id,
+                Cost = entry.Cost,
+                Affordable = entry.EnoughGold,
+                Card = card is null ? null : ProjectCard(card, canPlay: false),
+            });
+        }
+        return new ShopView { Gold = host.Run.Players[0].Gold, Items = items };
     }
 
     private static RestSiteView ProjectRestSite()

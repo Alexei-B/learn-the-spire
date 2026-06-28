@@ -81,6 +81,27 @@ internal static class TestNav
     }
 
     /// <summary>
+    /// Give the local player gold for tests that need to afford shop purchases. The game stores
+    /// gold as a plain settable field, so this is a direct set rather than a granting command.
+    /// </summary>
+    public static void AddGold(GameHost host, int amount)
+    {
+        host.Run.Players[0].Gold += amount;
+    }
+
+    /// <summary>
+    /// Grant the local player a relic by id (e.g. "TheCourier") and drain the action queue so any
+    /// on-obtain effects settle. Used to set up relic-dependent behaviour like shop discounts.
+    /// </summary>
+    public static void GiveRelic(GameHost host, string relicId)
+    {
+        RelicModel relic = ModelDb.AllRelics
+            .First(r => r.Id.Entry == relicId || r.GetType().Name == relicId).ToMutable();
+        MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain(relic, host.Run.Players[0]).GetAwaiter().GetResult();
+        RunManager.Instance.ActionExecutor.FinishedExecutingActions().GetAwaiter().GetResult();
+    }
+
+    /// <summary>
     /// Start a run, resolve the opening ancient event, and move into the first reachable room,
     /// which on the standard seeds is the first combat.
     /// </summary>

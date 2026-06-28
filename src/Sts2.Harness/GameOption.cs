@@ -41,6 +41,9 @@ public enum OptionKind
     /// <summary>Choose a rest-site action (rest/smith/…).</summary>
     ChooseRestOption,
 
+    /// <summary>Buy one item from a merchant shop (card/relic/potion or the card-removal service).</summary>
+    BuyShopItem,
+
     /// <summary>Spend a divination on a Crystal Sphere grid cell (clears it, or a 3×3 area with the Big tool).</summary>
     ClickCrystalSphereCell,
 
@@ -93,6 +96,15 @@ public sealed class GameOption
     /// <summary>The index into the rest site's options for <see cref="OptionKind.ChooseRestOption"/>; null otherwise.</summary>
     public int? RestOptionIndex { get; }
 
+    /// <summary>The item type a <see cref="OptionKind.BuyShopItem"/> option buys ("Card"/"Relic"/"Potion"/"CardRemoval"); null otherwise.</summary>
+    public string? ShopItemType { get; }
+
+    /// <summary>The model id of the item a <see cref="OptionKind.BuyShopItem"/> option buys; null otherwise.</summary>
+    public string? ShopItemId { get; }
+
+    /// <summary>The gold price of a <see cref="OptionKind.BuyShopItem"/> option; null otherwise.</summary>
+    public int? ShopItemCost { get; }
+
     /// <summary>The grid cell a <see cref="OptionKind.ClickCrystalSphereCell"/> option clears; null otherwise.</summary>
     public Coord? CrystalSphereCell { get; }
 
@@ -112,6 +124,9 @@ public sealed class GameOption
     /// <summary>The reward this <see cref="OptionKind.TakeReward"/> option claims; null otherwise.</summary>
     internal Reward? Reward { get; }
 
+    /// <summary>The shop entry a <see cref="OptionKind.BuyShopItem"/> option purchases; null otherwise.</summary>
+    internal MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry? ShopEntry { get; }
+
     private GameOption(
         OptionKind kind,
         ulong playerId,
@@ -126,6 +141,9 @@ public sealed class GameOption
         int? treasureRelicIndex = null,
         string? restOptionId = null,
         int? restOptionIndex = null,
+        string? shopItemType = null,
+        string? shopItemId = null,
+        int? shopItemCost = null,
         Coord? crystalSphereCell = null,
         string? crystalSphereTool = null,
         CardModel? cardModel = null,
@@ -134,6 +152,7 @@ public sealed class GameOption
         Player? player = null,
         IReadOnlyList<CardModel>? selectedCardModels = null,
         Reward? reward = null,
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry? shopEntry = null,
         MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType? crystalSphereToolValue = null)
     {
         Kind = kind;
@@ -149,6 +168,9 @@ public sealed class GameOption
         TreasureRelicIndex = treasureRelicIndex;
         RestOptionId = restOptionId;
         RestOptionIndex = restOptionIndex;
+        ShopItemType = shopItemType;
+        ShopItemId = shopItemId;
+        ShopItemCost = shopItemCost;
         CrystalSphereCell = crystalSphereCell;
         CrystalSphereTool = crystalSphereTool;
         CardModel = cardModel;
@@ -157,6 +179,7 @@ public sealed class GameOption
         Player = player;
         SelectedCardModels = selectedCardModels;
         Reward = reward;
+        ShopEntry = shopEntry;
         CrystalSphereToolValue = crystalSphereToolValue;
     }
 
@@ -233,6 +256,22 @@ public sealed class GameOption
     internal static GameOption ChooseRestOption(Player player, int index, string optionId) =>
         new(OptionKind.ChooseRestOption, player.NetId, $"Rest option {optionId}",
             restOptionId: optionId, restOptionIndex: index, player: player);
+
+    /// <summary>
+    /// Buy one item from a merchant shop. Carries the item's type/id/cost for display and the live
+    /// <see cref="MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry"/> the purchase resolves against.
+    /// </summary>
+    internal static GameOption BuyShopItemOption(
+        Player player, MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry entry,
+        string itemType, string itemId, CardView? card)
+    {
+        int cost = entry.Cost;
+        string desc = $"Buy {itemType} {itemId} ({cost} gold)";
+        return new GameOption(
+            OptionKind.BuyShopItem, player.NetId, desc,
+            card: card, shopItemType: itemType, shopItemId: itemId, shopItemCost: cost,
+            player: player, shopEntry: entry);
+    }
 
     /// <summary>Spend a divination clearing the Crystal Sphere grid cell at (x, y) with the active tool.</summary>
     internal static GameOption ClickCrystalSphereCellOption(Player player, int x, int y) =>

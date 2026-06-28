@@ -6,14 +6,14 @@ Orientation for working on the harness. Read the code for detail; this is the ma
 full combat (faithful play + enemy turns) → victory → **post-combat rewards** → back to the map,
 via the real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) covers the combat +
 map-move surface, the battle-rewards screen, **event rooms** (the opening ancient event and the
-shared regular-event path), **treasure rooms** (open chest → pick/skip relic), and **rest sites**
-(rest/smith). A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the
+shared regular-event path), **treasure rooms** (open chest → pick/skip relic), **rest sites**
+(rest/smith), and **shops** (buy cards/relics/potions, card removal, leave). A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the
 public API; buffed to a large HP pool it navigates ~16 act-1 floors across every implemented room
 type, right up to the act-1 boss. Separately, `Act1FightsTests` / `Act1EventsTests` enumerate *every*
 act-1 fight and event (both index-0 acts plus shared events) and drive each to a terminal state in
 isolation; all 42 fights (including all three Overgrowth bosses — the `GpuParticles2D` shim gap that
 once blocked the act-1 boss is closed) and every event resolve, including the Crystal Sphere minigame
-and PunchOff. Remaining breadth (shops/acts 2–3/multiplayer/ascension) is **not built**; see
+and PunchOff. Remaining breadth (acts 2–3/multiplayer/ascension) is **not built**; see
 `docs/plans/`.
 
 ## What it is
@@ -128,6 +128,19 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   resulting `RelicsAwarded` event to `RelicCmd.Obtain` each awarded relic. A singleplayer skip is
   recorded then `OnRoomExited`'d to clear the pending relics so the player is back on the map.
   Leaving a treasure room (after take or skip) is a normal `MoveTo`.
+- **Shops** (`GamePhase.Shop`): entering a `MerchantRoom` builds a per-player `MerchantInventory`
+  (cards/relics/potions + a card-removal service) in `EnterInternal`; unlike treasure there is no
+  synchronizer or null-UI logic-half to reproduce on entry — the inventory just exists. It surfaces
+  as `ShopView` (every stocked item with price + affordability); `ListOptions` yields a `BuyShopItem`
+  per in-stock, affordable item plus the reachable `MoveTo`s (the shop is left by moving on, like the
+  other rooms). `Apply` of a buy runs the entry's faithful `OnTryPurchaseWrapper`, which pays gold and
+  grants the item via the same commands as rewards (`CardPileCmd.Add`/`RelicCmd.Obtain`/
+  `PotionCmd.TryToProcure`). **Card removal** goes through `OneOffSynchronizer.DoMerchantCardRemoval`,
+  which raises a deck card choice on the same `HarnessCardSelector` seam as combat/Smith (surfaced as
+  `GamePhase.Choice`, resolved by `Apply(SelectCards)` resuming the suspended purchase task); on
+  success the harness calls `entry.SetUsed()` (the logic half of the null `NMerchantCardRemoval`), so
+  it is single-use per shop. Relic shop hooks run in the game logic — **The Courier** discounts
+  prices (`ModifyMerchantPrice`) and restocks slots after purchase (`ShouldRefillMerchantEntry`).
 - **Rest sites** (`GamePhase.RestSite`): entering a `RestSiteRoom` runs
   `RestSiteSynchronizer.BeginRestSite` (its rest/smith options). Unlike treasure there is no UI
   logic-half to reproduce — the action resolves directly through the synchronizer. Each usable
@@ -175,10 +188,11 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Shops, deck-management screens, elites/bosses, acts 2–3, ascension, local multiplayer. The
+Deck-management screens, elites/bosses, acts 2–3, ascension, local multiplayer. The
 `GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
 card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
-regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, and rest sites.
+regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, rest sites,
+and shops.
 Still missing: events that start combat (exercised end-to-end), multi-page events, and the event
 `WillKillPlayer` hint; card-reward alternatives/reroll; enemy-turn-triggered choices; full
 multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); and the
