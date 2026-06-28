@@ -12,10 +12,11 @@ namespace Sts2.Harness.Tests;
 /// card play with block-then-attack, enemy turns), post-combat rewards, rest sites, treasure, and
 /// map navigation — entirely through the public option API. The player is buffed to a huge HP pool
 /// so the still-simple combat survives, exercising the room/navigation breadth. The run reaches the
-/// act's mid-section; pushing on to the boss is currently blocked by an elite (BygoneEffigy) whose
-/// sleep/wake turn stalls the headless enemy-turn pump — a combat-mechanic gap, not a room gap.
-/// This guards that a deep multi-floor, multi-room-type run executes through the public API without
-/// the harness throwing.
+/// act's mid-section; pushing on to the boss is currently blocked by a specific event
+/// (AromaOfChaos), whose option generation NREs in <c>CharacterModel.AddDetailsTo</c> — an
+/// event-content gap, not a room gap. (The BygoneEffigy elite, which used to stall the enemy-turn
+/// pump, is now covered by <see cref="BygoneEffigyTests"/>.) This guards that a deep multi-floor,
+/// multi-room-type run executes through the public API without the harness throwing.
 /// </summary>
 public sealed class WalkthroughTests
 {
@@ -43,14 +44,14 @@ public sealed class WalkthroughTests
         // rooms, all through the public option API and without the harness throwing.
         GameState end = AutoPlayer.Advance(
             host,
-            stop: s => s.Phase == GamePhase.Map && s.Floor >= 10,
+            stop: s => s.Phase == GamePhase.Map && s.Floor >= 13,
             preferMapPointType: MegaCrit.Sts2.Core.Map.MapPointType.Boss,
             log: _out);
 
         _out.WriteLine($"Run ended: phase={end.Phase} floor={end.Floor} hp={end.Players[0].CurrentHp}/{end.Players[0].MaxHp} relics=[{string.Join(",", end.Players[0].Relics)}]");
 
         Assert.Equal(GamePhase.Map, end.Phase);
-        Assert.True(end.Floor >= 10, $"expected to reach floor 10+ but stopped on floor {end.Floor}");
+        Assert.True(end.Floor >= 13, $"expected to reach floor 13+ but stopped on floor {end.Floor}");
         Assert.True(end.Players[0].CurrentHp > 0);
         // Evidence of treasure-room traversal: the starting + Neow relic plus a treasure relic.
         Assert.True(end.Players[0].Relics.Count >= 3,

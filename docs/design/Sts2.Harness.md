@@ -8,8 +8,8 @@ via the real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) cover
 map-move surface, the battle-rewards screen, **event rooms** (the opening ancient event and the
 shared regular-event path), **treasure rooms** (open chest → pick/skip relic), and **rest sites**
 (rest/smith). A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the
-public API; buffed to a large HP pool it navigates ~10+ act-1 floors across every implemented room
-type before an elite's combat mechanic stalls the enemy-turn pump. Remaining breadth (shops/bosses/
+public API; buffed to a large HP pool it navigates ~13+ act-1 floors across every implemented room
+type before a specific event's option generation NREs. Remaining breadth (shops/bosses/
 acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
@@ -48,8 +48,10 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 
 - **Boot** (`GameRuntime.EnsureInitialized`): mirrors the logic half of the game's
   `OneTimeInitialization`, skipping atlas/UI. Sets `TestMode.IsOn`,
-  `NonInteractiveMode` (kills animation/delay/frame waits), mock saves, `ModelDb.Init`,
-  etc. See the file for the exact ordered sequence.
+  `NonInteractiveMode` (kills animation/delay/frame waits), mock saves (both the settings *and*
+  prefs in-memory saves — `PrefsSave` is read by gameplay paths like `TalkCmd.Play`, so an
+  uninitialized prefs save silently faults enemy turns), `ModelDb.Init`, etc. See the file for the
+  exact ordered sequence.
 - **Unlocks**: a run is created with `UnlockState.all` (every epoch unlocked), so all
   content (cards/relics/events) is available and `StartedWithNeow` is true — the run opens on
   the Neow ancient event, like a fully-progressed save. No `SaveManager` epoch override is
@@ -160,8 +162,9 @@ Shops, deck-management screens, elites/bosses, acts 2–3, ascension, local mult
 card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, and rest sites.
 Still missing: events that start combat or raise mid-event card choices (exercised end-to-end),
-multi-page events, the event `WillKillPlayer` hint; card-reward alternatives/reroll;
-enemy-turn-triggered choices and enemy moves whose turn stalls the headless pump (e.g. the
-BygoneEffigy elite's sleep/wake, which currently blocks a forward run from reaching the boss); full
-multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); and
-the remaining un-handled content that breaks a forward playthrough on some seeds. → `docs/plans/`. 
+multi-page events, the event `WillKillPlayer` hint, and events whose option generation NREs headless
+(e.g. AromaOfChaos via `CharacterModel.AddDetailsTo`, which currently blocks a forward run from
+reaching the boss); card-reward alternatives/reroll; enemy-turn-triggered choices; full multi-select
+subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); and the remaining
+un-handled content that breaks a forward playthrough on some seeds. (The BygoneEffigy elite's
+sleep/wake turn, which used to stall the pump, is fixed — see Boot, prefs save.) → `docs/plans/`. 

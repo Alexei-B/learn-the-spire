@@ -97,12 +97,15 @@ as the reference for what choices exist:
 - Deliverable: a seeded run plays start → act-3 boss with greedy/random legal choices.
 - _In progress_: a greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through
   events/combats/rewards/rest/treasure/map moves via the public option API, with a block-then-attack
-  combat heuristic. With the player buffed to a huge HP pool it navigates ~10+ act-1 floors across
-  every implemented room type without the harness throwing (`WalkthroughTests`). Reaching the boss
-  is currently blocked by: (a) the **BygoneEffigy** elite, whose sleep/wake turn stalls the headless
-  enemy-turn pump (`EndTurn` times out) — an M2 combat-mechanic gap (enemy-turn effects/choices);
-  (b) **shops** (M3) which a forward path may route through; and (c) other un-handled content that
-  still surfaces on some seeds (pump timeouts / shim `TypeLoad`s).
+  combat heuristic. With the player buffed to a huge HP pool it navigates ~13+ act-1 floors across
+  every implemented room type without the harness throwing (`WalkthroughTests`). The **BygoneEffigy**
+  elite — whose wake move stalled the enemy-turn pump (`EndTurn` timed out) — is now fixed: its
+  `TalkCmd.Play` NRE'd because the harness boot never initialized the prefs save, so
+  `SaveManager.Instance.PrefsSave` was null; `GameRuntime` now calls `InitPrefsDataForTest`, and
+  `BygoneEffigyTests` covers the elite's sleep→wake→slash cycle. Reaching the boss is now blocked by:
+  (a) the **AromaOfChaos** event, whose option generation NREs in `CharacterModel.AddDetailsTo` — an
+  M3 event-content gap; (b) **shops** (M3) which a forward path may route through; and (c) other
+  un-handled content that still surfaces on some seeds (pump timeouts / shim `TypeLoad`s).
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

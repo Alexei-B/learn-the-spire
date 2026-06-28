@@ -44,6 +44,11 @@ public static class GameRuntime
 
             // --- ExecuteVeryEarly (logic only) ---
             SaveManager.Instance.InitSettingsDataForTest();
+            // Prefs hold gameplay settings (e.g. FastMode) read by some logic paths — notably
+            // TalkCmd.Play, used by monster moves like BygoneEffigy's wake. Without this the
+            // PrefsSave getter returns null and those paths NRE (silently faulting the enemy
+            // turn). The ForTest variant installs a default in-memory PrefsSave.
+            SaveManager.Instance.InitPrefsDataForTest();
             // A profile id is required before any progress save; use slot 0.
             SaveManager.Instance.InitProfileId(0);
             // Disable first-time-user-experience tutorials: their Create() methods load
