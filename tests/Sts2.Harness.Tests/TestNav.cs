@@ -1,4 +1,6 @@
 using System.Linq;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Runs;
 using Sts2.Harness;
 using Xunit;
 
@@ -23,8 +25,12 @@ internal static class TestNav
     }
 
     /// <summary>
-    /// If the run is sitting on the opening Neow ancient event, take its first option so the run
+    /// If the run is sitting on the opening Neow ancient event, take a benign blessing so the run
     /// proceeds to the map. A no-op if not currently in an event.
+    ///
+    /// Blessings whose relic has an upon-pickup effect (e.g. Kaleidoscope, which spawns two bonus
+    /// card rewards) are skipped, so combat/reward tests start from the normal starting deck rather
+    /// than one padded by side-effect rewards.
     /// </summary>
     public static void ResolveOpeningAncient(GameHost host)
     {
@@ -32,7 +38,34 @@ internal static class TestNav
         {
             return;
         }
-        GameOption pick = host.ListOptions().First(o => o.Kind == OptionKind.ChooseEventOption);
+
+        EventModel ev = RunManager.Instance.EventSynchronizer.GetLocalEvent();
+        int chosenIndex = -1;
+        int fallbackIndex = -1;
+        for (int i = 0; i < ev.CurrentOptions.Count; i++)
+        {
+            MegaCrit.Sts2.Core.Events.EventOption opt = ev.CurrentOptions[i];
+            if (opt.IsLocked || opt.IsProceed)
+            {
+                continue;
+            }
+            if (fallbackIndex < 0)
+            {
+                fallbackIndex = i;
+            }
+            if (opt.Relic is { HasUponPickupEffect: true })
+            {
+                continue;
+            }
+            chosenIndex = i;
+            break;
+        }
+        if (chosenIndex < 0)
+        {
+            chosenIndex = fallbackIndex;
+        }
+
+        GameOption pick = host.ListOptions().First(o => o.EventOptionIndex == chosenIndex);
         host.Apply(pick);
     }
 

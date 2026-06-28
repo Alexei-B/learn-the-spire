@@ -103,6 +103,13 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   manual-play path for correctness.
 - **The shim is incomplete by design** — each new system surfaces a few more Godot
   members / gated visual branches to stub. Expected cost of breadth.
+- **`OfferCustom` rewards auto-take in TestMode**: `RewardsSet.Offer()` (used by relic/event
+  custom rewards like Kaleidoscope's bonus cards, Orrery, Calling Bell) **auto-selects every
+  reward** when `TestMode.IsOn` (no UI, no `testSelector`) — e.g. taking Kaleidoscope at Neow
+  silently adds two cards rather than letting the agent choose. The post-combat path avoids this
+  by using `GenerateForRoomEnd` + `BeginRewardsSet` instead of `Offer`. Surfacing custom reward
+  sets through the API (via the `RewardsSet.testSelector` seam) is not built yet; until then test
+  helpers pick blessings whose relics have no upon-pickup effect.
 
 ## Determinism
 
