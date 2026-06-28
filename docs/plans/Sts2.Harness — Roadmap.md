@@ -73,13 +73,22 @@ as the reference for what choices exist:
   choice). **Full act-1 event enumeration**: `Act1EventsTests` now drives *every* act-1 event — both
   index-0 acts (Overgrowth's 13 + Underdocks's 10) plus the 18 shared events — to a terminal state
   (finished → map, or game-over) through the public option API, entering each directly via the new
-  `GameHost.EnterEventDebug` seam (built on the game's `EnterRoomDebug`). All resolve except two with
-  an interactive-UI dependency the harness doesn't model yet (`PunchOff`'s unguarded
-  `NGame.Instance.ScreenShakeTrauma`; `CrystalSphere`'s minigame screen), enumerated-but-skipped with
-  a reason. Several shim gaps surfaced and were closed along the way (see M8 / design "Not built
-  yet"). Still to do: per-option event coverage (the driver walks one greedy path); events that start
-  combat exercised across every branch; multi-page events; the `WillKillPlayer` flag in the
-  projection; the two UI-gap events above.
+  `GameHost.EnterEventDebug` seam (built on the game's `EnterRoomDebug`). Several shim gaps surfaced
+  and were closed along the way (see M8 / design "Not built yet"). **Crystal Sphere minigame** — _done_:
+  the game's most complex event drives an interactive minigame through a UI screen
+  (`NCrystalSphereScreen`, null headless); the harness skips that screen (a Harmony prefix on
+  `ShowScreen` routes the plain-C# `CrystalSphereMinigame` to the host) and surfaces the fogged grid
+  as `GamePhase.CrystalSphere`/`CrystalSphereView` with one `ClickCrystalSphereCell` per hidden cell
+  plus a `SetCrystalSphereTool` toggle (Big 3×3 / Small single). Spending the last divination
+  completes the minigame, whose revealed-item rewards flow through the existing `OfferCustom`
+  custom-reward gate; only items whose whole footprint is uncovered pay out (`CrystalSphereTests`
+  asserts full-vs-partial reveal and end-to-end payout). The lone remaining event gap is **PunchOff**
+  (its "Nab" option calls `NGame.Instance.ScreenShakeTrauma` unguarded — a `callvirt` on a null UI
+  singleton that NREs before any patch can intercept; forcing `NGame.Instance` non-null would violate
+  the "leave `N*.Instance` null" invariant the logic relies on), enumerated-but-skipped with a reason.
+  Still to do: per-option event coverage (the driver walks one greedy path); events that start combat
+  exercised across every branch; multi-page events; the `WillKillPlayer` flag in the projection; the
+  PunchOff screen-shake seam.
 - **Treasure** (chests/relic pick) — _done_: entering a treasure room surfaces as
   `GamePhase.Treasure`/`TreasureView`. The harness reproduces the logic half of the null
   `NTreasureRoom`/`NTreasureRoomRelicCollection` UI: on entry it opens the chest (grant gold via

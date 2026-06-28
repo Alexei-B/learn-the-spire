@@ -40,6 +40,12 @@ public enum OptionKind
 
     /// <summary>Choose a rest-site action (rest/smith/…).</summary>
     ChooseRestOption,
+
+    /// <summary>Spend a divination on a Crystal Sphere grid cell (clears it, or a 3×3 area with the Big tool).</summary>
+    ClickCrystalSphereCell,
+
+    /// <summary>Switch the Crystal Sphere divination tool (Big = 3×3 area, Small = single cell).</summary>
+    SetCrystalSphereTool,
 }
 
 /// <summary>
@@ -87,12 +93,21 @@ public sealed class GameOption
     /// <summary>The index into the rest site's options for <see cref="OptionKind.ChooseRestOption"/>; null otherwise.</summary>
     public int? RestOptionIndex { get; }
 
+    /// <summary>The grid cell a <see cref="OptionKind.ClickCrystalSphereCell"/> option clears; null otherwise.</summary>
+    public Coord? CrystalSphereCell { get; }
+
+    /// <summary>The tool a <see cref="OptionKind.SetCrystalSphereTool"/> option selects ("Big"/"Small"); null otherwise.</summary>
+    public string? CrystalSphereTool { get; }
+
     // Live references used by GameHost.Apply. Not part of the serializable surface.
     internal CardModel? CardModel { get; }
     internal Creature? Target { get; }
     internal MapCoord? MapCoord { get; }
     internal Player? Player { get; }
     internal IReadOnlyList<CardModel>? SelectedCardModels { get; }
+
+    /// <summary>The tool a <see cref="OptionKind.SetCrystalSphereTool"/> option selects; null otherwise.</summary>
+    internal MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType? CrystalSphereToolValue { get; }
 
     /// <summary>The reward this <see cref="OptionKind.TakeReward"/> option claims; null otherwise.</summary>
     internal Reward? Reward { get; }
@@ -111,12 +126,15 @@ public sealed class GameOption
         int? treasureRelicIndex = null,
         string? restOptionId = null,
         int? restOptionIndex = null,
+        Coord? crystalSphereCell = null,
+        string? crystalSphereTool = null,
         CardModel? cardModel = null,
         Creature? target = null,
         MapCoord? mapCoord = null,
         Player? player = null,
         IReadOnlyList<CardModel>? selectedCardModels = null,
-        Reward? reward = null)
+        Reward? reward = null,
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType? crystalSphereToolValue = null)
     {
         Kind = kind;
         PlayerId = playerId;
@@ -131,12 +149,15 @@ public sealed class GameOption
         TreasureRelicIndex = treasureRelicIndex;
         RestOptionId = restOptionId;
         RestOptionIndex = restOptionIndex;
+        CrystalSphereCell = crystalSphereCell;
+        CrystalSphereTool = crystalSphereTool;
         CardModel = cardModel;
         Target = target;
         MapCoord = mapCoord;
         Player = player;
         SelectedCardModels = selectedCardModels;
         Reward = reward;
+        CrystalSphereToolValue = crystalSphereToolValue;
     }
 
     internal static GameOption PlayCardOption(Player player, CardModel cardModel, CardView card, Creature? target)
@@ -212,4 +233,15 @@ public sealed class GameOption
     internal static GameOption ChooseRestOption(Player player, int index, string optionId) =>
         new(OptionKind.ChooseRestOption, player.NetId, $"Rest option {optionId}",
             restOptionId: optionId, restOptionIndex: index, player: player);
+
+    /// <summary>Spend a divination clearing the Crystal Sphere grid cell at (x, y) with the active tool.</summary>
+    internal static GameOption ClickCrystalSphereCellOption(Player player, int x, int y) =>
+        new(OptionKind.ClickCrystalSphereCell, player.NetId, $"Divine cell ({x},{y})",
+            crystalSphereCell: new Coord(x, y), player: player);
+
+    /// <summary>Switch the Crystal Sphere divination tool.</summary>
+    internal static GameOption SetCrystalSphereToolOption(
+        Player player, MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType tool) =>
+        new(OptionKind.SetCrystalSphereTool, player.NetId, $"Use {tool} divination tool",
+            crystalSphereTool: tool.ToString(), player: player, crystalSphereToolValue: tool);
 }

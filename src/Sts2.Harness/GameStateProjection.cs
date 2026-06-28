@@ -40,6 +40,7 @@ internal static class GameStateProjection
             Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!) : null,
             Treasure = host.HasTreasureChoice ? ProjectTreasure(host) : null,
             RestSite = host.HasRestChoice ? ProjectRestSite() : null,
+            CrystalSphere = host.PendingCrystalSphere is { } mg ? ProjectCrystalSphere(mg) : null,
         };
     }
 
@@ -56,6 +57,10 @@ internal static class GameStateProjection
         if (pending is not null)
         {
             return GamePhase.Choice;
+        }
+        if (host.PendingCrystalSphere is not null)
+        {
+            return GamePhase.CrystalSphere;
         }
         if (host.InCombat)
         {
@@ -176,6 +181,62 @@ internal static class GameStateProjection
                 ? Array.Empty<string>()
                 : relics.Select(r => r.Id.Entry).ToList(),
         };
+    }
+
+    private static CrystalSphereView ProjectCrystalSphere(
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame minigame)
+    {
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereCell[,] cells = minigame.cells;
+        int width = cells.GetLength(0);
+        int height = cells.GetLength(1);
+
+        var hidden = new List<Coord>();
+        for (int x = 0; x < width; x++)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                if (cells[x, y].IsHidden)
+                {
+                    hidden.Add(new Coord(x, y));
+                }
+            }
+        }
+
+        var items = minigame.Items.Select(item => new CrystalSphereItemView
+        {
+            ItemType = item.GetType().Name.Replace("CrystalSphere", string.Empty),
+            IsGood = item.IsGood,
+            Position = new Coord(item.Position.X, item.Position.Y),
+            Size = new Coord(item.Size.X, item.Size.Y),
+            Revealed = IsItemFullyRevealed(cells, item),
+        }).ToList();
+
+        return new CrystalSphereView
+        {
+            Width = width,
+            Height = height,
+            DivinationsLeft = minigame.DivinationCount,
+            Tool = minigame.CrystalSphereTool.ToString(),
+            HiddenCells = hidden,
+            Items = items,
+        };
+    }
+
+    private static bool IsItemFullyRevealed(
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereCell[,] cells,
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereItem item)
+    {
+        for (int i = 0; i < item.Size.X; i++)
+        {
+            for (int j = 0; j < item.Size.Y; j++)
+            {
+                if (cells[item.Position.X + i, item.Position.Y + j].IsHidden)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private static RestSiteView ProjectRestSite()

@@ -8,11 +8,14 @@ using MegaCrit.Sts2.Core.Models;
 namespace Sts2.Harness;
 
 /// <summary>
-/// Harmony patches that make the game tolerate the absence of the packed
-/// localization tables (which live in the 1.9 GB .pck we don't ship). Display text
-/// is irrelevant to mechanics, so missing tables/keys degrade to the key string
-/// instead of throwing. This keeps logging and any incidental text formatting on the
-/// game's hot paths from crashing the simulation.
+/// Harmony patches that keep the headless harness running where the game assumes content we don't
+/// ship or UI we don't build:
+/// <list type="bullet">
+/// <item>Missing packed localization tables (in the 1.9 GB .pck) degrade to the key string — display
+/// text is irrelevant to mechanics — so logging/text formatting on hot paths doesn't crash.</item>
+/// <item>The Crystal Sphere event minigame's UI screen (<c>NCrystalSphereScreen</c>, null headless)
+/// is skipped and the plain-C# minigame is routed to the harness so it surfaces as agent choices.</item>
+/// </list>
 /// </summary>
 internal static class HarmonyPatches
 {
@@ -57,6 +60,15 @@ internal static class HarmonyPatches
                 AccessTools.Method(typeof(EventModel), nameof(EventModel.GetOptionDescription)),
                 postfix: new HarmonyMethod(typeof(HarmonyPatches), nameof(GetOptionDescriptionPostfix)));
 
+            // The Crystal Sphere minigame's screen instantiates a UI scene (null headless) and pushes
+            // it onto the overlay stack. Skip it and hand the live minigame to the harness, which
+            // surfaces it as GamePhase.CrystalSphere and drives the cell-clicks the UI normally would.
+            harmony.Patch(
+                AccessTools.Method(
+                    typeof(MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere.NCrystalSphereScreen),
+                    nameof(MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere.NCrystalSphereScreen.ShowScreen)),
+                prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(ShowCrystalSphereScreenPrefix)));
+
             _applied = true;
         }
     }
@@ -92,5 +104,18 @@ internal static class HarmonyPatches
     private static void GetOptionDescriptionPostfix(EventModel __instance, string key, ref LocString? __result)
     {
         __result ??= new LocString(__instance.LocTable, key + ".description");
+    }
+
+    // Skip the Crystal Sphere UI screen entirely (it would instantiate a null scene and NRE), routing
+    // the live minigame to the active harness instead. Returning false suppresses the original; the
+    // caller (CrystalSphereMinigame.PlayMinigame) discards the return value and then awaits the
+    // minigame's own completion source, which the harness completes as the agent spends divinations.
+    private static bool ShowCrystalSphereScreenPrefix(
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame grid,
+        ref MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere.NCrystalSphereScreen __result)
+    {
+        GameHost.CrystalSphereScreenHook?.Invoke(grid);
+        __result = null!;
+        return false;
     }
 }

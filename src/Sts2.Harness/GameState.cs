@@ -56,6 +56,14 @@ public enum GamePhase
     /// </summary>
     RestSite,
 
+    /// <summary>
+    /// Playing the Crystal Sphere event minigame: spend divinations to uncover grid cells, fully
+    /// revealing items to earn their rewards. Resolve via the
+    /// <see cref="OptionKind.ClickCrystalSphereCell"/> / <see cref="OptionKind.SetCrystalSphereTool"/>
+    /// options from <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    CrystalSphere,
+
     /// <summary>The run has ended with all players dead.</summary>
     GameOver,
 
@@ -102,6 +110,54 @@ public sealed record GameState
 
     /// <summary>The rest-site options available, or null when not at a rest site.</summary>
     public RestSiteView? RestSite { get; init; }
+
+    /// <summary>The Crystal Sphere minigame in progress, or null when not playing it.</summary>
+    public CrystalSphereView? CrystalSphere { get; init; }
+}
+
+/// <summary>
+/// The Crystal Sphere event minigame: a fogged grid with hidden items. Each divination clears a
+/// cell (or a 3×3 area with the Big tool); an item whose every cell is uncovered is revealed and
+/// pays out (as a custom reward set) once divinations run out.
+/// </summary>
+public sealed record CrystalSphereView
+{
+    /// <summary>Grid width (columns).</summary>
+    public required int Width { get; init; }
+
+    /// <summary>Grid height (rows).</summary>
+    public required int Height { get; init; }
+
+    /// <summary>Divinations (cell-clears) the player still has.</summary>
+    public required int DivinationsLeft { get; init; }
+
+    /// <summary>The active tool: "Big" clears a 3×3 area, "Small" clears a single cell.</summary>
+    public required string Tool { get; init; }
+
+    /// <summary>The cells still hidden under fog (the clickable cells).</summary>
+    public required IReadOnlyList<Coord> HiddenCells { get; init; }
+
+    /// <summary>The items hidden on the grid, with their footprint and whether fully uncovered.</summary>
+    public required IReadOnlyList<CrystalSphereItemView> Items { get; init; }
+}
+
+/// <summary>One item hidden on the Crystal Sphere grid.</summary>
+public sealed record CrystalSphereItemView
+{
+    /// <summary>The item kind (e.g. "CardReward", "Relic", "Potion", "Gold", "Curse").</summary>
+    public required string ItemType { get; init; }
+
+    /// <summary>True for beneficial items; false for the curse.</summary>
+    public required bool IsGood { get; init; }
+
+    /// <summary>The top-left cell of the item's footprint.</summary>
+    public required Coord Position { get; init; }
+
+    /// <summary>The item's footprint size (columns, rows).</summary>
+    public required Coord Size { get; init; }
+
+    /// <summary>True once every cell of the footprint is uncovered (the reward is earned).</summary>
+    public required bool Revealed { get; init; }
 }
 
 /// <summary>A rest site with the rest actions still available to choose.</summary>

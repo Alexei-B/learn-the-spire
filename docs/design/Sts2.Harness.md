@@ -137,6 +137,17 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   as combat — surfaced as `GamePhase.Choice` and resolved by `Apply(SelectCards)`, which resumes the
   suspended rest task. A successful action clears the remaining options, leaving the player on the
   map (left via a normal `MoveTo`).
+- **Crystal Sphere minigame** (`GamePhase.CrystalSphere`): the most complex event runs an interactive
+  grid minigame through a UI screen (`NCrystalSphereScreen`) that is null headless. A Harmony prefix on
+  its `ShowScreen` skips the screen and routes the plain-C# `CrystalSphereMinigame` to the host
+  (`OnCrystalSphereScreenShown`); the offering event-option task suspends inside `PlayMinigame` on the
+  minigame's own completion source. The grid surfaces as `CrystalSphereView` (hidden cells + item
+  footprints + revealed flags), with `ClickCrystalSphereCell` (one per hidden cell) and a
+  `SetCrystalSphereTool` toggle (Big = 3×3, Small = single). `Apply` drives `CellClicked`; spending the
+  last divination completes the minigame, which grants the fully-revealed items' rewards via
+  `RewardsCmd.OfferCustom` — the same custom-reward gate as relics/events, so payouts surface as the
+  normal reward screen (an item only pays out when its whole footprint is uncovered). The pumps wait on
+  a Crystal-Sphere signal too, so a raised minigame returns control instead of deadlocking.
 - **Async→sync pump**: card plays drain the action queue
   (`ActionExecutor.FinishedExecutingActions`); the enemy turn resolves on fire-and-forget
   tasks, so `EndTurn` waits on a `TaskCompletionSource` wired to combat events
@@ -169,10 +180,10 @@ card-choice injection, the post-combat battle-rewards screen, event rooms (openi
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, and rest sites.
 Still missing: events that start combat (exercised end-to-end), multi-page events, and the event
 `WillKillPlayer` hint; card-reward alternatives/reroll; enemy-turn-triggered choices; full
-multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); two
-act-1 events with an interactive-UI dependency the harness doesn't model (`PunchOff`'s unguarded
-`NGame.Instance.ScreenShakeTrauma`; `CrystalSphere`'s minigame screen); and the remaining un-handled
-content that breaks a forward playthrough on some seeds.
+multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); one
+act-1 event with an interactive-UI dependency the harness doesn't model (`PunchOff`'s unguarded
+`NGame.Instance.ScreenShakeTrauma` — a `callvirt` on a null UI singleton); and the remaining
+un-handled content that breaks a forward playthrough on some seeds.
 
 **Full act-1 content sweep.** `Act1FightsTests` / `Act1EventsTests` enumerate *every* act-1 fight
 and event (both index-0 acts — Overgrowth + Underdocks — plus the shared events) and drive each to a

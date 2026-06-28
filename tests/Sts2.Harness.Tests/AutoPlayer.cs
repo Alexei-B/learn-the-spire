@@ -71,6 +71,9 @@ internal static class AutoPlayer
                 case GamePhase.RestSite:
                     StepRest(host);
                     break;
+                case GamePhase.CrystalSphere:
+                    StepCrystalSphere(host, s);
+                    break;
                 case GamePhase.Map:
                     StepMap(host, s, preferMapPointType, log);
                     break;
@@ -183,6 +186,64 @@ internal static class AutoPlayer
             }
         }
         return total;
+    }
+
+    /// <summary>
+    /// Spend a Crystal Sphere divination. Strategy: click the hidden cell whose surrounding 3×3
+    /// (the Big tool's footprint) covers the most still-hidden cells belonging to a not-yet-revealed
+    /// item, so divinations make progress toward fully uncovering items (which is what pays out).
+    /// Falls back to any hidden cell.
+    /// </summary>
+    private static void StepCrystalSphere(GameHost host, GameState s)
+    {
+        CrystalSphereView view = s.CrystalSphere!;
+        var hidden = new HashSet<Coord>(view.HiddenCells);
+
+        // Cells that still hide a not-yet-revealed item — uncovering these is what earns rewards.
+        var itemCells = new HashSet<Coord>();
+        foreach (CrystalSphereItemView item in view.Items)
+        {
+            if (item.Revealed)
+            {
+                continue;
+            }
+            for (int i = 0; i < item.Size.Col; i++)
+            {
+                for (int j = 0; j < item.Size.Row; j++)
+                {
+                    var c = new Coord(item.Position.Col + i, item.Position.Row + j);
+                    if (hidden.Contains(c))
+                    {
+                        itemCells.Add(c);
+                    }
+                }
+            }
+        }
+
+        var options = host.ListOptions().Where(o => o.Kind == OptionKind.ClickCrystalSphereCell).ToList();
+        GameOption best = options[0];
+        int bestCovered = -1;
+        foreach (GameOption opt in options)
+        {
+            Coord cell = opt.CrystalSphereCell!.Value;
+            int covered = 0;
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    if (itemCells.Contains(new Coord(cell.Col + dx, cell.Row + dy)))
+                    {
+                        covered++;
+                    }
+                }
+            }
+            if (covered > bestCovered)
+            {
+                bestCovered = covered;
+                best = opt;
+            }
+        }
+        host.Apply(best);
     }
 
     private static void StepRest(GameHost host)

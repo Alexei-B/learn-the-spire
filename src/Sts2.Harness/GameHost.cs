@@ -72,6 +72,37 @@ public sealed class GameHost
         get { lock (_rewardGate) { return _customRewardSignal.Task; } }
     }
 
+    // The Crystal Sphere event minigame currently awaiting the agent's cell-clicks, or null. The
+    // game drives this through a UI screen (NCrystalSphereScreen) that is null headless; a Harmony
+    // patch on NCrystalSphereScreen.ShowScreen routes the minigame here instead (see
+    // OnCrystalSphereScreenShown) and the offering event-option task suspends inside PlayMinigame on
+    // its own completion source until the agent spends every divination. The minigame logic itself
+    // (CrystalSphereMinigame) is plain C#; only the screen was UI.
+    private readonly object _crystalGate = new();
+    private MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame? _pendingCrystalSphere;
+    private System.Threading.Tasks.TaskCompletionSource _crystalSphereSignal = NewSignal();
+
+    // Process-wide hook the ShowScreen Harmony patch calls; the latest run owns it (like testSelector).
+    internal static System.Action<MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame>?
+        CrystalSphereScreenHook;
+
+    private System.Threading.Tasks.Task CrystalSphereSignal
+    {
+        get { lock (_crystalGate) { return _crystalSphereSignal.Task; } }
+    }
+
+    /// <summary>The Crystal Sphere minigame awaiting cell-clicks, or null. Read by the projection.</summary>
+    internal MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame? PendingCrystalSphere
+    {
+        get { lock (_crystalGate) { return _pendingCrystalSphere; } }
+    }
+
+    /// <summary>True while a Crystal Sphere minigame is awaiting the agent's divinations.</summary>
+    private bool CrystalSpherePending
+    {
+        get { lock (_crystalGate) { return _pendingCrystalSphere is not null; } }
+    }
+
     /// <summary>True while a custom (blocking) reward set is awaiting the agent's resolution.</summary>
     private bool CustomRewardPending
     {
@@ -83,7 +114,7 @@ public sealed class GameHost
     /// a custom rewards set. The combat/event pumps return control (rather than draining) so the
     /// suspended decision surfaces instead of deadlocking.
     /// </summary>
-    private bool EffectSuspended => Selector.Pending is not null || CustomRewardPending;
+    private bool EffectSuspended => Selector.Pending is not null || CustomRewardPending || CrystalSpherePending;
 
     /// <summary>
     /// Create and start a fresh single-player run with the given seed.
@@ -133,7 +164,32 @@ public sealed class GameHost
         // chooses. The hook is process-wide; the latest run owns it.
         MegaCrit.Sts2.Core.Rewards.RewardsSet.testSelector = host.OnCustomRewardsOffered;
 
+        // Intercept the Crystal Sphere event minigame's UI screen (null headless) so its grid
+        // surfaces as agent choices instead. Process-wide; the latest run owns it.
+        CrystalSphereScreenHook = host.OnCrystalSphereScreenShown;
+
         return host;
+    }
+
+    /// <summary>
+    /// The seam invoked (via a Harmony patch on <c>NCrystalSphereScreen.ShowScreen</c>) when the
+    /// Crystal Sphere event would open its UI minigame. Records the live <c>CrystalSphereMinigame</c>
+    /// so it surfaces as <see cref="GamePhase.CrystalSphere"/>; the offering event-option task then
+    /// suspends inside <c>PlayMinigame</c> on the minigame's completion source until the agent spends
+    /// every divination (see <see cref="ClickCrystalSphereCell"/>). Runs on that option task's thread.
+    /// </summary>
+    internal void OnCrystalSphereScreenShown(
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame grid)
+    {
+        lock (_crystalGate)
+        {
+            if (_pendingCrystalSphere is not null)
+            {
+                throw new InvalidOperationException("A Crystal Sphere minigame is already pending.");
+            }
+            _pendingCrystalSphere = grid;
+            _crystalSphereSignal.TrySetResult();
+        }
     }
 
     /// <summary>
@@ -408,6 +464,13 @@ public sealed class GameHost
             return BuildChoiceOptions(player, pending);
         }
 
+        // The Crystal Sphere event minigame: spend divinations clearing cells (then the revealed
+        // items' rewards surface through the normal custom-reward screen).
+        if (PendingCrystalSphere is { } minigame)
+        {
+            return BuildCrystalSphereOptions(player, minigame);
+        }
+
         // The post-combat rewards screen: take rewards then proceed back to the map.
         if (PendingRewards is not null)
         {
@@ -618,6 +681,34 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Build the options for the Crystal Sphere minigame: one click option per still-hidden cell
+    /// (cleared with the active tool), plus a switch-tool option for the tool not currently active.
+    /// </summary>
+    private static IReadOnlyList<GameOption> BuildCrystalSphereOptions(
+        Player player, MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame minigame)
+    {
+        var options = new List<GameOption>();
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereCell[,] cells = minigame.cells;
+        for (int x = 0; x < cells.GetLength(0); x++)
+        {
+            for (int y = 0; y < cells.GetLength(1); y++)
+            {
+                if (cells[x, y].IsHidden)
+                {
+                    options.Add(GameOption.ClickCrystalSphereCellOption(player, x, y));
+                }
+            }
+        }
+
+        // Offer the tool not currently selected so the agent can switch between area/single clears.
+        var big = MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType.Big;
+        var small = MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType.Small;
+        options.Add(GameOption.SetCrystalSphereToolOption(
+            player, minigame.CrystalSphereTool == big ? small : big));
+        return options;
+    }
+
+    /// <summary>
     /// Resolve a chosen option against the live game and pump to quiescence. The option
     /// must have come from <see cref="ListOptions(ulong)"/> for the current state.
     /// </summary>
@@ -680,6 +771,12 @@ public sealed class GameHost
                 break;
             case OptionKind.ChooseRestOption:
                 ChooseRestOption(option.RestOptionIndex!.Value);
+                break;
+            case OptionKind.ClickCrystalSphereCell:
+                ClickCrystalSphereCell(option.CrystalSphereCell!.Value.Col, option.CrystalSphereCell.Value.Row);
+                break;
+            case OptionKind.SetCrystalSphereTool:
+                SetCrystalSphereTool(option.CrystalSphereToolValue!.Value);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(option), option.Kind, "Unknown option kind.");
@@ -804,11 +901,11 @@ public sealed class GameHost
         System.Threading.Tasks.Task optionTasks =
             RunManager.Instance.EventSynchronizer.AwaitPendingOptionTasks();
         int idx = System.Threading.Tasks.Task.WaitAny(
-            new[] { optionTasks, Selector.PendingSignal, CustomRewardSignal }, timeoutMs);
+            new[] { optionTasks, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(
-                "Timed out resolving an event option (waiting for it to finish, raise a card choice, or offer rewards).");
+                "Timed out resolving an event option (waiting for it to finish, raise a card choice, offer rewards, or open the Crystal Sphere minigame).");
         }
         // If nothing is suspended the option finished; drain anything it enqueued.
         if (!EffectSuspended)
@@ -942,11 +1039,11 @@ public sealed class GameHost
     private void PumpRoomTaskUntilIdleOrChoice(System.Threading.Tasks.Task roomTask, int timeoutMs = 10000)
     {
         int idx = System.Threading.Tasks.Task.WaitAny(
-            new[] { roomTask, Selector.PendingSignal, CustomRewardSignal }, timeoutMs);
+            new[] { roomTask, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(
-                "Timed out pumping a room task (waiting for it to finish, a card choice, or rewards).");
+                "Timed out pumping a room task (waiting for it to finish, a card choice, rewards, or the Crystal Sphere minigame).");
         }
         if (!EffectSuspended)
         {
@@ -978,6 +1075,62 @@ public sealed class GameHost
         }
     }
 
+    // ---------------------------------------------------------------------------------
+    // Crystal Sphere event minigame. The game drives it through a UI screen
+    // (NCrystalSphereScreen) that is null headless; a Harmony patch on its ShowScreen captures the
+    // plain-C# CrystalSphereMinigame here (OnCrystalSphereScreenShown) instead, suspending the
+    // offering event-option task inside PlayMinigame on the minigame's completion source. The agent
+    // spends each divination by clearing cells; when the last is spent the minigame completes,
+    // resuming PlayMinigame, which grants the fully-revealed items' rewards via RewardsCmd.OfferCustom
+    // — the same custom-reward gate as relics/events — and finishes the event.
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Spend one divination clearing the grid cell at (<paramref name="x"/>, <paramref name="y"/>)
+    /// with the active tool (Big clears the surrounding 3×3 area, Small just the cell). When the last
+    /// divination is spent the minigame completes; the revealed items' rewards then surface through
+    /// the custom-reward screen (or, if nothing was revealed, the event simply finishes).
+    /// </summary>
+    private void ClickCrystalSphereCell(int x, int y)
+    {
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame minigame =
+            PendingCrystalSphere ?? throw new InvalidOperationException("No Crystal Sphere minigame is pending.");
+
+        // CellClicked decrements the divination count, clears the cell(s), and reveals any item whose
+        // footprint is now fully uncovered; on the final divination it completes the minigame's
+        // completion source, resuming the suspended PlayMinigame task.
+        Pump(minigame.CellClicked(minigame.cells[x, y]));
+
+        if (!minigame.IsFinished)
+        {
+            DrainActionQueue();
+            return;
+        }
+
+        // Last divination spent: the minigame is over. Clear our pending state, then let the resumed
+        // PlayMinigame settle — it grants rewards via the custom-reward gate (which surfaces as a
+        // reward screen) and then finishes the event. PumpEventUntilIdleOrChoice returns as soon as a
+        // reward screen / card choice surfaces or the event-option task completes.
+        lock (_crystalGate)
+        {
+            _pendingCrystalSphere = null;
+            _crystalSphereSignal = NewSignal();
+        }
+        if (!EffectSuspended)
+        {
+            PumpEventUntilIdleOrChoice();
+        }
+    }
+
+    /// <summary>Switch the Crystal Sphere divination tool (Big = 3×3 area, Small = single cell).</summary>
+    private void SetCrystalSphereTool(
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType tool)
+    {
+        MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame minigame =
+            PendingCrystalSphere ?? throw new InvalidOperationException("No Crystal Sphere minigame is pending.");
+        minigame.SetTool(tool);
+    }
+
     private Player GetPlayer(ulong playerId) =>
         Run.Players.FirstOrDefault(p => p.NetId == playerId)
             ?? throw new ArgumentException($"No player with net id {playerId} in this run.", nameof(playerId));
@@ -1000,7 +1153,7 @@ public sealed class GameHost
     {
         System.Threading.Tasks.Task drain = RunManager.Instance.ActionExecutor.FinishedExecutingActions();
         int idx = System.Threading.Tasks.Task.WaitAny(
-            new[] { drain, Selector.PendingSignal, CustomRewardSignal }, timeoutMs);
+            new[] { drain, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(

@@ -39,9 +39,8 @@ public sealed class Act1EventsTests
         "SunkenTreasury", "DoorsOfLightAndDark", "TrashHeap", "WaterloggedScriptorium");
 
     // Events shared across all acts (ModelDb.AllSharedEvents) — also reachable in act 1.
-    // CrystalSphere is a known UI-seam gap (see KnownUiGapEvents).
     public static IEnumerable<object[]> SharedEvents => Cases(
-        "BrainLeech", "DollRoom", "FakeMerchant", "PotionCourier", "RanwidTheElder",
+        "BrainLeech", "CrystalSphere", "DollRoom", "FakeMerchant", "PotionCourier", "RanwidTheElder",
         "RelicTrader", "RoomFullOfCheese", "SelfHelpBook", "SlipperyBridge", "StoneOfAllTime",
         "Symbiote", "TeaMaster", "TheFutureOfPotions", "TheLegendsWereTrue", "ThisOrThat",
         "WarHistorianRepy", "WelcomeToWongos");
@@ -52,10 +51,8 @@ public sealed class Act1EventsTests
     //    is null headless and the call is a callvirt (NREs at the call site, before any patch could
     //    intercept), and forcing NGame.Instance non-null would break the many NGame.Instance?.…
     //    guards other paths rely on.
-    //  - CrystalSphere: its "UncoverFuture" option plays an interactive minigame that drives
-    //    NCrystalSphereScreen (a UI screen node that is null headless).
-    // Tracked as M3 follow-up (inert UI seams for screen-shake / event minigames).
-    public static IEnumerable<object[]> KnownUiGapEvents => Cases("PunchOff", "CrystalSphere");
+    // Tracked as a follow-up (an inert NGame screen-shake seam).
+    public static IEnumerable<object[]> KnownUiGapEvents => Cases("PunchOff");
 
     [Theory]
     [MemberData(nameof(OvergrowthEvents))]
