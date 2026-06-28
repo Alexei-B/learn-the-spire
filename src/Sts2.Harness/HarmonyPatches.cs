@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Models;
 
 namespace Sts2.Harness;
 
@@ -43,6 +44,19 @@ internal static class HarmonyPatches
                 AccessTools.Method(typeof(LocTable), nameof(LocTable.GetRawText), new[] { typeof(string) }),
                 finalizer: new HarmonyMethod(typeof(HarmonyPatches), nameof(GetRawTextFinalizer)));
 
+            // Event option title/description lookups use LocString.GetIfExists, which returns null
+            // for a missing key (our tables are empty). EventOption.AddLocVars then dereferences the
+            // (null) description in CharacterModel.AddDetailsTo and NREs, faulting event init. Make
+            // the lookups fall back to a key-named LocString (which renders as the key via the
+            // patches above) so missing option text degrades instead of throwing.
+            harmony.Patch(
+                AccessTools.Method(typeof(EventModel), nameof(EventModel.GetOptionTitle)),
+                postfix: new HarmonyMethod(typeof(HarmonyPatches), nameof(GetOptionTitlePostfix)));
+
+            harmony.Patch(
+                AccessTools.Method(typeof(EventModel), nameof(EventModel.GetOptionDescription)),
+                postfix: new HarmonyMethod(typeof(HarmonyPatches), nameof(GetOptionDescriptionPostfix)));
+
             _applied = true;
         }
     }
@@ -66,5 +80,17 @@ internal static class HarmonyPatches
             __result = key;
         }
         return null;
+    }
+
+    // Missing event option title/description: hand back a key-named LocString (rendered as the key)
+    // instead of null, so AddLocVars/AddDetailsTo don't NRE on it.
+    private static void GetOptionTitlePostfix(EventModel __instance, string key, ref LocString? __result)
+    {
+        __result ??= new LocString(__instance.LocTable, key + ".title");
+    }
+
+    private static void GetOptionDescriptionPostfix(EventModel __instance, string key, ref LocString? __result)
+    {
+        __result ??= new LocString(__instance.LocTable, key + ".description");
     }
 }

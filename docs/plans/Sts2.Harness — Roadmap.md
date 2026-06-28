@@ -65,9 +65,13 @@ as the reference for what choices exist:
   `Apply` resolves it through the game's `EventSynchronizer.ChooseLocalOption` seam (running the
   option's effect on a thread-pool task, pumped to quiescence or a surfaced card choice). Once an
   event finishes — or is down to only a "proceed" option — the player leaves it by moving on the
-  map. The shared `EventRoom` path covers regular map events too (same projection/seam); still to
-  do: events that start combat (shared events) and that raise mid-event card choices, exercised
-  end-to-end; multi-page events; the `WillKillPlayer` flag in the projection.
+  map. The shared `EventRoom` path covers regular map events too (same projection/seam); regular
+  events that build their options from text keys (e.g. AromaOfChaos) work now that the harness
+  degrades the missing-key option title/description lookups (`GetOptionTitle`/`GetOptionDescription`
+  → `LocString.GetIfExists` returned null, NRE'ing in `CharacterModel.AddDetailsTo`) to a key-named
+  `LocString` (`AromaOfChaosTests`, which also covers a regular event raising a mid-event card
+  choice). Still to do: events that start combat (shared events) exercised end-to-end; multi-page
+  events; the `WillKillPlayer` flag in the projection.
 - **Treasure** (chests/relic pick) — _done_: entering a treasure room surfaces as
   `GamePhase.Treasure`/`TreasureView`. The harness reproduces the logic half of the null
   `NTreasureRoom`/`NTreasureRoomRelicCollection` UI: on entry it opens the chest (grant gold via
@@ -97,15 +101,17 @@ as the reference for what choices exist:
 - Deliverable: a seeded run plays start → act-3 boss with greedy/random legal choices.
 - _In progress_: a greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through
   events/combats/rewards/rest/treasure/map moves via the public option API, with a block-then-attack
-  combat heuristic. With the player buffed to a huge HP pool it navigates ~13+ act-1 floors across
-  every implemented room type without the harness throwing (`WalkthroughTests`). The **BygoneEffigy**
-  elite — whose wake move stalled the enemy-turn pump (`EndTurn` timed out) — is now fixed: its
-  `TalkCmd.Play` NRE'd because the harness boot never initialized the prefs save, so
-  `SaveManager.Instance.PrefsSave` was null; `GameRuntime` now calls `InitPrefsDataForTest`, and
-  `BygoneEffigyTests` covers the elite's sleep→wake→slash cycle. Reaching the boss is now blocked by:
-  (a) the **AromaOfChaos** event, whose option generation NREs in `CharacterModel.AddDetailsTo` — an
-  M3 event-content gap; (b) **shops** (M3) which a forward path may route through; and (c) other
-  un-handled content that still surfaces on some seeds (pump timeouts / shim `TypeLoad`s).
+  combat heuristic. With the player buffed to a huge HP pool it navigates ~16 act-1 floors across
+  every implemented room type — right up to the act-1 boss — without the harness throwing
+  (`WalkthroughTests`). Two earlier blockers are fixed: the **BygoneEffigy** elite, whose wake move
+  stalled the enemy-turn pump because `TalkCmd.Play` NRE'd on a null `SaveManager.Instance.PrefsSave`
+  (`GameRuntime` now calls `InitPrefsDataForTest`; `BygoneEffigyTests`); and the **AromaOfChaos**
+  event, whose option generation NRE'd in `CharacterModel.AddDetailsTo` because the option text keys
+  are missing from our empty loc tables (`GetOptionTitle`/`GetOptionDescription` returned null) — the
+  harness now degrades those to a key-named `LocString` (`AromaOfChaosTests`). Reaching/beating the
+  boss is now blocked by: (a) the **CeremonialBeast** act-1 boss, whose move loads
+  `Godot.GpuParticles2D` — a missing shim type (`TypeLoadException`); (b) **shops** (M3) which a
+  forward path may route through; and (c) other un-handled content on some seeds.
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

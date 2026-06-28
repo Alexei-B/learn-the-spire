@@ -8,8 +8,9 @@ via the real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) cover
 map-move surface, the battle-rewards screen, **event rooms** (the opening ancient event and the
 shared regular-event path), **treasure rooms** (open chest → pick/skip relic), and **rest sites**
 (rest/smith). A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the
-public API; buffed to a large HP pool it navigates ~13+ act-1 floors across every implemented room
-type before a specific event's option generation NREs. Remaining breadth (shops/bosses/
+public API; buffed to a large HP pool it navigates ~16 act-1 floors across every implemented room
+type, right up to the act-1 boss, before a missing shim type (`Godot.GpuParticles2D`, used by the
+boss's move) blocks entering the boss fight. Remaining breadth (shops/bosses/
 acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
@@ -57,7 +58,10 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   the Neow ancient event, like a fully-progressed save. No `SaveManager` epoch override is
   used (which would leak process-wide across runs).
 - **Localization**: real tables are only in the 1.9 GB `.pck`; Harmony patches make
-  missing tables/keys return the key string (mechanics don't need display text).
+  missing tables/keys return the key string (mechanics don't need display text). Event option
+  title/description lookups (`EventModel.GetOptionTitle`/`GetOptionDescription` →
+  `LocString.GetIfExists`) return *null* for a missing key — not the key — which NRE'd event init
+  (`CharacterModel.AddDetailsTo`); a postfix patch degrades those to a key-named `LocString` too.
 - **Drive** (`GameHost`): imperative primitives — `StartNewRun`, `EnterFirstRoom`,
   `MoveTo`, `PlayCard` (uses `CardModel.TryManualPlay` = the *faithful* path that pays
   energy; **not** `CardCmd.AutoPlay`, which is free), `EndTurn`. Read via `Run`,
@@ -161,10 +165,11 @@ Shops, deck-management screens, elites/bosses, acts 2–3, ascension, local mult
 `GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
 card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, and rest sites.
-Still missing: events that start combat or raise mid-event card choices (exercised end-to-end),
-multi-page events, the event `WillKillPlayer` hint, and events whose option generation NREs headless
-(e.g. AromaOfChaos via `CharacterModel.AddDetailsTo`, which currently blocks a forward run from
-reaching the boss); card-reward alternatives/reroll; enemy-turn-triggered choices; full multi-select
-subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); and the remaining
-un-handled content that breaks a forward playthrough on some seeds. (The BygoneEffigy elite's
-sleep/wake turn, which used to stall the pump, is fixed — see Boot, prefs save.) → `docs/plans/`. 
+Still missing: events that start combat (exercised end-to-end), multi-page events, and the event
+`WillKillPlayer` hint; card-reward alternatives/reroll; enemy-turn-triggered choices; full
+multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); shim
+types still absent that some content loads (e.g. `Godot.GpuParticles2D`, used by the CeremonialBeast
+act-1 boss's move, currently blocks a forward run at the boss); and the remaining un-handled content
+that breaks a forward playthrough on some seeds. (Two earlier forward-run blockers are fixed: the
+BygoneEffigy elite's enemy-turn stall — see Boot, prefs save — and the AromaOfChaos event-option NRE
+— see Localization.) → `docs/plans/`. 
