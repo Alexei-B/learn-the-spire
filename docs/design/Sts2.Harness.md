@@ -7,9 +7,11 @@ full combat (faithful play + enemy turns) → victory → **post-combat rewards*
 via the real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) covers the combat +
 map-move surface, the battle-rewards screen, **event rooms** (the opening ancient event and the
 shared regular-event path), **treasure rooms** (open chest → pick/skip relic), **rest sites**
-(rest/smith), and **shops** (buy cards/relics/potions, card removal, leave). A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the
-public API; buffed to a large HP pool it navigates ~16 act-1 floors across every implemented room
-type, right up to the act-1 boss. Separately, `Act1FightsTests` / `Act1EventsTests` enumerate *every*
+(rest/smith), **shops** (buy cards/relics/potions, card removal, leave), and **potion use/discard**.
+A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the public API;
+buffed to a large HP pool it now plays **all of act 1 and beats the act-1 boss** (CeremonialBeast,
+floor 17) through the option API (`WalkthroughTests`), ending on the terminal end-of-act state (the
+act 1 → 2 transition is M4, not yet built). Separately, `Act1FightsTests` / `Act1EventsTests` enumerate *every*
 act-1 fight and event (both index-0 acts plus shared events) and drive each to a terminal state in
 isolation; all 42 fights (including all three Overgrowth bosses — the `GpuParticles2D` shim gap that
 once blocked the act-1 boss is closed) and every event resolve, including the Crystal Sphere minigame

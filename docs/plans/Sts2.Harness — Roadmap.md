@@ -139,10 +139,13 @@ as the reference for what choices exist:
 - **Win/lose terminal states**: victory screen, game-over, score.
 - Deliverable: a seeded run plays start → act-3 boss with greedy/random legal choices.
 - _In progress_: a greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through
-  events/combats/rewards/rest/treasure/map moves via the public option API, with a block-then-attack
-  combat heuristic. With the player buffed to a huge HP pool it navigates ~16 act-1 floors across
-  every implemented room type — right up to the act-1 boss — without the harness throwing
-  (`WalkthroughTests`). Two earlier blockers are fixed: the **BygoneEffigy** elite, whose wake move
+  events/combats/rewards/rest/treasure/**shops**/map moves via the public option API, with a
+  block-then-attack combat heuristic. With the player buffed to a huge HP pool it now plays **all of
+  act 1 and beats the act-1 boss** (CeremonialBeast, floor 17) entirely through the public option
+  API (`WalkthroughTests`): beating the boss leaves no reachable map moves (the act 1 → 2 transition
+  below is still unbuilt), surfacing as the terminal `GamePhase.Other` "won the act" state the test
+  asserts. The remaining M4 work is the **end-of-act / act transition** flow (boss → next-act
+  handoff, boss relic rewards) and acts 2–3. Two earlier blockers are fixed: the **BygoneEffigy** elite, whose wake move
   stalled the enemy-turn pump because `TalkCmd.Play` NRE'd on a null `SaveManager.Instance.PrefsSave`
   (`GameRuntime` now calls `InitPrefsDataForTest`; `BygoneEffigyTests`); and the **AromaOfChaos**
   event, whose option generation NRE'd in `CharacterModel.AddDetailsTo` because the option text keys
