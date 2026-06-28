@@ -1,9 +1,15 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Events;
+using MegaCrit.Sts2.Core.Nodes;
 
 namespace Sts2.Harness;
 
@@ -15,6 +21,9 @@ namespace Sts2.Harness;
 /// text is irrelevant to mechanics — so logging/text formatting on hot paths doesn't crash.</item>
 /// <item>The Crystal Sphere event minigame's UI screen (<c>NCrystalSphereScreen</c>, null headless)
 /// is skipped and the plain-C# minigame is routed to the harness so it surfaces as agent choices.</item>
+/// <item>The PunchOff event's cosmetic <c>NGame.Instance.ScreenShakeTrauma</c> call — an unguarded
+/// <c>callvirt</c> on the null UI singleton — is removed from its option's IL so the option's logic
+/// (curse, relic reward, finish) runs instead of NRE'ing at the call site.</item>
 /// </list>
 /// </summary>
 internal static class HarmonyPatches
@@ -69,6 +78,18 @@ internal static class HarmonyPatches
                     nameof(MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere.NCrystalSphereScreen.ShowScreen)),
                 prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(ShowCrystalSphereScreenPrefix)));
 
+            // PunchOff's "Nab" option calls NGame.Instance.ScreenShakeTrauma — a callvirt on the null
+            // headless UI singleton that NREs *before* the relic reward / SetEventFinished that follow
+            // it, so the event can't resolve. Making NGame.Instance non-null would defeat the hundreds
+            // of NGame.Instance?.… guards the logic relies on, so instead strip just this one cosmetic
+            // call from the option's IL (its async state machine's MoveNext).
+            Type nabStateMachine = typeof(PunchOff)
+                .GetNestedTypes(BindingFlags.NonPublic)
+                .First(t => t.Name.Contains("Nab") && typeof(IAsyncStateMachine).IsAssignableFrom(t));
+            harmony.Patch(
+                AccessTools.Method(nabStateMachine, "MoveNext"),
+                transpiler: new HarmonyMethod(typeof(HarmonyPatches), nameof(StripScreenShakeTranspiler)));
+
             _applied = true;
         }
     }
@@ -117,5 +138,29 @@ internal static class HarmonyPatches
         GameHost.CrystalSphereScreenHook?.Invoke(grid);
         __result = null!;
         return false;
+    }
+
+    // Replace `NGame.Instance.ScreenShakeTrauma(strength)` with two pops: the receiver
+    // (null NGame.Instance) and the strength arg are discarded, keeping the stack balanced, so the
+    // call is dropped without an NRE while every other instruction (including the receiver-producing
+    // get_Instance and the surrounding option logic) is left exactly as is.
+    private static IEnumerable<CodeInstruction> StripScreenShakeTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        MethodInfo screenShake = AccessTools.Method(typeof(NGame), nameof(NGame.ScreenShakeTrauma));
+        foreach (CodeInstruction instruction in instructions)
+        {
+            if (instruction.operand is MethodInfo method && method == screenShake)
+            {
+                var popArg = new CodeInstruction(OpCodes.Pop);
+                popArg.labels.AddRange(instruction.labels);
+                popArg.blocks.AddRange(instruction.blocks);
+                yield return popArg;            // discard the strength argument
+                yield return new CodeInstruction(OpCodes.Pop); // discard the (null) NGame.Instance receiver
+            }
+            else
+            {
+                yield return instruction;
+            }
+        }
     }
 }

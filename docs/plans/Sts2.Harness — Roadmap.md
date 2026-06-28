@@ -82,13 +82,15 @@ as the reference for what choices exist:
   plus a `SetCrystalSphereTool` toggle (Big 3×3 / Small single). Spending the last divination
   completes the minigame, whose revealed-item rewards flow through the existing `OfferCustom`
   custom-reward gate; only items whose whole footprint is uncovered pay out (`CrystalSphereTests`
-  asserts full-vs-partial reveal and end-to-end payout). The lone remaining event gap is **PunchOff**
-  (its "Nab" option calls `NGame.Instance.ScreenShakeTrauma` unguarded — a `callvirt` on a null UI
-  singleton that NREs before any patch can intercept; forcing `NGame.Instance` non-null would violate
-  the "leave `N*.Instance` null" invariant the logic relies on), enumerated-but-skipped with a reason.
-  Still to do: per-option event coverage (the driver walks one greedy path); events that start combat
-  exercised across every branch; multi-page events; the `WillKillPlayer` flag in the projection; the
-  PunchOff screen-shake seam.
+  asserts full-vs-partial reveal and end-to-end payout). **PunchOff** — _done_: its "Nab" option
+  called `NGame.Instance.ScreenShakeTrauma` unguarded — a `callvirt` on a null UI singleton that NRE'd
+  *before* the option's relic reward / finish. Rather than make `NGame.Instance` non-null (which would
+  defeat the hundreds of `NGame.Instance?.…` guards the logic relies on), a Harmony transpiler strips
+  just that cosmetic call from the option's async-state-machine IL (replacing the `callvirt` with
+  stack-balancing pops), so the rest of the effect runs (`PunchOffTests` asserts the curse + relic
+  payout). **Every act-1 fight and event now resolves through the public option API — no skips.** Still
+  to do: per-option event coverage (the driver walks one greedy path); events that start combat
+  exercised across every branch; multi-page events; the `WillKillPlayer` flag in the projection.
 - **Treasure** (chests/relic pick) — _done_: entering a treasure room surfaces as
   `GamePhase.Treasure`/`TreasureView`. The harness reproduces the logic half of the null
   `NTreasureRoom`/`NTreasureRoomRelicCollection` UI: on entry it opens the chest (grant gold via

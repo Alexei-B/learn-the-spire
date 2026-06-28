@@ -32,10 +32,9 @@ public sealed class Act1EventsTests
         "WhisperingHollow", "WoodCarvings");
 
     // Underdocks (the alternate index-0 act) events. SunkenStatue is shared with Overgrowth and
-    // already covered above, so it is omitted here to avoid a duplicate case. PunchOff is a
-    // known UI-seam gap (see KnownUiGapEvents).
+    // already covered above, so it is omitted here to avoid a duplicate case.
     public static IEnumerable<object[]> UnderdocksEvents => Cases(
-        "AbyssalBaths", "DrowningBeacon", "EndlessConveyor", "SpiralingWhirlpool",
+        "AbyssalBaths", "DrowningBeacon", "EndlessConveyor", "PunchOff", "SpiralingWhirlpool",
         "SunkenTreasury", "DoorsOfLightAndDark", "TrashHeap", "WaterloggedScriptorium");
 
     // Events shared across all acts (ModelDb.AllSharedEvents) — also reachable in act 1.
@@ -44,15 +43,6 @@ public sealed class Act1EventsTests
         "RelicTrader", "RoomFullOfCheese", "SelfHelpBook", "SlipperyBridge", "StoneOfAllTime",
         "Symbiote", "TeaMaster", "TheFutureOfPotions", "TheLegendsWereTrue", "ThisOrThat",
         "WarHistorianRepy", "WelcomeToWongos");
-
-    // Events whose primary path depends on an interactive UI seam the headless harness does not yet
-    // model, so they cannot resolve through the option API today:
-    //  - PunchOff: its "Nab" option calls NGame.Instance.ScreenShakeTrauma unguarded; NGame.Instance
-    //    is null headless and the call is a callvirt (NREs at the call site, before any patch could
-    //    intercept), and forcing NGame.Instance non-null would break the many NGame.Instance?.…
-    //    guards other paths rely on.
-    // Tracked as a follow-up (an inert NGame screen-shake seam).
-    public static IEnumerable<object[]> KnownUiGapEvents => Cases("PunchOff");
 
     [Theory]
     [MemberData(nameof(OvergrowthEvents))]
@@ -73,16 +63,6 @@ public sealed class Act1EventsTests
     [Theory]
     [MemberData(nameof(SharedEvents))]
     public async Task SharedEvent_Resolves(string eventName)
-    {
-        var t = Task.Run(() => RunEvent(eventName));
-        await t.WaitAsync(TimeSpan.FromSeconds(90));
-    }
-
-    // Enumerated but skipped: these events need an interactive UI seam the headless harness does not
-    // model yet (see KnownUiGapEvents). Kept here so the gap stays visible in the test list.
-    [Theory(Skip = "Needs an inert UI seam (screen-shake / event minigame); tracked as M3 follow-up.")]
-    [MemberData(nameof(KnownUiGapEvents))]
-    public async Task UiGapEvent_Resolves(string eventName)
     {
         var t = Task.Run(() => RunEvent(eventName));
         await t.WaitAsync(TimeSpan.FromSeconds(90));
