@@ -4,6 +4,7 @@ using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Rewards;
 
 namespace Sts2.Harness;
 
@@ -21,6 +22,12 @@ public enum OptionKind
 
     /// <summary>Resolve a pending mid-effect card choice with a (possibly empty) set of cards.</summary>
     SelectCards,
+
+    /// <summary>Take one reward from the post-combat rewards screen (gold/potion/relic/card).</summary>
+    TakeReward,
+
+    /// <summary>Leave the rewards screen, skipping any rewards not taken, and return to the map.</summary>
+    ProceedFromRewards,
 }
 
 /// <summary>
@@ -57,6 +64,9 @@ public sealed class GameOption
     internal Player? Player { get; }
     internal IReadOnlyList<CardModel>? SelectedCardModels { get; }
 
+    /// <summary>The reward this <see cref="OptionKind.TakeReward"/> option claims; null otherwise.</summary>
+    internal Reward? Reward { get; }
+
     private GameOption(
         OptionKind kind,
         ulong playerId,
@@ -69,7 +79,8 @@ public sealed class GameOption
         Creature? target = null,
         MapCoord? mapCoord = null,
         Player? player = null,
-        IReadOnlyList<CardModel>? selectedCardModels = null)
+        IReadOnlyList<CardModel>? selectedCardModels = null,
+        Reward? reward = null)
     {
         Kind = kind;
         PlayerId = playerId;
@@ -83,6 +94,7 @@ public sealed class GameOption
         MapCoord = mapCoord;
         Player = player;
         SelectedCardModels = selectedCardModels;
+        Reward = reward;
     }
 
     internal static GameOption PlayCardOption(Player player, CardModel cardModel, CardView card, Creature? target)
@@ -113,4 +125,20 @@ public sealed class GameOption
             OptionKind.SelectCards, player.NetId, desc,
             selectedCards: cards, selectedCardModels: cardModels, player: player);
     }
+
+    /// <summary>
+    /// Take a non-card reward (gold/potion/relic) from the rewards screen.
+    /// </summary>
+    internal static GameOption TakeRewardOption(Player player, Reward reward, string description) =>
+        new(OptionKind.TakeReward, player.NetId, description, player: player, reward: reward);
+
+    /// <summary>
+    /// Take a card reward by picking one of its offered cards (added to the deck).
+    /// </summary>
+    internal static GameOption TakeCardRewardOption(Player player, Reward reward, CardModel cardToPick, CardView card) =>
+        new(OptionKind.TakeReward, player.NetId, $"Take card {cardToPick.Id.Entry}",
+            card: card, cardModel: cardToPick, player: player, reward: reward);
+
+    internal static GameOption ProceedFromRewardsOption(Player player) =>
+        new(OptionKind.ProceedFromRewards, player.NetId, "Proceed (leave rewards)", player: player);
 }

@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Entities.CardRewardAlternatives;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.TestSupport;
 
 namespace Sts2.Harness;
@@ -108,12 +109,25 @@ internal sealed class HarnessCardSelector : ICardSelector
     }
 
     /// <summary>
-    /// Card-reward selection (post-combat) is not modelled yet; pick the first option so the
-    /// flow never blocks. Replaced when reward handling lands (M2).
+    /// The card the harness has chosen for the next post-combat card reward. Set by
+    /// <see cref="GameHost.Apply"/> immediately before taking a <see cref="RewardType.Card"/> reward,
+    /// then consumed by <see cref="GetSelectedCardReward"/>. Cleared after each read.
+    /// </summary>
+    internal CardModel? NextCardRewardPick { get; set; }
+
+    /// <summary>
+    /// Card-reward selection (post-combat). Returns whichever card the harness pre-selected via
+    /// <see cref="NextCardRewardPick"/> (set when applying a <see cref="OptionKind.TakeReward"/>
+    /// option for a card reward). Falls back to the first option if nothing was staged, so the
+    /// flow never blocks on a missing choice.
     /// </summary>
     public CardRewardSelection GetSelectedCardReward(
-        IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives) =>
-        new() { card = options.FirstOrDefault()?.Card };
+        IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives)
+    {
+        CardModel? pick = NextCardRewardPick ?? options.FirstOrDefault()?.Card;
+        NextCardRewardPick = null;
+        return new CardRewardSelection { card = pick };
+    }
 
     private static TaskCompletionSource NewSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);

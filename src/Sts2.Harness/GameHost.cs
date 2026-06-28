@@ -35,6 +35,16 @@ public sealed class GameHost
     private static IDisposable? _selectorScope;
 
     /// <summary>
+    /// The post-combat rewards currently on offer, or null when not on the rewards screen.
+    /// Surfaced as <see cref="GamePhase.Reward"/> and resolved through the reward options.
+    /// </summary>
+    internal MegaCrit.Sts2.Core.Rewards.RewardsSet? PendingRewards { get; private set; }
+
+    // The combat room whose rewards we have already generated, so we offer them exactly once
+    // per fight even while the player lingers on the rewards screen before moving on.
+    private MegaCrit.Sts2.Core.Rooms.AbstractRoom? _rewardedRoom;
+
+    /// <summary>
     /// Create and start a fresh single-player run with the given seed.
     /// Mirrors the game's own NSceneBootstrapper flow, minus all UI/asset steps.
     /// </summary>
@@ -122,6 +132,7 @@ public sealed class GameHost
         }
         // The play runs on the thread pool; pump until it finishes or blocks on a card choice.
         PumpCombatUntilIdleOrChoice();
+        TryOfferCombatRewards();
         return true;
     }
 
@@ -135,7 +146,54 @@ public sealed class GameHost
         MegaCrit.Sts2.Core.Commands.PlayerCmd.EndTurn(player, canBackOut: false);
         DrainActionQueue();
         WaitUntilPlayerCanActOrCombatEnds(player);
+        TryOfferCombatRewards();
     }
+
+    // ---------------------------------------------------------------------------------
+    // Post-combat rewards. The faithful victory→rewards flow is driven by the combat UI
+    // node (NCombatUi.OnCombatWon → CombatRoom.OfferRoomEndRewards), which is null in the
+    // headless harness. We reproduce its logic half: once a won combat has fully ended we
+    // generate the room's RewardsSet and register it with the synchronizer, then surface it
+    // as GamePhase.Reward. Selecting/skipping happens through the public option API.
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// If combat has just been won, generate and offer the room's end-of-combat rewards so
+    /// they surface as <see cref="GamePhase.Reward"/>. Idempotent per combat room; a no-op
+    /// while still in combat, on a loss, or for encounters that grant no rewards.
+    /// </summary>
+    private void TryOfferCombatRewards()
+    {
+        if (InCombat || PendingRewards is not null)
+        {
+            return;
+        }
+        if (Run.CurrentRoom is not MegaCrit.Sts2.Core.Rooms.CombatRoom room || ReferenceEquals(room, _rewardedRoom))
+        {
+            return;
+        }
+        // Only the victor gets rewards; a dead player means a loss (handled as game over).
+        if (!Run.Players[0].Creature.IsAlive)
+        {
+            return;
+        }
+        if (room.Encounter is { ShouldGiveRewards: false })
+        {
+            return;
+        }
+
+        _rewardedRoom = room;
+        Player player = Run.Players[0];
+
+        // GenerateForRoomEnd populates the rewards and runs reward-modifying hooks but does not
+        // offer them; we then register the set so the synchronizer's select/skip APIs work.
+        MegaCrit.Sts2.Core.Rewards.RewardsSet set =
+            Pump(MegaCrit.Sts2.Core.Commands.RewardsCmd.GenerateForRoomEnd(player, room));
+        _ = RunManager.Instance.RewardsSetSynchronizer.BeginRewardsSet(set);
+        PendingRewards = set;
+    }
+
+    private static T Pump<T>(System.Threading.Tasks.Task<T> task) => task.GetAwaiter().GetResult();
 
     // ---------------------------------------------------------------------------------
     // Public API: read state, list legal options, apply a chosen option.
@@ -164,6 +222,12 @@ public sealed class GameHost
         if (pending is not null)
         {
             return BuildChoiceOptions(player, pending);
+        }
+
+        // The post-combat rewards screen: take rewards then proceed back to the map.
+        if (PendingRewards is not null)
+        {
+            return BuildRewardOptions(player, PendingRewards);
         }
 
         if (InCombat)
@@ -251,6 +315,46 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Build the options for the post-combat rewards screen: one take option per not-yet-taken
+    /// reward (card rewards expand to one option per offered card), plus a proceed option that
+    /// leaves the screen and skips whatever is left.
+    /// </summary>
+    private static IReadOnlyList<GameOption> BuildRewardOptions(Player player, MegaCrit.Sts2.Core.Rewards.RewardsSet set)
+    {
+        var options = new List<GameOption>();
+        foreach (MegaCrit.Sts2.Core.Rewards.Reward reward in set.Rewards)
+        {
+            if (reward.SuccessfullySelected)
+            {
+                continue;
+            }
+            switch (reward)
+            {
+                case MegaCrit.Sts2.Core.Rewards.GoldReward gold:
+                    options.Add(GameOption.TakeRewardOption(player, gold, $"Take {gold.Amount} gold"));
+                    break;
+                case MegaCrit.Sts2.Core.Rewards.PotionReward potion:
+                    options.Add(GameOption.TakeRewardOption(
+                        player, potion, $"Take potion {potion.Potion?.Id.Entry ?? "?"}"));
+                    break;
+                case MegaCrit.Sts2.Core.Rewards.RelicReward relic:
+                    options.Add(GameOption.TakeRewardOption(
+                        player, relic, $"Take relic {relic.Relic?.Id.Entry ?? "?"}"));
+                    break;
+                case MegaCrit.Sts2.Core.Rewards.CardReward card:
+                    foreach (MegaCrit.Sts2.Core.Models.CardModel offered in card.Cards)
+                    {
+                        CardView view = GameStateProjection.ProjectCard(offered, canPlay: false);
+                        options.Add(GameOption.TakeCardRewardOption(player, card, offered, view));
+                    }
+                    break;
+            }
+        }
+        options.Add(GameOption.ProceedFromRewardsOption(player));
+        return options;
+    }
+
+    /// <summary>
     /// Resolve a chosen option against the live game and pump to quiescence. The option
     /// must have come from <see cref="ListOptions(ulong)"/> for the current state.
     /// </summary>
@@ -279,9 +383,62 @@ public sealed class GameHost
                 // The effect resumes on the thread pool; pump until it finishes or blocks again.
                 PumpCombatUntilIdleOrChoice();
                 break;
+            case OptionKind.TakeReward:
+                TakeReward(option);
+                break;
+            case OptionKind.ProceedFromRewards:
+                ProceedFromRewards();
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(option), option.Kind, "Unknown option kind.");
         }
+    }
+
+    /// <summary>
+    /// Claim one reward from the pending rewards set. For a card reward, the chosen card is
+    /// staged on the selector so the game's <c>GetSelectedCardReward</c> seam returns it. The
+    /// reward's effects (gain gold/potion/relic, add card to deck) run on the thread pool, so
+    /// we pump the selection task and then drain the action queue.
+    /// </summary>
+    private void TakeReward(GameOption option)
+    {
+        if (PendingRewards is null)
+        {
+            throw new InvalidOperationException("No rewards are pending to take.");
+        }
+        MegaCrit.Sts2.Core.Rewards.Reward reward = option.Reward
+            ?? throw new InvalidOperationException("Reward option carried no reward.");
+
+        if (option.CardModel is not null)
+        {
+            // Card reward: stage which of the offered cards to add to the deck.
+            Selector.NextCardRewardPick = option.CardModel;
+        }
+
+        Pump(RunManager.Instance.RewardsSetSynchronizer.SelectLocalReward(reward));
+        DrainActionQueue();
+        // The rewards screen stays up (mirroring the in-game proceed button) even once every
+        // reward is taken; the player leaves it explicitly via ProceedFromRewards.
+    }
+
+    /// <summary>
+    /// Leave the rewards screen, skipping any rewards not yet taken (mirrors clicking proceed:
+    /// the synchronizer marks the remaining rewards skipped and completes the set), and return
+    /// to the map.
+    /// </summary>
+    private void ProceedFromRewards()
+    {
+        if (PendingRewards is null)
+        {
+            throw new InvalidOperationException("Not on a rewards screen to proceed from.");
+        }
+        var sync = RunManager.Instance.RewardsSetSynchronizer;
+        if (!sync.IsRewardsSetCompleted(PendingRewards))
+        {
+            sync.SkipLocalRewardsSet();
+        }
+        DrainActionQueue();
+        PendingRewards = null;
     }
 
     private Player GetPlayer(ulong playerId) =>

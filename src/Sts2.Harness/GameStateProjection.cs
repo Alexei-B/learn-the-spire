@@ -36,6 +36,7 @@ internal static class GameStateProjection
             Combat = combat is null ? null : ProjectCombat(combat),
             Map = ProjectMap(run),
             PendingChoice = pending is null ? null : ProjectPendingChoice(pending),
+            Rewards = host.PendingRewards is null ? null : ProjectRewards(host.PendingRewards),
         };
     }
 
@@ -56,6 +57,10 @@ internal static class GameStateProjection
         if (host.InCombat)
         {
             return GamePhase.Combat;
+        }
+        if (host.PendingRewards is not null)
+        {
+            return GamePhase.Reward;
         }
         // No room yet, or sitting on a map point we can move off of: treat as Map when
         // there is somewhere to go, otherwise as an unmodelled room/screen.
@@ -119,6 +124,38 @@ internal static class GameStateProjection
             MinSelect = pending.MinSelect,
             MaxSelect = pending.MaxSelect,
         };
+
+    private static RewardsView ProjectRewards(MegaCrit.Sts2.Core.Rewards.RewardsSet set) =>
+        new() { Rewards = set.Rewards.Select(ProjectReward).ToList() };
+
+    private static RewardView ProjectReward(MegaCrit.Sts2.Core.Rewards.Reward reward) => reward switch
+    {
+        MegaCrit.Sts2.Core.Rewards.GoldReward gold => new RewardView
+        {
+            Type = MegaCrit.Sts2.Core.Rewards.RewardType.Gold,
+            Taken = gold.SuccessfullySelected,
+            Gold = gold.Amount,
+        },
+        MegaCrit.Sts2.Core.Rewards.PotionReward potion => new RewardView
+        {
+            Type = MegaCrit.Sts2.Core.Rewards.RewardType.Potion,
+            Taken = potion.SuccessfullySelected,
+            PotionId = potion.Potion?.Id.Entry,
+        },
+        MegaCrit.Sts2.Core.Rewards.RelicReward relic => new RewardView
+        {
+            Type = MegaCrit.Sts2.Core.Rewards.RewardType.Relic,
+            Taken = relic.SuccessfullySelected,
+            RelicId = relic.Relic?.Id.Entry,
+        },
+        MegaCrit.Sts2.Core.Rewards.CardReward card => new RewardView
+        {
+            Type = MegaCrit.Sts2.Core.Rewards.RewardType.Card,
+            Taken = card.SuccessfullySelected,
+            Cards = card.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
+        },
+        _ => new RewardView { Type = MegaCrit.Sts2.Core.Rewards.RewardType.None, Taken = reward.SuccessfullySelected },
+    };
 
     private static PowerView ProjectPower(PowerModel power) =>
         new() { PowerId = power.Id.Entry, Amount = power.Amount };

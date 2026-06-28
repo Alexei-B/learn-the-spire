@@ -3,6 +3,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
+using MegaCrit.Sts2.Core.Rewards;
 
 namespace Sts2.Harness;
 
@@ -29,12 +30,19 @@ public enum GamePhase
     /// </summary>
     Choice,
 
+    /// <summary>
+    /// The post-combat rewards screen: gold/potion/relic/card rewards to take, then proceed.
+    /// Resolve via the <see cref="OptionKind.TakeReward"/> / <see cref="OptionKind.ProceedFromRewards"/>
+    /// options from <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    Reward,
+
     /// <summary>The run has ended with all players dead.</summary>
     GameOver,
 
     /// <summary>
     /// A room/screen the harness does not yet model as first-class options
-    /// (reward, event, shop, rest, treasure). State is still readable.
+    /// (event, shop, rest, treasure). State is still readable.
     /// </summary>
     Other,
 }
@@ -63,6 +71,37 @@ public sealed record GameState
 
     /// <summary>A mid-effect card choice the game is blocked on, or null if none.</summary>
     public PendingChoiceView? PendingChoice { get; init; }
+
+    /// <summary>The post-combat rewards on offer, or null when not on the rewards screen.</summary>
+    public RewardsView? Rewards { get; init; }
+}
+
+/// <summary>The set of post-combat rewards offered to a player.</summary>
+public sealed record RewardsView
+{
+    /// <summary>The rewards in display order; already-taken ones are flagged <see cref="RewardView.Taken"/>.</summary>
+    public required IReadOnlyList<RewardView> Rewards { get; init; }
+}
+
+/// <summary>A single reward on the rewards screen.</summary>
+public sealed record RewardView
+{
+    public required RewardType Type { get; init; }
+
+    /// <summary>Whether this reward has already been taken.</summary>
+    public required bool Taken { get; init; }
+
+    /// <summary>Gold amount for <see cref="RewardType.Gold"/>; null otherwise.</summary>
+    public int? Gold { get; init; }
+
+    /// <summary>Potion id for <see cref="RewardType.Potion"/>; null otherwise.</summary>
+    public string? PotionId { get; init; }
+
+    /// <summary>Relic id for <see cref="RewardType.Relic"/>; null otherwise.</summary>
+    public string? RelicId { get; init; }
+
+    /// <summary>The cards on offer for <see cref="RewardType.Card"/>; null otherwise.</summary>
+    public IReadOnlyList<CardView>? Cards { get; init; }
 }
 
 /// <summary>A mid-effect card choice the game is waiting on (e.g. discover/exhaust).</summary>

@@ -3,10 +3,10 @@
 Orientation for working on the harness. Read the code for detail; this is the map.
 
 **Status:** vertical slice works — headless boot → map → enter room → full combat
-(faithful play + enemy turns) → victory, via the real `sts2.dll`. The public API
-(`GetState`/`ListOptions`/`Apply`) now covers the combat + map-move surface. Choice-context
-injection and all breadth (rewards/events/shops/bosses/acts 2–3/multiplayer/ascension) are
-**not built**; see `docs/plans/`.
+(faithful play + enemy turns) → victory → **post-combat rewards** → back to the map, via the
+real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) covers the combat + map-move
+surface plus the battle-rewards screen. Remaining breadth (events/shops/rest/treasure/bosses/
+acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
 
@@ -62,7 +62,19 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   on whichever comes first — queue drained, or a choice pending — so a blocked choice returns
   control instead of deadlocking; `GetState`/`ListOptions` then surface it (`GamePhase.Choice`)
   and `Apply` resolves it, resuming the effect. Post-combat card-reward selection
-  (`GetSelectedCardReward`) is stubbed to pick the first option until rewards land (M2).
+  (`GetSelectedCardReward`) returns whichever card the harness staged when applying the card
+  reward's `TakeReward` option (see Battle rewards below).
+- **Battle rewards**: the faithful victory→rewards flow is driven by `NCombatUi.OnCombatWon`,
+  which is null headless, so the harness reproduces its logic half. After a won combat fully
+  ends (`TryOfferCombatRewards`, run once per `CombatRoom`), it calls
+  `RewardsCmd.GenerateForRoomEnd` (populates the `RewardsSet` + reward-modifying hooks, without
+  offering) then `RewardsSetSynchronizer.BeginRewardsSet`. The set surfaces as
+  `GamePhase.Reward`/`RewardsView`; `ListOptions` yields a `TakeReward` per untaken reward (a
+  card reward expands to one option per offered card) plus `ProceedFromRewards`. `Apply` of a
+  `TakeReward` calls `RewardsSetSynchronizer.SelectLocalReward` (staging the chosen card on the
+  selector first for card rewards); `ProceedFromRewards` calls `SkipLocalRewardsSet` for any
+  untaken rewards and returns to the map. All driven on the harness thread; the executor is
+  unpaused between combat-end and the next room, so reward effects run.
 - **Async→sync pump**: card plays drain the action queue
   (`ActionExecutor.FinishedExecutingActions`); the enemy turn resolves on fire-and-forget
   tasks, so `EndTurn` waits on a `TaskCompletionSource` wired to combat events
@@ -84,8 +96,9 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Rewards, events, shops, rest, treasure, elites/bosses, acts 2–3, ascension, local
-multiplayer. The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
-surface plus in-combat card-choice injection; still missing: card-reward selection,
-enemy-turn-triggered choices, and full multi-select subset enumeration (min &gt; 1 currently
-offers a single exact-minimum selection). → `docs/plans/`.
+Events, shops, rest, treasure, elites/bosses, acts 2–3, ascension, local multiplayer. The
+`GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
+card-choice injection, and the post-combat battle-rewards screen; still missing: card-reward
+alternatives/reroll and custom (event/relic) reward sets, enemy-turn-triggered choices, and full
+multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection).
+→ `docs/plans/`.

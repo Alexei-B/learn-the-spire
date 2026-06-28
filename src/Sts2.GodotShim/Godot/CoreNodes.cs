@@ -44,12 +44,31 @@ public class PackedScene : Resource
 
 public class SceneTreeTimer : RefCounted { }
 
-public class Texture2D : Resource { }
-
 public class Texture : Resource { }
+
+public class Texture2D : Texture { }
+
+public class CompressedTexture2D : Texture2D { }
+
+public class AtlasTexture : Texture2D { }
+
+public class ImageTexture : Texture2D { }
+
+// Material/shader resources. Referenced as property/field types on card and relic models
+// (e.g. for shader-driven visuals); headless they are only touched on skipVisuals paths, so
+// the types just need to exist. The real hierarchy is Material : Resource, the concrete
+// materials deriving from it.
+public class Material : Resource { }
+
+public class ShaderMaterial : Material { }
+
+public class Shader : Resource { }
 
 public class Node : GodotObject
 {
+    /// <summary>Node name. Real Godot types it as a <see cref="StringName"/>; inert here.</summary>
+    public StringName Name { get; set; } = "";
+
     // Visual-only; returns an inert tween. Headless callers either don't run (TestMode/
     // skipVisuals gated) or harmlessly drive a no-op tween.
     public Tween CreateTween() => new();

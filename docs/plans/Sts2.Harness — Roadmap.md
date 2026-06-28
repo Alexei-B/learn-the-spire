@@ -32,13 +32,21 @@ Turn the imperative `GameHost` primitives into the intended clean interface.
   exhaust, search, scry, …) record a `PendingChoice`, surface through `GetState`
   (`GamePhase.Choice`) / `ListOptions` (`SelectCards` options), and resolve via `Apply`. The
   combat pump waits on queue-drain-or-choice so a blocked effect returns control instead of
-  deadlocking. Remaining: post-combat card-reward selection (with M2 rewards), enemy-turn-
-  triggered player choices, and full multi-select subset enumeration (min &gt; 1 currently
-  offers one exact-minimum selection).
+  deadlocking. Post-combat card-reward selection now lands with M2's battle rewards (the
+  `GetSelectedCardReward` seam returns the harness-staged pick). Remaining: enemy-turn-triggered
+  player choices, and full multi-select subset enumeration (min &gt; 1 currently offers one
+  exact-minimum selection).
 
 ## M2 — Combat completeness
-- **Battle rewards**: gold, potions, card reward (pick/skip), relic; the post-combat
-  `RewardsSet` flow and proceeding back to the map.
+- **Battle rewards** — _done_: winning a combat surfaces `GamePhase.Reward` with the room's
+  generated `RewardsSet` (gold/potion/relic/card). The harness reproduces the logic half of the
+  victory→rewards flow (normally driven by the null `NCombatUi`): on a won fight it calls
+  `RewardsCmd.GenerateForRoomEnd` + `RewardsSetSynchronizer.BeginRewardsSet`, then exposes
+  `TakeReward` options (card rewards expand to one option per offered card; picking one stages it
+  through the `GetSelectedCardReward` seam) and a `ProceedFromRewards` option that skips any
+  untaken rewards and returns to the map. Surfaced via `GetState` (`RewardsView`) /
+  `ListOptions`, resolved by `Apply`. Remaining: card-reward alternatives (Skip-as-heal/sacrifice
+  relics), reroll, and event/relic custom reward sets (Orrery, Calling Bell, …).
 - **Potions**: use (targeted/untargeted), discard.
 - **Mid-combat player choices**: discover/scry/select-card/choose-enemy effects via the
   injected choice context.
