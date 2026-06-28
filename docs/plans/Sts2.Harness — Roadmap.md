@@ -147,16 +147,24 @@ as the reference for what choices exist:
   (`WaitForGameOver`). A won run surfaces as `GamePhase.GameOver` with `GameState.IsVictory` true
   (distinguished from a death by `RunManager.WinTime`). `WalkthroughTests` now drives a full three-act
   run **start → act-3 boss → Architect → win** entirely through the public option API.
-- **Full act-2 / act-3 content enumeration** — _done_: `Act2FightsTests`/`Act3FightsTests` enumerate
-  every Hive (20) and Glory (18) encounter, and `Act2EventsTests`/`Act3EventsTests` every Hive (10)
-  and Glory (7) event, each driven to a terminal state through the public option API via the
-  `EnterEncounterDebug`/`EnterEventDebug` seams. All resolve except two documented, deferred cases:
-  **KnowledgeDemonBoss** (the only monster that raises a *player card choice during the enemy turn* —
-  enemy-turn-triggered choices are still un-built) and the **Trial** event (its Accept option drives
-  the event through the null `NEventRoom` portrait UI, which cascades through `NEventLayout`). Closing
-  these surfaced several content-specific shim/UI gaps (see the design doc): `CanvasItem.SetVisible`/
-  `Sprite2D.Texture`/`GodotObject.Call`/`Variant(GodotObject)` in the shim; an inert
-  `NAudioManager.Instance` (unguarded death-SFX derefs, all `TestMode`-gated to no-ops); an inert
+- **Full content enumeration (all act variants)** — _done_: `Act{1,2,3}FightsTests` /
+  `Act{1,2,3}EventsTests` enumerate **every** fight and event of all act variants — act 1's Overgrowth
+  *and* Underdocks (the only index with an alternate; index 1/2 have a single act each, Hive/Glory),
+  plus the shared events — each driven to a terminal state through the public option API via the
+  `EnterEncounterDebug`/`EnterEventDebug` seams. **Every one resolves** (no exclusions). Two cases that
+  needed new harness capability:
+  - **Enemy-turn-triggered player choices** — _done_: KnowledgeDemon raises a card choice on its *own*
+    turn (`ChooseCurse`), which used to deadlock the enemy-turn wait. The wait
+    (`WaitUntilPlayerCanActOrCombatEnds`) now also wakes on the effect-suspended signals, so the choice
+    surfaces as `GamePhase.Choice`; `Apply(SelectCards)` resumes the enemy turn (via the turn-wait, not
+    the action-queue pump, distinguished by `PlayerTurnPhase`).
+  - **Trial's event-room portrait UI** — _done_: its Accept option drives `NEventRoom.Instance.Layout.*`
+    (unguarded on the null singleton). The harness hands `NEventRoom.Instance`/`.Layout` inert
+    stand-ins and no-ops the cosmetic portrait methods, so Accept builds its verdict sub-options.
+
+  Reaching full coverage also closed several content-specific shim/UI gaps (see the design doc):
+  `CanvasItem.SetVisible`/`Sprite2D.Texture`/`GodotObject.Call`/`Variant(GodotObject)` in the shim; an
+  inert `NAudioManager.Instance` (unguarded death-SFX derefs, all `TestMode`-gated to no-ops); an inert
   KaiserCrab boss background with its cosmetic anim methods no-op'd (the `Crusher`/`Rocket` two-part
   boss reaches into a UI background node that *throws* headless); a generalized
   `NGame.Instance.ScreenShakeTrauma` IL-strip now covering Amalgamator as well as PunchOff; and a
@@ -176,9 +184,9 @@ as the reference for what choices exist:
   earlier boss blocker is fixed: the **CeremonialBeast** act-1 boss's `Godot.GpuParticles2D`
   `TypeLoadException` is closed (the type and `ParticleProcessMaterial`/`Vector3` it pulls in are now
   in the shim), so all three Overgrowth bosses are now fightable headless.
-  Remaining for M4 breadth: the **alternate index-1/2 acts** (only the default Hive/Glory are wired
-  today — `ActModel.GetDefaultList`), **boss relic / alternate reward** sets, **score**, and the two
-  deferred content cases above (enemy-turn choices; the Trial portrait UI).
+  Remaining for M4 polish (not blocking a full beaten run): **boss relic / alternate reward** sets
+  (Skip-as-heal/sacrifice, reroll, Orrery/Calling Bell, …) and **score**. Every default-list run plays
+  start → act-3 boss → Architect → win, and every fight/event of every act variant resolves.
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

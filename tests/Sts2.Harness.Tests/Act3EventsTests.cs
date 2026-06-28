@@ -20,18 +20,12 @@ public sealed class Act3EventsTests
 
     public Act3EventsTests(ITestOutputHelper output) => _out = output;
 
-    // Glory (default act 3) events.
+    // Glory (default act 3) events. Trial's Accept option drives the event-room portrait UI
+    // (NEventRoom.Instance.Layout.*), which the harness neutralizes with inert NEventRoom/NEventLayout
+    // stand-ins so Accept reaches its verdict sub-options (curses/relics/rewards/card-selects).
     public static IEnumerable<object[]> GloryEvents => Cases(
         "BattlewornDummy", "GraveOfTheForgotten", "HungryForMushrooms", "Reflections",
-        "RoundTeaParty", "TinkerTime");
-
-    // Trial is intentionally omitted: its first option (Accept) drives the event through the event
-    // room's portrait UI — NEventRoom.Instance.Layout.RemoveNodesOnPortrait()/SetPortrait()/
-    // AddVfxAnchoredToPortrait() plus a scene instantiate — all unguarded on the null headless
-    // NEventRoom singleton, so Accept NREs before it builds the (mechanically meaningful) verdict
-    // sub-options and the greedy driver loops. The portrait coupling cascades through NEventLayout,
-    // so a faithful headless stand-in is more event-UI plumbing than this milestone takes on; the
-    // verdict options themselves (curses/relics/rewards/card-selects) are ordinary and would resolve.
+        "RoundTeaParty", "Trial", "TinkerTime");
 
     [Theory]
     [MemberData(nameof(GloryEvents))]

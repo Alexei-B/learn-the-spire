@@ -32,15 +32,10 @@ public sealed class Act2FightsTests
         "TunnelerWeak",
         // Elites
         "DecimillipedeElite", "EntomancerElite", "InfestedPrismsElite",
-        // Bosses
-        "KaiserCrabBoss", "TheInsatiableBoss");
-
-    // KnowledgeDemonBoss is intentionally omitted: it is the only monster in the game that raises a
-    // *player card choice during its own (enemy) turn* (ChooseCurse → CardSelectCmd.FromChooseACardScreen
-    // with a BlockingPlayerChoiceContext). The harness surfaces mid-effect card choices only on the
-    // player's action pump, not while it is blocked waiting out the enemy turn, so that choice never
-    // surfaces and the enemy turn deadlocks. Enemy-turn-triggered player choices are listed as un-built
-    // in the roadmap (M2/M8); wiring the enemy-turn wait to surface them will re-enable this boss.
+        // Bosses. KnowledgeDemon raises a player card choice during its own (enemy) turn
+        // (ChooseCurse → CardSelectCmd.FromChooseACardScreen); the harness now surfaces that as a
+        // GamePhase.Choice from the enemy-turn wait and resumes the turn once it is resolved.
+        "KaiserCrabBoss", "KnowledgeDemonBoss", "TheInsatiableBoss");
 
     [Theory]
     [MemberData(nameof(HiveFights))]

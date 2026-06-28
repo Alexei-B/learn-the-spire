@@ -13,12 +13,12 @@ buffed to a large HP pool it now plays a **full three-act run start → act-3 bo
 victory event → win** through the option API (`WalkthroughTests`), ending on `GamePhase.GameOver`
 with `GameState.IsVictory`. The act 1→2→3 handoff is driven by reproducing the logic half of the
 boss rewards-screen proceed (act transition / victory — see Key mechanisms). Separately,
-`Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests` enumerate *every* fight and event of all three
-default acts (plus act 1's index-0 alternate and the shared events) and drive each to a terminal
-state in isolation; all resolve except two documented, deferred cases — **KnowledgeDemonBoss** (the
-only monster that raises a player card choice during the *enemy* turn) and the **Trial** event (its
-Accept option drives the null `NEventRoom` portrait UI). Remaining breadth (alternate index-1/2
-acts/multiplayer/ascension) is **not built**; see `docs/plans/`.
+`Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests` enumerate *every* fight and event of every act
+variant (act 1's Overgrowth + Underdocks — the only index with an alternate — plus the shared events)
+and drive each to a terminal state in isolation; **all resolve, no exclusions**, including the two
+that needed new harness capability — enemy-turn-triggered player choices (KnowledgeDemon) and the
+Trial event's portrait UI (see Key mechanisms). Remaining breadth (multiplayer/ascension/boss-relic
+reward sets) is **not built**; see `docs/plans/`.
 
 ## What it is
 
@@ -87,9 +87,13 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   `PendingChoice` and blocks the effect's thread-pool task. The harness's combat pump waits
   on whichever comes first — queue drained, or a choice pending — so a blocked choice returns
   control instead of deadlocking; `GetState`/`ListOptions` then surface it (`GamePhase.Choice`)
-  and `Apply` resolves it, resuming the effect. Post-combat card-reward selection
-  (`GetSelectedCardReward`) returns whichever card the harness staged when applying the card
-  reward's `TakeReward` option (see Battle rewards below).
+  and `Apply` resolves it, resuming the effect. A choice can also be raised on the **enemy's turn**
+  (e.g. KnowledgeDemon's curse selection): the enemy-turn wait (`WaitUntilPlayerCanActOrCombatEnds`)
+  wakes on the same effect-suspended signals, so the choice surfaces instead of deadlocking, and
+  `Apply(SelectCards)` resumes it via the turn-wait (not the action-queue pump) — distinguished by the
+  player's `PlayerTurnPhase` (`None` during the enemy turn vs `Play` for a player-effect choice).
+  Post-combat card-reward selection (`GetSelectedCardReward`) returns whichever card the harness staged
+  when applying the card reward's `TakeReward` option (see Battle rewards below).
 - **Battle rewards**: the faithful victory→rewards flow is driven by `NCombatUi.OnCombatWon`,
   which is null headless, so the harness reproduces its logic half. After a won combat fully
   ends (`TryOfferCombatRewards`, run once per `CombatRoom`), it calls
@@ -214,23 +218,24 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Deck-management screens, the **alternate index-1/2 acts** (only the default Hive/Glory are wired —
-`ActModel.GetDefaultList`), boss relic / alternate reward sets and score, ascension, local
-multiplayer. The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface,
-in-combat card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
-regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, rest sites,
-shops, potion use/discard, the act 1→2→3 transition, and the Architect victory.
+Deck-management screens, boss relic / alternate reward sets and score, ascension, local
+multiplayer. (There are no alternate index-1/2 acts — only index 0 has a second variant, Underdocks,
+which is covered.) The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
+surface, in-combat *and enemy-turn* card-choice injection, the post-combat battle-rewards screen, event
+rooms (opening ancient + regular-event path), custom relic/event reward sets (`OfferCustom`), treasure
+rooms, rest sites, shops, potion use/discard, the act 1→2→3 transition, and the Architect victory.
 Still missing: multi-page events and the event `WillKillPlayer` hint; card-reward alternatives/reroll;
-**enemy-turn-triggered choices** (KnowledgeDemonBoss); full multi-select subset enumeration (min &gt; 1
-currently offers a single exact-minimum selection); and a faithful headless stand-in for the event
-**portrait UI** (`NEventRoom`/`NEventLayout`, which the Trial event drives).
+and full multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection).
 
-**Full content sweep (all three default acts).** `Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests`
-enumerate *every* fight and event of the default acts (plus act 1's index-0 alternate Underdocks and
-the shared events) and drive each to a terminal state through the public option API, entering each
-directly via `GameHost.EnterEncounterDebug` / `EnterEventDebug` (test/dev seams over the game's
-`EnterRoomDebug`). All resolve without the harness throwing except the two deferred cases noted above
-(KnowledgeDemonBoss, Trial), which are explicitly excluded with documented reasons. Reaching this
+**Full content sweep (every act variant).** `Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests`
+enumerate *every* fight and event of every act variant (act 1's Overgrowth + Underdocks — the only
+index with a second variant — plus the shared events) and drive each to a terminal state through the
+public option API, entering each directly via `GameHost.EnterEncounterDebug` / `EnterEventDebug`
+(test/dev seams over the game's `EnterRoomDebug`). **All resolve without the harness throwing, with no
+exclusions** — including KnowledgeDemon (enemy-turn card choice, surfaced via the enemy-turn wait) and
+Trial (event-room portrait UI, neutralized with inert `NEventRoom`/`NEventLayout` stand-ins whose
+cosmetic portrait methods are no-op'd; `NEventRoom.Instance` is reached unguarded only by Trial — every
+other site uses the null-safe `?.VfxContainer` and nothing branches on it being null). Reaching this
 closed several content-specific shim/UI gaps, each on a TestMode-gated or purely-visual path:
 - shim value/inert members: `CanvasItem.SetVisible`/`IsVisible`, `Sprite2D.Texture`,
   `GodotObject.Call(StringName, Variant[])`, `Variant(GodotObject)` (act-1 closed

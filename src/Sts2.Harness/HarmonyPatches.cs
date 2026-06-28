@@ -101,6 +101,8 @@ internal static class HarmonyPatches
                     new[] { typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) }),
                 prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
 
+            ApplyTrialEventPatches(harmony);
+
             // NAudioManager.Instance is NGame.Instance?.AudioManager — null headless. SfxCmd guards
             // its audio calls on NonInteractiveMode, but a handful of sites dereference the singleton
             // *unguarded* (monster death SFX in BeforeDeath, game-over music in CreatureCmd), which
@@ -191,6 +193,62 @@ internal static class HarmonyPatches
                 RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager));
         }
         __result = _inertAudio;
+        return false;
+    }
+
+    // The Trial event's Accept option drives the event through the event-room portrait UI:
+    // NEventRoom.Instance.Layout.RemoveNodesOnPortrait()/SetPortrait()/AddVfxAnchoredToPortrait() — all
+    // unguarded callvirts on the null headless NEventRoom singleton (and a scene instantiate), so Accept
+    // NREs before it builds the verdict sub-options (curses/relics/rewards/card-selects) that are the
+    // event's actual content. NEventRoom.Instance is reached unguarded *only* here (everything else uses
+    // the null-safe `?.VfxContainer`, and nothing branches on it being null), so we hand it — and its
+    // Layout — single inert instances and no-op the cosmetic portrait methods, leaving Accept's option
+    // generation to run. (Constructors skipped; never added to a scene.)
+    private static readonly object _eventRoomGate = new();
+    private static MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom? _inertEventRoom;
+    private static MegaCrit.Sts2.Core.Nodes.Events.NEventLayout? _inertEventLayout;
+
+    private static void ApplyTrialEventPatches(Harmony harmony)
+    {
+        harmony.Patch(
+            AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom), "Instance"),
+            prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(EventRoomInstancePrefix)));
+        harmony.Patch(
+            AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom), "Layout"),
+            prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(EventRoomLayoutPrefix)));
+        // SetPortrait(NEventRoom) → Layout.SetPortrait; no-op it directly. RemoveNodesOnPortrait is on
+        // the layout. AddVfxAnchoredToPortrait is no-op'd at the Trial level (it also instantiates a
+        // scene before the layout call), which covers the only path that reaches the layout's vfx add.
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom), "SetPortrait"),
+            prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Events.NEventLayout), "RemoveNodesOnPortrait"),
+            prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
+        harmony.Patch(
+            AccessTools.Method(typeof(MegaCrit.Sts2.Core.Models.Events.Trial), "AddVfxAnchoredToPortrait"),
+            prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
+    }
+
+    private static bool EventRoomInstancePrefix(ref MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom __result)
+    {
+        lock (_eventRoomGate)
+        {
+            _inertEventRoom ??= (MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom)
+                RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom));
+        }
+        __result = _inertEventRoom;
+        return false;
+    }
+
+    private static bool EventRoomLayoutPrefix(ref MegaCrit.Sts2.Core.Nodes.Events.NEventLayout __result)
+    {
+        lock (_eventRoomGate)
+        {
+            _inertEventLayout ??= (MegaCrit.Sts2.Core.Nodes.Events.NEventLayout)
+                RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Nodes.Events.NEventLayout));
+        }
+        __result = _inertEventLayout;
         return false;
     }
 

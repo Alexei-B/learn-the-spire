@@ -918,13 +918,29 @@ public sealed class GameHost
                 {
                     throw new InvalidOperationException("No card choice is pending to resolve.");
                 }
+                // Whether this choice was raised during the enemy turn (PlayerTurnPhase.None) rather
+                // than by the player's own card effect (PlayerTurnPhase.Play) — it determines how the
+                // resumed effect settles below. Capture it before resolving (the resume is async).
+                bool enemyTurnChoice = InCombat
+                    && Run.Players[0].PlayerCombatState?.Phase != MegaCrit.Sts2.Core.Combat.PlayerTurnPhase.Play;
                 Selector.Resolve(option.SelectedCardModels!);
                 // The effect resumes on the thread pool; pump until it finishes or blocks again.
                 // A choice raised mid-event or mid-rest-action resumes that effect's task rather
                 // than the combat action queue, so pump the matching surface.
                 if (InCombat)
                 {
-                    PumpCombatUntilIdleOrChoice();
+                    // An enemy-turn choice resumes the enemy turn (background tasks, not the player
+                    // action queue), so wait for the turn to finish / the player to act / a further
+                    // choice; a player-effect choice resumes through the action queue.
+                    if (enemyTurnChoice)
+                    {
+                        WaitUntilPlayerCanActOrCombatEnds(Run.Players[0]);
+                        TryOfferCombatRewards();
+                    }
+                    else
+                    {
+                        PumpCombatUntilIdleOrChoice();
+                    }
                 }
                 else if (_restChoiceTask is { IsCompleted: false } restTask)
                 {
@@ -1536,14 +1552,19 @@ public sealed class GameHost
         Pump(RunManager.Instance.ActionExecutor.FinishedExecutingActions());
 
     /// <summary>
-    /// Block until the player is back in their Play phase or combat has ended.
+    /// Block until the player is back in their Play phase, combat has ended, or the enemy turn
+    /// raised a mid-effect choice the agent must resolve.
     ///
-    /// The enemy turn resolves on background tasks (it genuinely yields off this
-    /// thread), so rather than poll we await a completion source wired to the combat's
-    /// own events — it fires the instant the player can act again. The timeout is only
-    /// a safety net against a hang and throws if hit (it should never be reached).
+    /// The enemy turn resolves on background tasks (it genuinely yields off this thread), so rather
+    /// than poll we await a completion source wired to the combat's own events — it fires the instant
+    /// the player can act again. We *also* wake on the effect-suspended signals (a card choice / custom
+    /// reward / Crystal Sphere): a few enemies raise a player choice on their own turn (e.g.
+    /// KnowledgeDemon's curse selection), which would otherwise deadlock this wait — the enemy task is
+    /// blocked on the choice, so no turn-started/phase-change ever fires. When that happens the choice
+    /// surfaces (<see cref="GamePhase.Choice"/>); resolving it resumes the enemy turn and the caller
+    /// waits again. The timeout is a safety net and throws if hit.
     /// </summary>
-    private static void WaitUntilPlayerCanActOrCombatEnds(Player player, int timeoutMs = 5000)
+    private void WaitUntilPlayerCanActOrCombatEnds(Player player, int timeoutMs = 5000)
     {
         var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
         var tcs = new System.Threading.Tasks.TaskCompletionSource(
@@ -1571,7 +1592,10 @@ public sealed class GameHost
         try
         {
             TryComplete(); // in case it is already satisfied
-            if (!tcs.Task.Wait(timeoutMs))
+            int idx = System.Threading.Tasks.Task.WaitAny(
+                new[] { tcs.Task, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal },
+                timeoutMs);
+            if (idx < 0)
             {
                 throw new System.TimeoutException(
                     "Timed out waiting for the player's turn to resume or combat to end.");
@@ -1587,7 +1611,12 @@ public sealed class GameHost
             }
         }
 
-        DrainActionQueue();
+        // A surfaced choice leaves the enemy task suspended; don't drain (it would block on the
+        // unresolved choice). Otherwise the turn settled, so drain anything it enqueued.
+        if (!EffectSuspended)
+        {
+            DrainActionQueue();
+        }
     }
 
     private static bool PlayerCanActOrCombatEnded(MegaCrit.Sts2.Core.Combat.CombatManager cm, Player player)
