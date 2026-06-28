@@ -35,7 +35,10 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   contract is intentionally absent.
 - **`src/Sts2.Harness`** → the deliverable. `GameRuntime` (one-time headless boot),
   `HarmonyPatches` (localization degradation), `GameHost` (drives one run).
-- **`tests/Sts2.Harness.Tests`** → xUnit; **parallelization disabled** (singletons).
+- **`tests/Sts2.Harness.Tests`** → xUnit; **parallelization disabled** (singletons). Tests drive
+  faithful end-to-end flows from a seed; an assembly-wide `BeforeAfterTest` banner
+  (`TestLogSeparator`) tags the game's stdout logging with the running test's name. Shared
+  navigation (resolve the opening Neow event, move into the first combat) lives in `TestNav`.
 - `refsrc/`, `lib/` are gitignored (decompile + copied game DLLs; GodotSharp excluded).
 
 ## Key mechanisms
@@ -56,10 +59,12 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   `Combat`, `InCombat`.
 - **Public API** (the read/list/apply trio, built on those primitives):
   `GetState()` → immutable serializable `GameState` DTOs (`GameState.cs`,
-  projected by `GameStateProjection`); `ListOptions(playerId)` → `IReadOnlyList<GameOption>`
-  (combat card-plays × legal targets + end-turn, map moves, or — when a choice is pending —
-  `SelectCards` options); `Apply(GameOption)` → resolves the option and pumps to quiescence.
-  `GameOption` carries a serializable description plus internal live references for `Apply`.
+  projected by `GameStateProjection`); `ListOptions(playerId)` → `IReadOnlyList<GameOption>`,
+  keyed off the current phase: combat card-plays × legal targets + end-turn (`PlayCard`/`EndTurn`),
+  map moves (`MoveTo`), event choices (`ChooseEventOption`), reward screens
+  (`TakeReward`/`ProceedFromRewards`), or — when a card choice is pending — `SelectCards`;
+  `Apply(GameOption)` → resolves the option and pumps to quiescence. `GameOption` carries a
+  serializable description plus internal live references for `Apply`.
 - **Choice-context injection** (`HarnessCardSelector`): the game's `CardSelectCmd.Selector`
   seam is replaced with a harness selector. When an effect requests a mid-effect card
   selection (discover/scry/exhaust/search) it calls `GetSelectedCards`, which records a
