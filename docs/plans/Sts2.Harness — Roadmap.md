@@ -68,9 +68,18 @@ as the reference for what choices exist:
   map. The shared `EventRoom` path covers regular map events too (same projection/seam); still to
   do: events that start combat (shared events) and that raise mid-event card choices, exercised
   end-to-end; multi-page events; the `WillKillPlayer` flag in the projection.
+- **Treasure** (chests/relic pick) — _done_: entering a treasure room surfaces as
+  `GamePhase.Treasure`/`TreasureView`. The harness reproduces the logic half of the null
+  `NTreasureRoom`/`NTreasureRoomRelicCollection` UI: on entry it opens the chest (grant gold via
+  `TreasureRoom.DoNormalRewards`, then `DoExtraRewardsIfNeeded` — relic-added extra rewards route
+  through the existing custom-reward gate), and the synchronizer's generated relics surface as
+  `TakeTreasureRelic` (one per relic) + `SkipTreasure` options. `Apply` of a take calls
+  `PickRelicLocally` and consumes the `RelicsAwarded` event to `RelicCmd.Obtain` the relic (the UI
+  normally does this); a skip ends the singleplayer voting so the player returns to the map.
+  Tested by jumping the run location straight to the act's real Treasure node (the game's coord
+  entry doesn't require adjacency), since playing forward to it isn't reliable yet (see M4).
 - **Shops** (inventory: cards/relics/potions, purchase, card-removal, exit).
 - **Rest sites** (rest/smith/and other options).
-- **Treasure** (chests/relic pick).
 - **Deck-management screens** (upgrade/transform/enchant/remove/duplicate).
 
 ## M4 — Full single-player run (acts + bosses)
@@ -79,6 +88,12 @@ as the reference for what choices exist:
 - **Bosses & elites**: boss encounters and boss relic rewards.
 - **Win/lose terminal states**: victory screen, game-over, score.
 - Deliverable: a seeded run plays start → act-3 boss with greedy/random legal choices.
+- _In progress_: a greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through
+  events/combats/rewards/map moves via the public option API. On the standard seed it advances
+  several act-1 floors and then dies (`WalkthroughTests`) — the "beat the boss or die" loop runs,
+  but the greedy combat play is too weak to clear the act and many seeds still surface harness gaps
+  (un-handled content → pump timeouts / shim `TypeLoad`s). Reaching the boss needs a stronger combat
+  driver and the remaining M3 rooms (rest/shop) so a forward playthrough doesn't stall.
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

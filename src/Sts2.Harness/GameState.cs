@@ -43,6 +43,13 @@ public enum GamePhase
     /// </summary>
     Event,
 
+    /// <summary>
+    /// In a treasure room with the chest opened and relics still to pick. Resolve via the
+    /// <see cref="OptionKind.TakeTreasureRelic"/> / <see cref="OptionKind.SkipTreasure"/> options
+    /// from <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    Treasure,
+
     /// <summary>The run has ended with all players dead.</summary>
     GameOver,
 
@@ -83,6 +90,19 @@ public sealed record GameState
 
     /// <summary>The event in progress and its choices, or null when not in an actionable event.</summary>
     public EventView? Event { get; init; }
+
+    /// <summary>The treasure-room relics to pick from, or null when not in a treasure room.</summary>
+    public TreasureView? Treasure { get; init; }
+}
+
+/// <summary>A treasure room with its chest opened: the relics still available to pick.</summary>
+public sealed record TreasureView
+{
+    /// <summary>
+    /// The relics on offer, in index order (the index is what <see cref="OptionKind.TakeTreasureRelic"/>
+    /// resolves against). Singleplayer always offers exactly one.
+    /// </summary>
+    public required IReadOnlyList<string> Relics { get; init; }
 }
 
 /// <summary>An event room awaiting a choice, with its currently-offered options.</summary>

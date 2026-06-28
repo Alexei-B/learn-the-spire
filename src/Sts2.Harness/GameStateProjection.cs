@@ -38,6 +38,7 @@ internal static class GameStateProjection
             PendingChoice = pending is null ? null : ProjectPendingChoice(pending),
             Rewards = host.PendingRewards is null ? null : ProjectRewards(host.PendingRewards),
             Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!) : null,
+            Treasure = host.HasTreasureChoice ? ProjectTreasure(host) : null,
         };
     }
 
@@ -62,6 +63,10 @@ internal static class GameStateProjection
         if (host.PendingRewards is not null)
         {
             return GamePhase.Reward;
+        }
+        if (host.HasTreasureChoice)
+        {
+            return GamePhase.Treasure;
         }
         if (host.HasActionableEvent)
         {
@@ -153,6 +158,18 @@ internal static class GameStateProjection
             EventId = ev.Id.Entry,
             IsAncient = ev is MegaCrit.Sts2.Core.Models.AncientEventModel,
             Options = options,
+        };
+    }
+
+    private static TreasureView ProjectTreasure(GameHost host)
+    {
+        System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Models.RelicModel>? relics =
+            host.CurrentTreasureRoom is null ? null : RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics;
+        return new TreasureView
+        {
+            Relics = relics is null
+                ? Array.Empty<string>()
+                : relics.Select(r => r.Id.Entry).ToList(),
         };
     }
 

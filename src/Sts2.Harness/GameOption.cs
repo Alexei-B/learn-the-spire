@@ -31,6 +31,12 @@ public enum OptionKind
 
     /// <summary>Leave the rewards screen, skipping any rewards not taken, and return to the map.</summary>
     ProceedFromRewards,
+
+    /// <summary>Take one of the relics offered in a treasure room.</summary>
+    TakeTreasureRelic,
+
+    /// <summary>Skip the treasure room's relics without taking any, then proceed via the map.</summary>
+    SkipTreasure,
 }
 
 /// <summary>
@@ -66,6 +72,12 @@ public sealed class GameOption
     /// <summary>The relic an event option grants (e.g. a Neow blessing), if any; null otherwise.</summary>
     public string? EventOptionRelicId { get; }
 
+    /// <summary>The relic id offered by a <see cref="OptionKind.TakeTreasureRelic"/> option; null otherwise.</summary>
+    public string? TreasureRelicId { get; }
+
+    /// <summary>The index into the treasure room's relics for <see cref="OptionKind.TakeTreasureRelic"/>; null otherwise.</summary>
+    public int? TreasureRelicIndex { get; }
+
     // Live references used by GameHost.Apply. Not part of the serializable surface.
     internal CardModel? CardModel { get; }
     internal Creature? Target { get; }
@@ -86,6 +98,8 @@ public sealed class GameOption
         IReadOnlyList<CardView>? selectedCards = null,
         int? eventOptionIndex = null,
         string? eventOptionRelicId = null,
+        string? treasureRelicId = null,
+        int? treasureRelicIndex = null,
         CardModel? cardModel = null,
         Creature? target = null,
         MapCoord? mapCoord = null,
@@ -102,6 +116,8 @@ public sealed class GameOption
         SelectedCards = selectedCards;
         EventOptionIndex = eventOptionIndex;
         EventOptionRelicId = eventOptionRelicId;
+        TreasureRelicId = treasureRelicId;
+        TreasureRelicIndex = treasureRelicIndex;
         CardModel = cardModel;
         Target = target;
         MapCoord = mapCoord;
@@ -170,4 +186,12 @@ public sealed class GameOption
 
     internal static GameOption ProceedFromRewardsOption(Player player) =>
         new(OptionKind.ProceedFromRewards, player.NetId, "Proceed (leave rewards)", player: player);
+
+    /// <summary>Take the relic at the given index in the treasure room's relic offering.</summary>
+    internal static GameOption TakeTreasureRelicOption(Player player, int index, string relicId) =>
+        new(OptionKind.TakeTreasureRelic, player.NetId, $"Take treasure relic {relicId}",
+            treasureRelicId: relicId, treasureRelicIndex: index, player: player);
+
+    internal static GameOption SkipTreasureOption(Player player) =>
+        new(OptionKind.SkipTreasure, player.NetId, "Skip treasure relics", player: player);
 }

@@ -5,9 +5,11 @@ Orientation for working on the harness. Read the code for detail; this is the ma
 **Status:** vertical slice works — headless boot → **Neow ancient event** → map → enter room →
 full combat (faithful play + enemy turns) → victory → **post-combat rewards** → back to the map,
 via the real `sts2.dll`. The public API (`GetState`/`ListOptions`/`Apply`) covers the combat +
-map-move surface, the battle-rewards screen, and **event rooms** (the opening ancient event and
-the shared regular-event path). Remaining breadth (shops/rest/treasure/bosses/acts 2–3/
-multiplayer/ascension) is **not built**; see `docs/plans/`.
+map-move surface, the battle-rewards screen, **event rooms** (the opening ancient event and the
+shared regular-event path), and **treasure rooms** (open chest → pick/skip relic). A greedy
+end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the public API and gets
+several act-1 floors before the (weak) greedy combat dies. Remaining breadth (shops/rest/bosses/
+acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
 
@@ -105,6 +107,17 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   finished event — or one down to only a "proceed" option — is not actionable: the player leaves
   by moving on the map (the in-game proceed drives the null `NMapScreen`, so we model leaving as a
   normal `MoveTo`).
+- **Treasure rooms** (`GamePhase.Treasure`): entering a `TreasureRoom` runs
+  `TreasureRoomRelicSynchronizer.BeginRelicPicking` (its relics), but the chest-open flow and relic
+  award are normally driven by the null `NTreasureRoom`/`NTreasureRoomRelicCollection` UI, so the
+  harness reproduces their logic halves. On entry (`TryOpenTreasureChest`) it grants the chest gold
+  (`DoNormalRewards`) then offers any relic-added extra rewards (`DoExtraRewardsIfNeeded`, which
+  goes through `RewardsSet.Offer` → the custom-reward gate, suspended/surfaced like a battle custom
+  set). The relics then surface as `TakeTreasureRelic` (one per relic) + `SkipTreasure` options;
+  `Apply` of a take calls `PickRelicLocally`, drains the `PickRelicAction`, and consumes the
+  resulting `RelicsAwarded` event to `RelicCmd.Obtain` each awarded relic. A singleplayer skip is
+  recorded then `OnRoomExited`'d to clear the pending relics so the player is back on the map.
+  Leaving a treasure room (after take or skip) is a normal `MoveTo`.
 - **Async→sync pump**: card plays drain the action queue
   (`ActionExecutor.FinishedExecutingActions`); the enemy turn resolves on fire-and-forget
   tasks, so `EndTurn` waits on a `TaskCompletionSource` wired to combat events
@@ -131,11 +144,13 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Shops, rest, treasure, deck-management screens, elites/bosses, acts 2–3, ascension, local
-multiplayer. The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
-surface, in-combat card-choice injection, the post-combat battle-rewards screen, and event rooms
-(opening ancient + regular-event path), and custom relic/event reward sets (`OfferCustom`). Still
+Shops, rest, deck-management screens, elites/bosses, acts 2–3, ascension, local multiplayer. The
+`GameState` read model and `ListOptions`/`Apply` span the combat + map-move surface, in-combat
+card-choice injection, the post-combat battle-rewards screen, event rooms (opening ancient +
+regular-event path), custom relic/event reward sets (`OfferCustom`), and treasure rooms. Still
 missing: events that start combat or raise mid-event card choices (exercised end-to-end),
 multi-page events, the event `WillKillPlayer` hint; card-reward alternatives/reroll;
-enemy-turn-triggered choices; and full multi-select subset enumeration (min &gt; 1 currently offers
-a single exact-minimum selection). → `docs/plans/`.
+enemy-turn-triggered choices; full multi-select subset enumeration (min &gt; 1 currently offers
+a single exact-minimum selection); and a combat driver strong enough to play a run to the boss (the
+greedy `AutoPlayer` dies in act 1, and much un-handled content still breaks a forward playthrough).
+→ `docs/plans/`. 

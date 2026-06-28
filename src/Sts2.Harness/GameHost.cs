@@ -43,6 +43,14 @@ public sealed class GameHost
     // per fight even while the player lingers on the rewards screen before moving on.
     private MegaCrit.Sts2.Core.Rooms.AbstractRoom? _rewardedRoom;
 
+    // The treasure room whose chest we have already opened, so the gold/extra-reward flow runs
+    // exactly once per room (the relic picking that follows is driven by the agent's options).
+    private MegaCrit.Sts2.Core.Rooms.TreasureRoom? _openedTreasureRoom;
+
+    // A treasure room's "extra rewards" (DoExtraRewardsIfNeeded) task, kept in flight when it
+    // suspends on a custom reward screen so ProceedFromRewards can resume it. Null otherwise.
+    private System.Threading.Tasks.Task? _treasureExtraRewardsTask;
+
     // Custom rewards offered mid-effect by a relic/event (RewardsCmd.OfferCustom, e.g.
     // Kaleidoscope's two bonus card rewards). Unlike a post-combat set, the offering effect's
     // task is *suspended* inside RewardsSet.Offer until the agent takes/skips and proceeds, so
@@ -183,6 +191,9 @@ public sealed class GameHost
         Pump(RunManager.Instance.EnterMapCoord(coord));
         // If we entered an event room, wait for its options to be generated before returning.
         WaitForEventReady();
+        // If we entered a treasure room, open the chest (grant gold + offer any extra rewards) so
+        // its relics surface as a choice.
+        TryOpenTreasureChest();
     }
 
     /// <summary>
@@ -203,6 +214,26 @@ public sealed class GameHost
     /// </summary>
     internal bool HasActionableEvent =>
         CurrentEvent is { } e && e.CurrentOptions.Any(o => !o.IsLocked && !o.IsProceed);
+
+    /// <summary>The current room as a treasure room, or null when not standing in one.</summary>
+    internal MegaCrit.Sts2.Core.Rooms.TreasureRoom? CurrentTreasureRoom =>
+        RunManager.Instance.IsInProgress && !InCombat
+            ? Run.CurrentRoom as MegaCrit.Sts2.Core.Rooms.TreasureRoom
+            : null;
+
+    private MegaCrit.Sts2.Core.Multiplayer.Game.TreasureRoomRelicSynchronizer TreasureSync =>
+        RunManager.Instance.TreasureRoomRelicSynchronizer;
+
+    /// <summary>
+    /// True while standing in a treasure room whose chest is open and which still has relics to
+    /// pick. Surfaces as <see cref="GamePhase.Treasure"/> with take/skip options. A skipped or
+    /// emptied chest leaves no relics, so the player is back on the map.
+    /// </summary>
+    internal bool HasTreasureChoice =>
+        CurrentTreasureRoom is not null
+        && PendingRewards is null
+        && Selector.Pending is null
+        && TreasureSync.CurrentRelics is { Count: > 0 };
 
     /// <summary>
     /// Play a card from hand at an optional target via the canonical player path
@@ -316,6 +347,12 @@ public sealed class GameHost
         if (PendingRewards is not null)
         {
             return BuildRewardOptions(player, PendingRewards);
+        }
+
+        // A treasure room with its chest open: take one of the offered relics or skip.
+        if (HasTreasureChoice)
+        {
+            return BuildTreasureOptions(player);
         }
 
         // An event room awaiting a choice (e.g. the opening Neow ancient event).
@@ -470,6 +507,26 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Build the options for an opened treasure room: one take option per offered relic plus a
+    /// skip option. Resolved against the synchronizer's relic indices.
+    /// </summary>
+    private IReadOnlyList<GameOption> BuildTreasureOptions(Player player)
+    {
+        var options = new List<GameOption>();
+        System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Models.RelicModel>? relics =
+            TreasureSync.CurrentRelics;
+        if (relics is not null)
+        {
+            for (int i = 0; i < relics.Count; i++)
+            {
+                options.Add(GameOption.TakeTreasureRelicOption(player, i, relics[i].Id.Entry));
+            }
+        }
+        options.Add(GameOption.SkipTreasureOption(player));
+        return options;
+    }
+
+    /// <summary>
     /// Resolve a chosen option against the live game and pump to quiescence. The option
     /// must have come from <see cref="ListOptions(ulong)"/> for the current state.
     /// </summary>
@@ -515,6 +572,12 @@ public sealed class GameHost
                 break;
             case OptionKind.ProceedFromRewards:
                 ProceedFromRewards();
+                break;
+            case OptionKind.TakeTreasureRelic:
+                PickTreasureRelic(option.TreasureRelicIndex!.Value);
+                break;
+            case OptionKind.SkipTreasure:
+                PickTreasureRelic(null);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(option), option.Kind, "Unknown option kind.");
@@ -588,7 +651,16 @@ public sealed class GameHost
         // is now completed, so unblock it and pump the effect to quiescence (it may finish, raise
         // another choice, or — in combat — continue the action queue).
         resolve.TrySetResult();
-        if (InCombat)
+        if (_treasureExtraRewardsTask is { IsCompleted: false } treasureTask)
+        {
+            // The suspended effect was a treasure room's extra-rewards offer; resume it.
+            PumpRoomTaskUntilIdleOrChoice(treasureTask);
+            if (!CustomRewardPending)
+            {
+                _treasureExtraRewardsTask = null;
+            }
+        }
+        else if (InCombat)
         {
             PumpCombatUntilIdleOrChoice();
         }
@@ -665,6 +737,118 @@ public sealed class GameHost
                 throw new System.TimeoutException("Timed out waiting for the event room to initialize.");
             }
             System.Threading.Thread.Sleep(5);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Treasure rooms. Entering one calls TreasureRoomRelicSynchronizer.BeginRelicPicking
+    // (populating the relics). The chest-open flow (gold + relic-added extra rewards) and the
+    // relic award are normally driven by the null NTreasureRoom / NTreasureRoomRelicCollection
+    // UI nodes, so the harness reproduces their logic halves. The relics then surface as
+    // GamePhase.Treasure; the agent takes one or skips, after which it leaves via the map.
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// If the current room is a freshly-entered treasure room, reproduce the logic half of
+    /// <c>NTreasureRoom.OpenChest</c>: grant the chest's gold, then offer any relic-added extra
+    /// rewards. Idempotent per room. The relic picking that follows is driven by the agent.
+    /// </summary>
+    private void TryOpenTreasureChest()
+    {
+        if (CurrentTreasureRoom is not { } room || ReferenceEquals(room, _openedTreasureRoom))
+        {
+            return;
+        }
+        _openedTreasureRoom = room;
+
+        // Chest gold (DoNormalRewards never blocks — it just gains gold).
+        _ = Pump(room.DoNormalRewards());
+        DrainActionQueue();
+
+        // Extra rewards (normally none): a relic can add reward sets, which go through
+        // RewardsSet.Offer → our custom-reward gate. Run as a task and pump until it finishes or
+        // suspends on that gate, so a relic-driven reward screen surfaces instead of deadlocking.
+        _treasureExtraRewardsTask = room.DoExtraRewardsIfNeeded();
+        PumpRoomTaskUntilIdleOrChoice(_treasureExtraRewardsTask);
+        if (!CustomRewardPending)
+        {
+            _treasureExtraRewardsTask = null;
+        }
+    }
+
+    /// <summary>
+    /// Take the treasure relic at <paramref name="index"/>, or skip all relics when null. Mirrors
+    /// the logic half of <c>NTreasureRoomRelicCollection</c>: the synchronizer awards relics via
+    /// its <c>RelicsAwarded</c> event (consumed here to actually obtain them, since the UI node
+    /// that normally does so is null). A singleplayer skip keeps the relics pending until room
+    /// exit, so we end the voting explicitly to return the player to the map.
+    /// </summary>
+    private void PickTreasureRelic(int? index)
+    {
+        var sync = TreasureSync;
+        System.Collections.Generic.List<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult>? results = null;
+        void OnAwarded(System.Collections.Generic.List<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult> r) => results = r;
+
+        sync.RelicsAwarded += OnAwarded;
+        try
+        {
+            if (index is null)
+            {
+                sync.SkipRelicLocally();
+            }
+            else
+            {
+                sync.PickRelicLocally(index);
+            }
+            // Executes the PickRelicAction → OnPicked → AwardRelics → RelicsAwarded.
+            DrainActionQueue();
+        }
+        finally
+        {
+            sync.RelicsAwarded -= OnAwarded;
+        }
+
+        if (results is not null)
+        {
+            foreach (var result in results)
+            {
+                if (result.type == MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResultType.Skipped
+                    || result.player is null)
+                {
+                    continue;
+                }
+                MegaCrit.Sts2.Core.Models.RelicModel relic = result.relic.ToMutable();
+                System.Threading.Tasks.Task obtain = MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(
+                    MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain(relic, result.player));
+                PumpRoomTaskUntilIdleOrChoice(obtain);
+            }
+        }
+
+        // A singleplayer skip records the skip but keeps CurrentRelics until the room is exited;
+        // end voting now so the player is no longer mid-pick and can move on via the map.
+        if (index is null)
+        {
+            sync.OnRoomExited();
+        }
+    }
+
+    /// <summary>
+    /// Drive a fire-and-forget room/effect task until it finishes or suspends on the agent (a
+    /// card choice or a custom reward screen), draining the action queue when nothing is
+    /// suspended. Mirrors <see cref="PumpCombatUntilIdleOrChoice"/> for out-of-combat tasks.
+    /// </summary>
+    private void PumpRoomTaskUntilIdleOrChoice(System.Threading.Tasks.Task roomTask, int timeoutMs = 10000)
+    {
+        int idx = System.Threading.Tasks.Task.WaitAny(
+            new[] { roomTask, Selector.PendingSignal, CustomRewardSignal }, timeoutMs);
+        if (idx < 0)
+        {
+            throw new System.TimeoutException(
+                "Timed out pumping a room task (waiting for it to finish, a card choice, or rewards).");
+        }
+        if (!EffectSuspended)
+        {
+            DrainActionQueue();
         }
     }
 
