@@ -71,6 +71,9 @@ internal static class AutoPlayer
                 case GamePhase.RestSite:
                     StepRest(host);
                     break;
+                case GamePhase.Shop:
+                    StepShop(host);
+                    break;
                 case GamePhase.CrystalSphere:
                     StepCrystalSphere(host, s);
                     break;
@@ -259,6 +262,18 @@ internal static class AutoPlayer
         }
         GameOption? smith = options.FirstOrDefault(o => o.RestOptionId == "SMITH");
         host.Apply(smith ?? options.First());
+    }
+
+    /// <summary>
+    /// Shop strategy: greedily buy the first affordable item (each purchase strictly spends gold, so
+    /// this terminates — affordable items run out), then leave by moving on. Card removal raises a
+    /// card choice that the outer loop resolves as <see cref="GamePhase.Choice"/>.
+    /// </summary>
+    private static void StepShop(GameHost host)
+    {
+        var options = host.ListOptions();
+        GameOption? buy = options.FirstOrDefault(o => o.Kind == OptionKind.BuyShopItem);
+        host.Apply(buy ?? options.First(o => o.Kind == OptionKind.MoveTo));
     }
 
     private static void StepReward(GameHost host)
