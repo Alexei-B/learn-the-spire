@@ -70,8 +70,16 @@ as the reference for what choices exist:
   degrades the missing-key option title/description lookups (`GetOptionTitle`/`GetOptionDescription`
   → `LocString.GetIfExists` returned null, NRE'ing in `CharacterModel.AddDetailsTo`) to a key-named
   `LocString` (`AromaOfChaosTests`, which also covers a regular event raising a mid-event card
-  choice). Still to do: events that start combat (shared events) exercised end-to-end; multi-page
-  events; the `WillKillPlayer` flag in the projection.
+  choice). **Full act-1 event enumeration**: `Act1EventsTests` now drives *every* act-1 event — both
+  index-0 acts (Overgrowth's 13 + Underdocks's 10) plus the 18 shared events — to a terminal state
+  (finished → map, or game-over) through the public option API, entering each directly via the new
+  `GameHost.EnterEventDebug` seam (built on the game's `EnterRoomDebug`). All resolve except two with
+  an interactive-UI dependency the harness doesn't model yet (`PunchOff`'s unguarded
+  `NGame.Instance.ScreenShakeTrauma`; `CrystalSphere`'s minigame screen), enumerated-but-skipped with
+  a reason. Several shim gaps surfaced and were closed along the way (see M8 / design "Not built
+  yet"). Still to do: per-option event coverage (the driver walks one greedy path); events that start
+  combat exercised across every branch; multi-page events; the `WillKillPlayer` flag in the
+  projection; the two UI-gap events above.
 - **Treasure** (chests/relic pick) — _done_: entering a treasure room surfaces as
   `GamePhase.Treasure`/`TreasureView`. The harness reproduces the logic half of the null
   `NTreasureRoom`/`NTreasureRoomRelicCollection` UI: on entry it opens the chest (grant gold via
@@ -108,10 +116,19 @@ as the reference for what choices exist:
   (`GameRuntime` now calls `InitPrefsDataForTest`; `BygoneEffigyTests`); and the **AromaOfChaos**
   event, whose option generation NRE'd in `CharacterModel.AddDetailsTo` because the option text keys
   are missing from our empty loc tables (`GetOptionTitle`/`GetOptionDescription` returned null) — the
-  harness now degrades those to a key-named `LocString` (`AromaOfChaosTests`). Reaching/beating the
-  boss is now blocked by: (a) the **CeremonialBeast** act-1 boss, whose move loads
-  `Godot.GpuParticles2D` — a missing shim type (`TypeLoadException`); (b) **shops** (M3) which a
-  forward path may route through; and (c) other un-handled content on some seeds.
+  harness now degrades those to a key-named `LocString` (`AromaOfChaosTests`).
+  **Full act-1 fight enumeration**: `Act1FightsTests` now drives *every* act-1 encounter — both
+  index-0 acts (Overgrowth's 22 + Underdocks's 20, normals/weaks/elites/bosses) — to a terminal
+  state (won → map, or game-over) through the public option API, entering each directly via the new
+  `GameHost.EnterEncounterDebug` seam. All 42 resolve without the harness throwing; with the player
+  buffed to a huge HP pool the greedy `AutoPlayer` wins all but the **Lagavulin Matriarch** boss
+  (its SoulSiphon drains Strength/Dexterity each cycle, so the starting deck eventually deals ~0 and
+  the long fight ends in a *survivable* game-over — a legitimate loss, not a harness fault). The
+  earlier boss blocker is fixed: the **CeremonialBeast** act-1 boss's `Godot.GpuParticles2D`
+  `TypeLoadException` is closed (the type and `ParticleProcessMaterial`/`Vector3` it pulls in are now
+  in the shim), so all three Overgrowth bosses are now fightable headless. Remaining before a forward
+  run reaches/beats the boss organically: **shops** (M3) which a forward path may route through, and
+  other un-handled content on some seeds.
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

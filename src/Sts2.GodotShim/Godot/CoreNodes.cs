@@ -69,6 +69,24 @@ public class ShaderMaterial : Material { }
 
 public class Shader : Resource { }
 
+// Particle process material. Referenced by particle-VFX setup that some card/event effects touch
+// when their visuals load (e.g. the event heal VFX, curse-card glow); those code paths are
+// TestMode-gated and never run headless, but their method bodies still JIT, so the properties they
+// assign must exist (inert here). Real hierarchy: ParticleProcessMaterial : Material.
+public class ParticleProcessMaterial : Material
+{
+    public Vector3 EmissionBoxExtents { get; set; }
+    public Vector3 Gravity { get; set; }
+    public Vector3 Direction { get; set; }
+    public Color Color { get; set; } = Colors.White;
+    public float EmissionSphereRadius { get; set; }
+    public float InitialVelocityMin { get; set; }
+    public float InitialVelocityMax { get; set; }
+    public float Spread { get; set; }
+    public float ScaleMin { get; set; }
+    public float ScaleMax { get; set; }
+}
+
 public class Node : GodotObject
 {
     /// <summary>Node name. Real Godot types it as a <see cref="StringName"/>; inert here.</summary>
@@ -89,6 +107,8 @@ public class Node : GodotObject
 
     public Godot.Collections.Array<Node> GetChildren(bool includeInternal = false) => new();
 
+    public int GetChildCount(bool includeInternal = false) => 0;
+
     public void AddChild(Node node, bool forceReadableName = false, InternalMode @internal = InternalMode.Disabled) { }
 
     public void AddSibling(Node sibling, bool forceReadableName = false) { }
@@ -96,6 +116,20 @@ public class Node : GodotObject
     public void RemoveChild(Node node) { }
 
     public void MoveChild(Node childNode, int toIndex) { }
+
+    // Node lookup by path. Headless there is no node tree, so every lookup misses (null). These
+    // are referenced by monster/relic/room VFX code (e.g. Flyconid/SnappingJaxfruit spore moves,
+    // NTreasureRoom's gold particles) whose call sites are TestMode-gated or null-conditional, so
+    // the members only need to exist so those method bodies JIT — they are never invoked headless.
+    public T GetNode<T>(NodePath path) where T : class => null!;
+
+    public T GetNodeOrNull<T>(NodePath path) where T : class => null!;
+
+    public Node GetNode(NodePath path) => null!;
+
+    public Node GetNodeOrNull(NodePath path) => null!;
+
+    public bool HasNode(NodePath path) => false;
 
     public Node? GetParent() => null;
 
@@ -125,6 +159,10 @@ public class CanvasItem : Node
     public void Hide() => Visible = false;
     public void QueueRedraw() { }
     public void MoveToFront() { }
+
+    // Viewport geometry queried by some VFX/layout code (e.g. particle placement when a card's
+    // visuals load). Headless there is no viewport, so an empty rect is the inert answer.
+    public Rect2 GetViewportRect() => default;
 }
 
 public class Control : CanvasItem
@@ -145,7 +183,9 @@ public class Node2D : CanvasItem
     public Vector2 Scale { get; set; } = Vector2.One;
     public Vector2 GlobalScale { get; set; } = Vector2.One;
     public float Rotation { get; set; }
+    public float RotationDegrees { get; set; }
     public float GlobalRotation { get; set; }
+    public float GlobalRotationDegrees { get; set; }
     public float Skew { get; set; }
     public int ZIndexNode2D { get; set; }
 }
@@ -198,5 +238,20 @@ public class Button : Control { }
 public class TextureButton : Control { }
 public class Sprite2D : Node2D { }
 public class Marker2D : Node2D { }
+// Particle VFX node. Referenced as the base of card-glow/treasure/boss VFX nodes and loaded by
+// some monster moves (e.g. the CeremonialBeast act-1 boss) and card visuals (e.g. event-granted
+// curses); headless it is only touched on visual paths, so the properties are inert. Real
+// hierarchy: GpuParticles2D : Node2D.
+public class GpuParticles2D : Node2D
+{
+    public Material? ProcessMaterial { get; set; }
+    public Texture2D? Texture { get; set; }
+    public bool Emitting { get; set; }
+    public int Amount { get; set; }
+    public float AmountRatio { get; set; }
+    public double Lifetime { get; set; }
+    public bool OneShot { get; set; }
+    public double SpeedScale { get; set; } = 1.0;
+}
 public class AnimationPlayer : Node { }
 public class CanvasLayer : Node { }

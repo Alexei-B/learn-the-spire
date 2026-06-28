@@ -9,9 +9,11 @@ map-move surface, the battle-rewards screen, **event rooms** (the opening ancien
 shared regular-event path), **treasure rooms** (open chest → pick/skip relic), and **rest sites**
 (rest/smith). A greedy end-to-end driver (`AutoPlayer` in the tests) plays a run forward through the
 public API; buffed to a large HP pool it navigates ~16 act-1 floors across every implemented room
-type, right up to the act-1 boss, before a missing shim type (`Godot.GpuParticles2D`, used by the
-boss's move) blocks entering the boss fight. Remaining breadth (shops/bosses/
-acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
+type, right up to the act-1 boss. Separately, `Act1FightsTests` / `Act1EventsTests` enumerate *every*
+act-1 fight and event (both index-0 acts plus shared events) and drive each to a terminal state in
+isolation; all 42 fights (including all three Overgrowth bosses — the `GpuParticles2D` shim gap that
+once blocked the act-1 boss is closed) and all but two UI-dependent events resolve. Remaining breadth
+(shops/acts 2–3/multiplayer/ascension) is **not built**; see `docs/plans/`.
 
 ## What it is
 
@@ -167,9 +169,20 @@ card-choice injection, the post-combat battle-rewards screen, event rooms (openi
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, and rest sites.
 Still missing: events that start combat (exercised end-to-end), multi-page events, and the event
 `WillKillPlayer` hint; card-reward alternatives/reroll; enemy-turn-triggered choices; full
-multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); shim
-types still absent that some content loads (e.g. `Godot.GpuParticles2D`, used by the CeremonialBeast
-act-1 boss's move, currently blocks a forward run at the boss); and the remaining un-handled content
-that breaks a forward playthrough on some seeds. (Two earlier forward-run blockers are fixed: the
-BygoneEffigy elite's enemy-turn stall — see Boot, prefs save — and the AromaOfChaos event-option NRE
-— see Localization.) → `docs/plans/`. 
+multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection); two
+act-1 events with an interactive-UI dependency the harness doesn't model (`PunchOff`'s unguarded
+`NGame.Instance.ScreenShakeTrauma`; `CrystalSphere`'s minigame screen); and the remaining un-handled
+content that breaks a forward playthrough on some seeds.
+
+**Full act-1 content sweep.** `Act1FightsTests` / `Act1EventsTests` enumerate *every* act-1 fight
+and event (both index-0 acts — Overgrowth + Underdocks — plus the shared events) and drive each to a
+terminal state through the public option API, entering each directly via `GameHost.EnterEncounterDebug`
+/ `EnterEventDebug` (test/dev seams over the game's `EnterRoomDebug`). All 42 fights and all events
+but the two UI-gap ones above resolve without the harness throwing. This closed several shim gaps:
+`GpuParticles2D` + `ParticleProcessMaterial` + the `Vector3` value type (copied verbatim, minus its
+Basis-only helpers), and `Node.GetNode`/`GetNodeOrNull`/`GetChildCount`, `CanvasItem.GetViewportRect`,
+`Node2D.RotationDegrees` — all on TestMode-gated/visual paths that only need to JIT. The
+`GpuParticles2D` gap had blocked the CeremonialBeast act-1 boss; all three Overgrowth bosses are now
+fightable headless. (Earlier forward-run blockers also fixed: the BygoneEffigy elite's enemy-turn
+stall — see Boot, prefs save — and the AromaOfChaos event-option NRE — see Localization.)
+→ `docs/plans/`. 

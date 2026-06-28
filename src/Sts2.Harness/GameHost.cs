@@ -201,6 +201,47 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Test/dev seam: enter a combat room for an arbitrary encounter directly, bypassing map
+    /// navigation, so every act fight can be exercised in isolation. Mirrors the logic the game's
+    /// own <c>RunManager.EnterMapPointInternal</c> runs for a combat point (pause the action
+    /// executor, then enter the room via the sanctioned <c>EnterRoomDebug</c> test path). The
+    /// encounter is cloned to a fresh mutable instance; returns once combat is set up and ready.
+    /// </summary>
+    public MegaCrit.Sts2.Core.Rooms.CombatRoom EnterEncounterDebug(
+        MegaCrit.Sts2.Core.Models.EncounterModel encounter)
+    {
+        MegaCrit.Sts2.Core.Models.EncounterModel mutable =
+            encounter.IsMutable ? encounter : encounter.ToMutable();
+        RunManager.Instance.ActionExecutor.Pause();
+        var room = (MegaCrit.Sts2.Core.Rooms.CombatRoom)Pump(
+            RunManager.Instance.EnterRoomDebug(
+                mutable.RoomType, MegaCrit.Sts2.Core.Map.MapPointType.Unassigned, mutable, showTransition: false));
+        DrainActionQueue();
+        return room;
+    }
+
+    /// <summary>
+    /// Test/dev seam: enter an event room for an arbitrary event directly, bypassing map
+    /// navigation, so every act event can be exercised in isolation. Mirrors the harness's normal
+    /// room-entry handling (wait for the event's options to be generated). The event is cloned to a
+    /// fresh mutable instance.
+    /// </summary>
+    public MegaCrit.Sts2.Core.Rooms.EventRoom EnterEventDebug(
+        MegaCrit.Sts2.Core.Models.EventModel ev)
+    {
+        // Unlike a CombatRoom (which needs a mutable encounter), an EventRoom takes the *canonical*
+        // event and makes its own per-player mutable copy, so pass the canonical model through.
+        MegaCrit.Sts2.Core.Models.EventModel canonical =
+            ev.IsCanonical ? ev : MegaCrit.Sts2.Core.Models.ModelDb.GetById<MegaCrit.Sts2.Core.Models.EventModel>(ev.Id);
+        RunManager.Instance.ActionExecutor.Pause();
+        var room = (MegaCrit.Sts2.Core.Rooms.EventRoom)Pump(
+            RunManager.Instance.EnterRoomDebug(
+                MegaCrit.Sts2.Core.Rooms.RoomType.Event, MegaCrit.Sts2.Core.Map.MapPointType.Unassigned, canonical, showTransition: false));
+        WaitForEventReady();
+        return room;
+    }
+
+    /// <summary>
     /// The local player's mutable event when the current room is an (out-of-combat) event room,
     /// or null otherwise. Used to surface <see cref="GamePhase.Event"/> options.
     /// </summary>
