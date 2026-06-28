@@ -17,6 +17,25 @@ The authoritative design/plan docs live in `docs/`:
 
 When picking up work, the "next task" is the next unchecked item in the roadmap.
 
+## Working process
+
+Follow this loop for each task (it is how the existing milestones were built):
+
+1. **Read the docs first.** Start from `docs/plans/Sts2.Harness — Roadmap.md` to pick the next
+   task and `docs/design/Sts2.Harness.md` for the architecture. Before writing harness code
+   against game internals, **grep `refsrc/`** (and `sts2.xml`) to confirm the exact
+   types/members/call sites — never guess the game's API.
+2. **Implement one coherent, shippable slice** of the next milestone item. Grow the GodotSharp
+   shim only as real load/JIT errors demand. Prefer the faithful game paths over debug/free
+   shortcuts.
+3. **Add seeded, deterministic tests** and keep the whole suite green (`dotnet test`). Drive new
+   behavior end-to-end through the public API where possible.
+4. **Update the docs** to reflect reality: flip the roadmap item's status (done / in-progress
+   with what remains) and update the design doc's status + "Not built yet" sections. Docs are
+   the single source of truth for progress — keep them honest.
+5. **Commit regularly** — one logical change per commit, with a clear message body and the
+   co-author trailer (see Conventions). Commit docs together with the code they describe.
+
 ## Local setup (required — the build will not work without it)
 
 Two directories are **gitignored and must exist locally** (they hold copyrighted game content
