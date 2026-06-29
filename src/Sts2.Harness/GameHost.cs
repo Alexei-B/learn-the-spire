@@ -287,6 +287,38 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Move on the map as the given player. In a single-player run this is the direct
+    /// <see cref="MoveTo(MegaCrit.Sts2.Core.Map.MapCoord)"/>. In a multi-player run the party moves
+    /// together by vote: this registers the player's vote (<c>MapSelectionSynchronizer.
+    /// PlayerVotedForMapCoord</c>), and only once *every* player has voted does the game pick a
+    /// destination (randomly weighted among the votes if they differ) and move — driven through the
+    /// faithful <c>MoveToMapCoordAction</c> (which, in TestMode, calls the same <c>EnterMapCoord</c>).
+    /// So applying a non-final player's move just records their vote and returns; the last vote moves.
+    /// </summary>
+    public void MoveTo(Player player, MegaCrit.Sts2.Core.Map.MapCoord coord)
+    {
+        if (Run.Players.Count <= 1)
+        {
+            MoveTo(coord);
+            return;
+        }
+
+        MegaCrit.Sts2.Core.Multiplayer.Game.MapSelectionSynchronizer sync =
+            RunManager.Instance.MapSelectionSynchronizer;
+        var vote = new MegaCrit.Sts2.Core.Multiplayer.Game.MapVote
+        {
+            coord = coord,
+            mapGenerationCount = sync.MapGenerationCount,
+        };
+        sync.PlayerVotedForMapCoord(player, Run.MapLocation, vote);
+        // If that was the last vote, the synchronizer enqueued the move; run it. (A no-op for a
+        // non-final voter, whose vote is just recorded.) Room-entry follow-ups run after the move.
+        DrainActionQueue();
+        WaitForEventReady();
+        TryOpenTreasureChest();
+    }
+
+    /// <summary>
     /// Test/dev seam: enter a combat room for an arbitrary encounter directly, bypassing map
     /// navigation, so every act fight can be exercised in isolation. Mirrors the logic the game's
     /// own <c>RunManager.EnterMapPointInternal</c> runs for a combat point (pause the action
@@ -354,24 +386,41 @@ public sealed class GameHost
         return room;
     }
 
-    /// <summary>
-    /// The local player's mutable event when the current room is an (out-of-combat) event room,
-    /// or null otherwise. Used to surface <see cref="GamePhase.Event"/> options.
-    /// </summary>
-    internal MegaCrit.Sts2.Core.Models.EventModel? CurrentEvent =>
+    /// <summary>True while the current (out-of-combat) room is an event room.</summary>
+    private bool InEventRoom =>
         RunManager.Instance.IsInProgress
         && !InCombat
-        && Run.CurrentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom
-            ? RunManager.Instance.EventSynchronizer.GetLocalEvent()
-            : null;
+        && Run.CurrentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom;
 
     /// <summary>
-    /// True when the current event is awaiting a real (non-proceed, unlocked) choice from the
-    /// player. A finished event — or one whose only remaining option is "proceed" — is not
-    /// actionable: the player leaves it by moving on the map.
+    /// The local player's mutable event when the current room is an (out-of-combat) event room,
+    /// or null otherwise. Used to surface <see cref="GamePhase.Event"/> options in the projection.
+    /// </summary>
+    internal MegaCrit.Sts2.Core.Models.EventModel? CurrentEvent =>
+        InEventRoom ? RunManager.Instance.EventSynchronizer.GetLocalEvent() : null;
+
+    /// <summary>
+    /// The given player's own mutable event when the current room is an event room, or null
+    /// otherwise. In a multi-player run every player gets their own instance of the room's event and
+    /// resolves it independently (<c>EventSynchronizer.GetEventForPlayer</c>).
+    /// </summary>
+    internal MegaCrit.Sts2.Core.Models.EventModel? CurrentEventForPlayer(Player player) =>
+        InEventRoom ? RunManager.Instance.EventSynchronizer.GetEventForPlayer(player) : null;
+
+    private static bool EventIsActionable(MegaCrit.Sts2.Core.Models.EventModel? e) =>
+        e is not null && e.CurrentOptions.Any(o => !o.IsLocked && !o.IsProceed);
+
+    /// <summary>
+    /// True when *any* player's event is awaiting a real (non-proceed, unlocked) choice — so the run
+    /// is still in an actionable event room. A finished event — or one down to only a "proceed"
+    /// option — is not actionable: the party leaves by moving on the map.
     /// </summary>
     internal bool HasActionableEvent =>
-        CurrentEvent is { } e && e.CurrentOptions.Any(o => !o.IsLocked && !o.IsProceed);
+        InEventRoom && Run.Players.Any(p => EventIsActionable(CurrentEventForPlayer(p)));
+
+    /// <summary>True when the given player's own event is awaiting a real choice.</summary>
+    internal bool HasActionableEventForPlayer(Player player) =>
+        EventIsActionable(CurrentEventForPlayer(player));
 
     /// <summary>The current room as a treasure room, or null when not standing in one.</summary>
     internal MegaCrit.Sts2.Core.Rooms.TreasureRoom? CurrentTreasureRoom =>
@@ -629,10 +678,19 @@ public sealed class GameHost
             return BuildShopOptions(player);
         }
 
-        // An event room awaiting a choice (e.g. the opening Neow ancient event).
+        // An event room awaiting a choice (e.g. the opening Neow ancient event). Each player
+        // resolves their *own* event, so list this player's options.
+        if (HasActionableEventForPlayer(player))
+        {
+            return BuildEventOptions(player, CurrentEventForPlayer(player)!);
+        }
+
+        // In a multi-player event room, a player who has already finished their own event waits for
+        // the others before the party can move on (the map vote needs every player). Offer nothing
+        // meanwhile, rather than letting this player vote to leave the room prematurely.
         if (HasActionableEvent)
         {
-            return BuildEventOptions(player, CurrentEvent!);
+            return options; // empty: this player is done, others are still choosing
         }
 
         if (InCombat)
@@ -980,7 +1038,7 @@ public sealed class GameHost
                 EndTurn(option.Player!);
                 break;
             case OptionKind.MoveTo:
-                MoveTo(option.MapCoord!.Value);
+                MoveTo(option.Player!, option.MapCoord!.Value);
                 break;
             case OptionKind.SelectCards:
                 if (Selector.Pending is null)
@@ -1316,7 +1374,7 @@ public sealed class GameHost
         // ActChangeSynchronizer.MoveToNextAct), so a change here flags the run-ending choice.
         int actFloorBefore = Run.ActFloor;
 
-        RunManager.Instance.EventSynchronizer.ChooseLocalOption(index);
+        ChooseEventOptionForPlayer(player, index);
         PumpEventUntilIdleOrChoice();
         // The option may have entered and resolved a combat (shared events); offer its rewards.
         TryOfferCombatRewards();
@@ -1329,6 +1387,44 @@ public sealed class GameHost
         {
             WaitForGameOver();
         }
+    }
+
+    // EventSynchronizer.ChooseOptionForEvent(Player, int) is the per-player seam the game's
+    // net-message handler invokes when a (remote) player picks an event option; it is private (the
+    // public entry, ChooseLocalOption, only ever drives the local player). In a single-process
+    // fake-multiplayer run the harness is the input source for *every* player, so for a non-local
+    // player it calls that per-player method directly — there is no remote client to send the
+    // message that would otherwise reach it. Cached MethodInfo; a signature change fails loudly.
+    private static readonly System.Reflection.MethodInfo _chooseOptionForEvent =
+        typeof(MegaCrit.Sts2.Core.Multiplayer.Game.EventSynchronizer).GetMethod(
+            "ChooseOptionForEvent",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(Player), typeof(int) },
+            modifiers: null)
+        ?? throw new InvalidOperationException(
+            "EventSynchronizer.ChooseOptionForEvent(Player, int) not found — the game's event API changed.");
+
+    /// <summary>
+    /// Choose event option <paramref name="index"/> for the given player. The local player (NetId 1)
+    /// uses the faithful <c>ChooseLocalOption</c> path; any other player in a fake-multiplayer run is
+    /// driven through the per-player <c>ChooseOptionForEvent</c> seam (see <see cref="_chooseOptionForEvent"/>).
+    /// Shared (vote-based) events are not yet supported for non-local players.
+    /// </summary>
+    private void ChooseEventOptionForPlayer(Player player, int index)
+    {
+        MegaCrit.Sts2.Core.Multiplayer.Game.EventSynchronizer sync = RunManager.Instance.EventSynchronizer;
+        if (player.NetId == Run.Players[0].NetId)
+        {
+            sync.ChooseLocalOption(index);
+            return;
+        }
+        if (sync.GetEventForPlayer(player).IsShared)
+        {
+            throw new System.NotSupportedException(
+                "Driving a non-local player through a shared (vote-based) event is not yet supported.");
+        }
+        _chooseOptionForEvent.Invoke(sync, new object[] { player, index });
     }
 
     /// <summary>

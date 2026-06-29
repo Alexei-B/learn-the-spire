@@ -40,6 +40,86 @@ public sealed class MultiplayerTests
     }
 
     [Fact]
+    public async Task TwoPlayers_NavigateForward_EachResolvesOwnNeow_ThenThePartyVotesIntoCombat()
+    {
+        await Task.Run(RunTwoPlayerNavigation).WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    private void RunTwoPlayerNavigation()
+    {
+        GameHost host = GameHost.StartNewRun(seed: "TESTSEED", playerCount: 2);
+        host.EnterFirstRoom();
+
+        // The party opens on the Neow ancient event — each player gets their *own* instance and
+        // resolves it independently. While player 1 still has a choice, player 2 also has one.
+        Assert.Equal(GamePhase.Event, host.GetState().Phase);
+
+        // Resolve each player's Neow through their own per-player options. Each player has its own
+        // ChooseEventOption set (the per-player event instances), surfaced by ListOptions(netId). Pick
+        // a benign blessing (one whose relic has no upon-pickup side effect) so each option resolves
+        // cleanly — the same clean-start choice TestNav makes for single-player.
+        foreach (Player player in host.Run.Players)
+        {
+            int index = BenignNeowOptionIndex(player);
+            GameOption blessing = host.ListOptions(player.NetId)
+                .First(o => o.Kind == OptionKind.ChooseEventOption && o.EventOptionIndex == index);
+            host.Apply(blessing);
+        }
+
+        // With both Neow events done the party is on the act map.
+        GameState onMap = host.GetState();
+        Assert.Equal(GamePhase.Map, onMap.Phase);
+
+        // Move on the map by vote: player 1 votes first (no move yet — the party waits for everyone),
+        // then player 2's vote completes the tally and the party moves together into the first room.
+        // Both vote for the same destination so the (vote-weighted) pick is deterministic.
+        Coord dest = host.ListOptions(1uL).First(o => o.Kind == OptionKind.MoveTo).Coord!.Value;
+
+        GameOption p1Move = host.ListOptions(1uL)
+            .First(o => o.Kind == OptionKind.MoveTo && o.Coord == dest);
+        host.Apply(p1Move);
+        Assert.False(host.InCombat, "the party should not have moved on a single vote");
+
+        GameOption p2Move = host.ListOptions(2uL)
+            .First(o => o.Kind == OptionKind.MoveTo && o.Coord == dest);
+        host.Apply(p2Move);
+
+        Assert.True(host.InCombat, "the party should have moved into combat once both players voted");
+        Assert.All(host.Run.Players, p => Assert.NotNull(p.PlayerCombatState));
+        _out.WriteLine($"both players in combat at floor {host.GetState().Floor}");
+    }
+
+    /// <summary>
+    /// The index of a benign Neow option for the given player's own event: a non-locked, non-proceed
+    /// blessing whose relic has no upon-pickup side effect (so choosing it resolves cleanly, leaving
+    /// the starting deck unpadded). Falls back to the first actionable option.
+    /// </summary>
+    private static int BenignNeowOptionIndex(Player player)
+    {
+        MegaCrit.Sts2.Core.Models.EventModel ev =
+            MegaCrit.Sts2.Core.Runs.RunManager.Instance.EventSynchronizer.GetEventForPlayer(player);
+        int fallback = -1;
+        for (int i = 0; i < ev.CurrentOptions.Count; i++)
+        {
+            MegaCrit.Sts2.Core.Events.EventOption opt = ev.CurrentOptions[i];
+            if (opt.IsLocked || opt.IsProceed)
+            {
+                continue;
+            }
+            if (fallback < 0)
+            {
+                fallback = i;
+            }
+            if (opt.Relic is { HasUponPickupEffect: true })
+            {
+                continue;
+            }
+            return i;
+        }
+        return fallback;
+    }
+
+    [Fact]
     public async Task TwoPlayers_BothActInOneCombat_AndTheFightResolves()
     {
         await Task.Run(RunTwoPlayerCombat).WaitAsync(TimeSpan.FromSeconds(90));

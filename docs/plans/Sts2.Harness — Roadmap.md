@@ -266,13 +266,22 @@ The action/choice model is already per-player (`ActionQueueSet`,
   returns control after a non-final player ends and only the last player waits out the enemy turn
   (collapsing to the usual flow in single-player). `MultiplayerTests` drives a shared 2-player combat —
   both players play cards via `ListOptions(netId)`/`Apply` each round — to resolution.
-- **Per-player `ListOptions`/`Apply`** routed by player id — _partial_: `ListOptions(ulong)` already
-  keys combat options off the given player's `PlayerCombatState`. **Remaining:** the non-combat-room
-  surfaces (events, treasure, rest, shop, rewards) are still routed to the *local* player's
-  synchronizer (`GetLocalEvent`/`GetLocalOptions`/`ChooseLocalOption`); drive each player's own room
-  state. Shared vs per-player choices — **map voting** (`VoteForMapCoordAction`, all players vote the
-  next room) and the shared relic grab-bag — are **not built**: forward map navigation in a
-  multi-player run (and each player's own opening Neow event) is the next slice.
+- **Per-player events + map voting (forward navigation)** — _done_: each player resolves their **own**
+  event instance — `ListOptions(netId)` lists that player's `ChooseEventOption`s (via
+  `EventSynchronizer.GetEventForPlayer`); `Apply` routes the local player through `ChooseLocalOption`
+  and any other player through the per-player `ChooseOptionForEvent` seam (the path the game's
+  net-message handler would invoke — reached by reflection, since the harness is the input source for
+  every player and there is no remote client to send the message). A player who finished their own
+  event waits (no options) until the party moves. **Map voting**: `MoveTo(player, coord)` registers the
+  player's vote (`MapSelectionSynchronizer.PlayerVotedForMapCoord`); only once *every* player has voted
+  does the game pick a destination and move, driven by the faithful `MoveToMapCoordAction` (TestMode →
+  `EnterMapCoord`). `MultiplayerTests` drives a 2-player run: each resolves their own Neow, then the
+  party votes together into the first combat.
+- **Per-player `ListOptions`/`Apply`** for the remaining rooms — _partial_: combat, events and map
+  moves are per-player; the **non-combat rooms** (treasure, rest, shop, post-combat rewards) are still
+  routed to the *local* player's synchronizer (`GetLocal*`), as is the shared relic grab-bag. **Remaining:**
+  per-player room state for those, plus **shared (vote-based) events** for non-local players (8 events
+  use `IsShared` voting; only the local player can currently drive them).
 - One process still hosts one game; multiple agents drive multiple players in it.
 
 ## M7 — Determinism, snapshots & persistence

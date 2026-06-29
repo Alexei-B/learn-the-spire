@@ -256,10 +256,18 @@ every player's state surfaces; `GetPlayerById(netId)` exposes a live player. **C
 synchronized**: the enemy turn fires only once every player has ended (`CombatManager.
 AllPlayersReadyToEndTurn`), so `EndTurn` returns after a non-final player ends and only the last player
 waits out the enemy turn (the same flow as single-player when there is one player). `MultiplayerTests`
-drives a shared 2-player combat through `ListOptions(netId)`/`Apply` to resolution. **Not yet wired for
-multiplayer:** the non-combat-room surfaces (events/treasure/rest/shop/rewards) still route to the local
-player's synchronizer, and **map voting** (`VoteForMapCoordAction`) plus each player's own opening Neow
-event — i.e. forward map navigation in a multi-player run — are the next slice. See `docs/plans/` M6.
+drives a shared 2-player combat through `ListOptions(netId)`/`Apply` to resolution. **Forward navigation
+works**: each player resolves their **own** event instance (`ListOptions(netId)` lists that player's
+options via `EventSynchronizer.GetEventForPlayer`; `Apply` drives the local player through
+`ChooseLocalOption` and any other player through the per-player `ChooseOptionForEvent` seam — reached by
+reflection, since the harness originates every player's input and there is no remote client to send the
+message the handler would otherwise receive). **Map voting**: `MoveTo(player, coord)` registers a vote
+(`MapSelectionSynchronizer.PlayerVotedForMapCoord`); only once every player has voted does the game pick
+a destination and move via the faithful `MoveToMapCoordAction` (TestMode → `EnterMapCoord`).
+`MultiplayerTests` drives a 2-player run through both players' Neow into a shared first combat. **Not yet
+wired for multiplayer:** the non-combat rooms (treasure/rest/shop/post-combat rewards) still route to the
+local player's synchronizer, the shared relic grab-bag is shared-as-local, and **shared (vote-based)
+events** can only be driven for the local player. See `docs/plans/` M6.
 
 ## Not built yet
 
