@@ -245,10 +245,27 @@ shrinks the potion belt, AscendersBane (A5) adds the eternal curse to the starti
 (A10) gives only the final act a distinct `SecondBossEncounter`, and ToughEnemies (A8) raises a
 monster's `MinInitialHp`. Every run uses `GameMode.Standard`; Daily/Custom modes are not built.
 
+## Local ("fake") multiplayer
+
+`GameHost.StartNewRun(seed, playerCount, ascension)` builds an N-player run on the **single-process
+fake-multiplayer** path: the singleplayer net service (`NetSingleplayerGameService`) hosting N players
+(NetIds 1..N, successive `ModelDb.AllCharacters`). The game supports this — `RunManager.
+IsSingleplayerOrFakeMultiplayer` is true (net type is Singleplayer regardless of player count), so
+turn/choice waits don't block on absent remote peers. The read model already iterates `run.Players`, so
+every player's state surfaces; `GetPlayerById(netId)` exposes a live player. **Combat turn structure is
+synchronized**: the enemy turn fires only once every player has ended (`CombatManager.
+AllPlayersReadyToEndTurn`), so `EndTurn` returns after a non-final player ends and only the last player
+waits out the enemy turn (the same flow as single-player when there is one player). `MultiplayerTests`
+drives a shared 2-player combat through `ListOptions(netId)`/`Apply` to resolution. **Not yet wired for
+multiplayer:** the non-combat-room surfaces (events/treasure/rest/shop/rewards) still route to the local
+player's synchronizer, and **map voting** (`VoteForMapCoordAction`) plus each player's own opening Neow
+event — i.e. forward map navigation in a multi-player run — are the next slice. See `docs/plans/` M6.
+
 ## Not built yet
 
-Deck-management screens, local multiplayer, the Daily/Custom game modes. (Ascension is now plumbed and
-validated — see above. Custom/alternate reward sets, the run score,
+Deck-management screens, multiplayer map navigation / per-player rooms, the Daily/Custom game modes.
+(Ascension is now plumbed and validated, and multi-player run setup + combat turn sync work — see above.
+Custom/alternate reward sets, the run score,
 and the full relic roster are now covered — see below. STS2 act bosses have no separate boss-relic
 pick. There are no alternate index-1/2 acts — only index 0 has a second variant, Underdocks, which is
 covered.) The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move

@@ -252,14 +252,27 @@ a beaten run; they harden the reward surface and caught content-specific gaps.
   the singleplayer boot path sets up). Daily/Custom need their own lobby/daily-seed setup and stay
   deferred (out of M5's scope, as the original note flagged).
 
-## M6 — Local multiplayer (multiple agents)
+## M6 — Local multiplayer (multiple agents) — _in progress (setup + combat turn sync done)_
 The action/choice model is already per-player (`ActionQueueSet`,
 `PlayerChoiceSynchronizer`, `IPlayerCollection`); wire it up for N local players.
-- Create runs with multiple `Player`s; `SetUpNewMultiplayer` (or single-process "fake
-  multiplayer") path.
-- **Per-player `ListOptions`/`Apply`** routed by player id; shared vs per-player choices
-  (e.g. map voting `VoteForMapCoordAction`, shared relic grab-bag).
-- Synchronize turn structure across players in combat.
+- **Create runs with multiple `Player`s** — _done_: `GameHost.StartNewRun(seed, playerCount, ascension)`
+  builds an N-player run on the **single-process "fake multiplayer"** path — the singleplayer net
+  service hosting N players (NetIds 1..N, successive `ModelDb.AllCharacters`), which the game itself
+  supports (`RunManager.IsSingleplayerOrFakeMultiplayer` keeps turn/choice waits from blocking on
+  absent remote peers). The read model already iterates `run.Players`, so every player's
+  status/deck/relics/potions surface (`MultiplayerTests`). `GetPlayerById(netId)` exposes a player.
+- **Synchronize turn structure across players in combat** — _done_: the enemy turn only resolves once
+  *every* player has ended (`CombatManager.AllPlayersReadyToEndTurn`), so `GameHost.EndTurn` now
+  returns control after a non-final player ends and only the last player waits out the enemy turn
+  (collapsing to the usual flow in single-player). `MultiplayerTests` drives a shared 2-player combat —
+  both players play cards via `ListOptions(netId)`/`Apply` each round — to resolution.
+- **Per-player `ListOptions`/`Apply`** routed by player id — _partial_: `ListOptions(ulong)` already
+  keys combat options off the given player's `PlayerCombatState`. **Remaining:** the non-combat-room
+  surfaces (events, treasure, rest, shop, rewards) are still routed to the *local* player's
+  synchronizer (`GetLocalEvent`/`GetLocalOptions`/`ChooseLocalOption`); drive each player's own room
+  state. Shared vs per-player choices — **map voting** (`VoteForMapCoordAction`, all players vote the
+  next room) and the shared relic grab-bag — are **not built**: forward map navigation in a
+  multi-player run (and each player's own opening Neow event) is the next slice.
 - One process still hosts one game; multiple agents drive multiple players in it.
 
 ## M7 — Determinism, snapshots & persistence

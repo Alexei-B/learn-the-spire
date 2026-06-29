@@ -128,8 +128,25 @@ public sealed class GameHost
     /// Create and start a fresh single-player run with the given seed.
     /// Mirrors the game's own NSceneBootstrapper flow, minus all UI/asset steps.
     /// </summary>
-    public static GameHost StartNewRun(string seed, int ascension = 0)
+    public static GameHost StartNewRun(string seed, int ascension = 0) =>
+        StartNewRun(seed, playerCount: 1, ascension);
+
+    /// <summary>
+    /// Create and start a fresh run with <paramref name="playerCount"/> local players ("fake
+    /// multiplayer"): the game's singleplayer net service hosting N players, all driven in-process by
+    /// the harness. The game itself supports this configuration (see
+    /// <c>RunManager.IsSingleplayerOrFakeMultiplayer</c> — turn/choice waits don't block on remote
+    /// peers because every player acts locally). Players are assigned NetIds 1..N and successive
+    /// characters from <c>ModelDb.AllCharacters</c> (wrapping if more players than characters).
+    /// </summary>
+    public static GameHost StartNewRun(string seed, int playerCount, int ascension = 0)
     {
+        if (playerCount < 1)
+        {
+            throw new System.ArgumentOutOfRangeException(
+                nameof(playerCount), playerCount, "A run needs at least one player.");
+        }
+
         GameRuntime.EnsureInitialized();
 
         // The game keeps run/combat state in process-wide singletons, so only one run
@@ -144,12 +161,17 @@ public sealed class GameHost
         // (StartedWithNeow is derived from the run's unlock state — see RunManager).
         UnlockState unlock = UnlockState.all;
 
-        CharacterModel character = ModelDb.AllCharacters.First(); // Ironclad
-        Player player = Player.CreateForNewRun(character, unlock, 1uL);
+        List<CharacterModel> characters = ModelDb.AllCharacters.ToList();
+        var players = new List<Player>(playerCount);
+        for (int i = 0; i < playerCount; i++)
+        {
+            CharacterModel character = characters[i % characters.Count];
+            players.Add(Player.CreateForNewRun(character, unlock, (ulong)(i + 1)));
+        }
 
         List<ActModel> acts = ActModel.GetDefaultList().Select(a => a.ToMutable()).ToList();
         RunState runState = RunState.CreateForNewRun(
-            new List<Player> { player },
+            players,
             acts,
             new List<ModifierModel>(),
             GameMode.Standard,
@@ -446,16 +468,23 @@ public sealed class GameHost
     }
 
     /// <summary>
-    /// End the given player's turn and resolve the enemy turn to quiescence: the enemy
-    /// turn runs on background tasks (not the player action queue), so we wait (via the
-    /// combat's events) until the player can act again or combat ends.
+    /// Mark the given player ready to end their turn. The enemy turn only resolves once *every*
+    /// player has ended (the game gates it on <c>CombatManager.AllPlayersReadyToEndTurn</c>), so in a
+    /// multi-player (fake-multiplayer) combat this returns control after a non-final player ends —
+    /// the other players still need to act — and only the last player to end waits out the enemy turn.
+    /// The enemy turn runs on background tasks (not the player action queue), so that wait goes
+    /// through the combat events until the players can act again or combat ends. In single-player
+    /// the local player is always the last, so this is the usual end-turn-then-resolve flow.
     /// </summary>
     public void EndTurn(Player player)
     {
         MegaCrit.Sts2.Core.Commands.PlayerCmd.EndTurn(player, canBackOut: false);
         DrainActionQueue();
-        WaitUntilPlayerCanActOrCombatEnds(player);
-        TryOfferCombatRewards();
+        if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance.AllPlayersReadyToEndTurn())
+        {
+            WaitUntilPlayerCanActOrCombatEnds(player);
+            TryOfferCombatRewards();
+        }
     }
 
     // ---------------------------------------------------------------------------------
@@ -1604,6 +1633,13 @@ public sealed class GameHost
             PendingCrystalSphere ?? throw new InvalidOperationException("No Crystal Sphere minigame is pending.");
         minigame.SetTool(tool);
     }
+
+    /// <summary>
+    /// The live <see cref="Player"/> with the given net id (1-based; 1 is the local player). Throws
+    /// if no such player is in the run. Useful for agents driving a specific player in a multi-player
+    /// (fake-multiplayer) run. Treat the returned player as read-only from outside the harness.
+    /// </summary>
+    public Player GetPlayerById(ulong playerId) => GetPlayer(playerId);
 
     private Player GetPlayer(ulong playerId) =>
         Run.Players.FirstOrDefault(p => p.NetId == playerId)
