@@ -102,6 +102,14 @@ public sealed record GameState
     /// killing the players — so this distinguishes a victorious end from a death.
     /// </summary>
     public required bool IsVictory { get; init; }
+
+    /// <summary>
+    /// The run's score so far (<c>ScoreUtility.CalculateScore</c>): floors climbed, gold gained,
+    /// elites and bosses slain, scaled by ascension. Computed with the win flag set once the run is
+    /// a victory, so on a finished run it is the final score (a bit higher on a win — the act-3 boss
+    /// only counts as slain once the run is won).
+    /// </summary>
+    public required int Score { get; init; }
     public required IReadOnlyList<PlayerState> Players { get; init; }
 
     /// <summary>The current battle, or null when not in combat.</summary>
@@ -290,6 +298,13 @@ public sealed record RewardView
 
     /// <summary>The cards on offer for <see cref="RewardType.Card"/>; null otherwise.</summary>
     public IReadOnlyList<CardView>? Cards { get; init; }
+
+    /// <summary>
+    /// For a <see cref="RewardType.Card"/> reward, the option ids of its non-skip alternatives
+    /// (e.g. "SACRIFICE", "REROLL"), each resolvable via an
+    /// <see cref="OptionKind.TakeCardRewardAlternative"/> option; null/empty otherwise.
+    /// </summary>
+    public IReadOnlyList<string>? CardAlternatives { get; init; }
 }
 
 /// <summary>A mid-effect card choice the game is waiting on (e.g. discover/exhaust).</summary>

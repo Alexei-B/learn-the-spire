@@ -184,9 +184,46 @@ as the reference for what choices exist:
   earlier boss blocker is fixed: the **CeremonialBeast** act-1 boss's `Godot.GpuParticles2D`
   `TypeLoadException` is closed (the type and `ParticleProcessMaterial`/`Vector3` it pulls in are now
   in the shim), so all three Overgrowth bosses are now fightable headless.
-  Remaining for M4 polish (not blocking a full beaten run): **boss relic / alternate reward** sets
-  (Skip-as-heal/sacrifice, reroll, Orrery/Calling Bell, …) and **score**. Every default-list run plays
-  start → act-3 boss → Architect → win, and every fight/event of every act variant resolves.
+  Every default-list run plays start → act-3 boss → Architect → win, and every fight/event of every
+  act variant resolves.
+- **Card-reward alternatives & reroll** — _done_: a post-combat card reward now surfaces its
+  alternatives (`CardRewardAlternative.Generate`) alongside the per-card takes, as
+  `TakeCardRewardAlternative` options (projected into `RewardView.CardAlternatives`). A terminal
+  alternative (Pael's Wing's `SACRIFICE`) is staged by id and run through the rewards synchronizer
+  (completing the reward without adding a card); a `REROLL` (Driftwood) re-rolls the offered cards in
+  place and is single-use. Plain `Skip` is omitted (ProceedFromRewards already skips). The selector
+  seam (`HarnessCardSelector.GetSelectedCardReward`) resolves the staged alternative against the live
+  list by id, since the game regenerates and reference-matches it each round (`RewardAlternativesTests`).
+- **Run score** — _done_: `GameState.Score` projects `ScoreUtility.CalculateScore` (floors, gold,
+  elites/bosses, ascension-scaled), computed with the win flag once the run is a victory
+  (`ScoreTests`, and the victory score in `WalkthroughTests`).
+
+### M4 — Deferred: reward-set & relic coverage (come back to)
+Two reward-screen tasks plus broad relic coverage, deferred from the M4-polish pass above. None block
+a beaten run; they harden the reward surface and catch content-specific gaps.
+- **Exotic custom reward sets — verify & cover.** The non-Kaleidoscope `RewardsCmd.OfferCustom` relics
+  already route through the harness's custom-reward gate (`OnCustomRewardsOffered` /
+  `RewardsSet.testSelector`): **Orrery, CallingBell, ToyBox, LostCoffer, Cauldron, GlassEye,
+  SmallCapsule**. This is mostly *test-and-fix*, not new architecture: add a test per relic that grants
+  it (or picks its Neow blessing), triggers its reward, and drives the surfaced `GamePhase.Reward` to
+  completion — patching whatever surfaces (a reward shape the projection/options don't yet handle, e.g.
+  a relic-pick or card-removal set, or a content shim gap). Risk: medium — each relic may surface a
+  distinct reward shape.
+- **General relic coverage sweep.** Enumerate **every** relic (`ModelDb.AllRelics`) and drive each to a
+  sane state through the public API, mirroring `Act{1,2,3}FightsTests`: grant the relic, then either
+  (a) play a short seeded combat (catches on-obtain effects, combat-start/turn hooks, on-hit/on-play
+  triggers that NRE on null UI), and/or (b) trigger the reward/shop/rest paths it modifies. Assert no
+  throw/hang and basic invariants. Expect to close a tail of unguarded-UI NREs (the same class as
+  SoulNexus / KaiserCrab / ScreenShakeTrauma). Pair with a relic *projection* check (relics surface in
+  `PlayerState.Relics`). Risk: medium — breadth will surface several content-specific shim/UI gaps.
+- **Reward-screen coverage sweep (property-style).** A seeded test that, across several seeds, drives
+  every reward screen reached on a forward run through *all* its option kinds — take each reward type,
+  take an alternative, reroll, skip via proceed — asserting invariants (gold/HP/deck/relic/potion
+  sanity, no exceptions). Folds toward M8's property-style E2E; mostly exercises the work above.
+- Suggested order: relic sweep first (surfaces the most content gaps), then exotic reward sets (builds
+  on the same fixes), then the property-style sweep (ties them together). Boss-relic rewards were
+  *not* included: STS2 act bosses give gold/potion/card (the final boss none), with no separate
+  boss-relic pick — the original M4 wording was a misnomer.
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the

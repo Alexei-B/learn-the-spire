@@ -116,14 +116,34 @@ internal sealed class HarnessCardSelector : ICardSelector
     internal CardModel? NextCardRewardPick { get; set; }
 
     /// <summary>
-    /// Card-reward selection (post-combat). Returns whichever card the harness pre-selected via
-    /// <see cref="NextCardRewardPick"/> (set when applying a <see cref="OptionKind.TakeReward"/>
-    /// option for a card reward). Falls back to the first option if nothing was staged, so the
+    /// The id (<see cref="CardRewardAlternative.OptionId"/>) of the card-reward *alternative* the
+    /// harness has chosen instead of a card (e.g. "SACRIFICE"). Set by <see cref="GameHost.Apply"/>
+    /// before running a terminal alternative through the rewards synchronizer, then consumed by
+    /// <see cref="GetSelectedCardReward"/>. Matched by id (not reference) because the game regenerates
+    /// the alternative list each selection round and matches the result by reference.
+    /// </summary>
+    internal string? NextCardRewardAlternativeId { get; set; }
+
+    /// <summary>
+    /// Card-reward selection (post-combat). Returns the staged alternative
+    /// (<see cref="NextCardRewardAlternativeId"/>) when set — resolved against the live
+    /// <paramref name="alternatives"/> by id — otherwise whichever card the harness pre-selected via
+    /// <see cref="NextCardRewardPick"/>. Falls back to the first option if nothing was staged, so the
     /// flow never blocks on a missing choice.
     /// </summary>
     public CardRewardSelection GetSelectedCardReward(
         IReadOnlyList<CardCreationResult> options, IReadOnlyList<CardRewardAlternative> alternatives)
     {
+        if (NextCardRewardAlternativeId is { } altId)
+        {
+            NextCardRewardAlternativeId = null;
+            CardRewardAlternative? alt = alternatives.FirstOrDefault(a => a.OptionId == altId);
+            if (alt is not null)
+            {
+                NextCardRewardPick = null;
+                return new CardRewardSelection { alternative = alt };
+            }
+        }
         CardModel? pick = NextCardRewardPick ?? options.FirstOrDefault()?.Card;
         NextCardRewardPick = null;
         return new CardRewardSelection { card = pick };

@@ -33,6 +33,7 @@ internal static class GameStateProjection
             Floor = run.TotalFloor,
             IsGameOver = run.IsGameOver,
             IsVictory = run.IsGameOver && RunManager.Instance.WinTime > 0,
+            Score = ScoreUtility.CalculateScore(run, won: RunManager.Instance.WinTime > 0),
             Players = run.Players.Select(p => ProjectPlayer(p, combat)).ToList(),
             Combat = combat is null ? null : ProjectCombat(combat),
             Map = ProjectMap(run),
@@ -311,6 +312,8 @@ internal static class GameStateProjection
             Type = MegaCrit.Sts2.Core.Rewards.RewardType.Card,
             Taken = card.SuccessfullySelected,
             Cards = card.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
+            CardAlternatives = MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative
+                .Generate(card).Select(a => a.OptionId).Where(id => id != "Skip").ToList(),
         },
         _ => new RewardView { Type = MegaCrit.Sts2.Core.Rewards.RewardType.None, Taken = reward.SuccessfullySelected },
     };

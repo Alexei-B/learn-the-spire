@@ -46,7 +46,7 @@ public sealed class WalkthroughTests
             preferMapPointType: MegaCrit.Sts2.Core.Map.MapPointType.Boss,
             log: _out);
 
-        _out.WriteLine($"Run ended: phase={end.Phase} act={end.ActIndex} floor={end.Floor} victory={end.IsVictory} relics=[{string.Join(",", end.Players[0].Relics)}]");
+        _out.WriteLine($"Run ended: phase={end.Phase} act={end.ActIndex} floor={end.Floor} victory={end.IsVictory} score={end.Score} relics=[{string.Join(",", end.Players[0].Relics)}]");
 
         // With the HP buff the greedy player wins: it cleared all three acts and the Architect.
         Assert.True(end.IsGameOver);
@@ -58,5 +58,7 @@ public sealed class WalkthroughTests
         // Evidence of treasure-room traversal across acts: the starting + Neow relic plus more.
         Assert.True(end.Players[0].Relics.Count >= 3,
             $"expected to have picked up relics across the run but have only {end.Players[0].Relics.Count}");
+        // A full winning run scores well into the thousands (floors × act + elites/bosses + gold).
+        Assert.True(end.Score > 0, $"expected a positive run score but got {end.Score}");
     }
 }

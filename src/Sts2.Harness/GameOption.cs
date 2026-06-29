@@ -29,6 +29,12 @@ public enum OptionKind
     /// <summary>Take one reward from the post-combat rewards screen (gold/potion/relic/card).</summary>
     TakeReward,
 
+    /// <summary>
+    /// Take a card reward's alternative instead of a card: a terminal one (e.g. Pael's Wing's
+    /// sacrifice) completes the reward, while a reroll re-rolls the offered cards in place.
+    /// </summary>
+    TakeCardRewardAlternative,
+
     /// <summary>Leave the rewards screen, skipping any rewards not taken, and return to the map.</summary>
     ProceedFromRewards,
 
@@ -90,6 +96,9 @@ public sealed class GameOption
     /// <summary>The relic an event option grants (e.g. a Neow blessing), if any; null otherwise.</summary>
     public string? EventOptionRelicId { get; }
 
+    /// <summary>The alternative's option id for <see cref="OptionKind.TakeCardRewardAlternative"/> (e.g. "SACRIFICE", "REROLL"); null otherwise.</summary>
+    public string? CardRewardAlternativeId { get; }
+
     /// <summary>The relic id offered by a <see cref="OptionKind.TakeTreasureRelic"/> option; null otherwise.</summary>
     public string? TreasureRelicId { get; }
 
@@ -136,6 +145,9 @@ public sealed class GameOption
     /// <summary>The reward this <see cref="OptionKind.TakeReward"/> option claims; null otherwise.</summary>
     internal Reward? Reward { get; }
 
+    /// <summary>The live alternative a <see cref="OptionKind.TakeCardRewardAlternative"/> option runs; null otherwise.</summary>
+    internal MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative? CardRewardAlternativeModel { get; }
+
     /// <summary>The shop entry a <see cref="OptionKind.BuyShopItem"/> option purchases; null otherwise.</summary>
     internal MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry? ShopEntry { get; }
 
@@ -152,6 +164,7 @@ public sealed class GameOption
         IReadOnlyList<CardView>? selectedCards = null,
         int? eventOptionIndex = null,
         string? eventOptionRelicId = null,
+        string? cardRewardAlternativeId = null,
         string? treasureRelicId = null,
         int? treasureRelicIndex = null,
         string? restOptionId = null,
@@ -169,6 +182,7 @@ public sealed class GameOption
         Player? player = null,
         IReadOnlyList<CardModel>? selectedCardModels = null,
         Reward? reward = null,
+        MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative? cardRewardAlternativeModel = null,
         MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry? shopEntry = null,
         PotionModel? potionModel = null,
         MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame.CrystalSphereToolType? crystalSphereToolValue = null)
@@ -182,6 +196,7 @@ public sealed class GameOption
         SelectedCards = selectedCards;
         EventOptionIndex = eventOptionIndex;
         EventOptionRelicId = eventOptionRelicId;
+        CardRewardAlternativeId = cardRewardAlternativeId;
         TreasureRelicId = treasureRelicId;
         TreasureRelicIndex = treasureRelicIndex;
         RestOptionId = restOptionId;
@@ -199,6 +214,7 @@ public sealed class GameOption
         Player = player;
         SelectedCardModels = selectedCardModels;
         Reward = reward;
+        CardRewardAlternativeModel = cardRewardAlternativeModel;
         ShopEntry = shopEntry;
         PotionModel = potionModel;
         CrystalSphereToolValue = crystalSphereToolValue;
@@ -261,6 +277,16 @@ public sealed class GameOption
     internal static GameOption TakeCardRewardOption(Player player, Reward reward, CardModel cardToPick, CardView card) =>
         new(OptionKind.TakeReward, player.NetId, $"Take card {cardToPick.Id.Entry}",
             card: card, cardModel: cardToPick, player: player, reward: reward);
+
+    /// <summary>
+    /// Take a card reward's alternative (e.g. Pael's Wing's "SACRIFICE", or "REROLL") instead of a
+    /// card. Carries the live reward and alternative so <see cref="GameHost.Apply"/> can run it.
+    /// </summary>
+    internal static GameOption TakeCardRewardAlternativeOption(
+        Player player, Reward reward, MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative alternative) =>
+        new(OptionKind.TakeCardRewardAlternative, player.NetId, $"Card reward: {alternative.OptionId}",
+            cardRewardAlternativeId: alternative.OptionId, player: player,
+            reward: reward, cardRewardAlternativeModel: alternative);
 
     internal static GameOption ProceedFromRewardsOption(Player player) =>
         new(OptionKind.ProceedFromRewards, player.NetId, "Proceed (leave rewards)", player: player);

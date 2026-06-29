@@ -104,7 +104,13 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   `TakeReward` calls `RewardsSetSynchronizer.SelectLocalReward` (staging the chosen card on the
   selector first for card rewards); `ProceedFromRewards` calls `SkipLocalRewardsSet` for any
   untaken rewards and returns to the map. All driven on the harness thread; the executor is
-  unpaused between combat-end and the next room, so reward effects run.
+  unpaused between combat-end and the next room, so reward effects run. A card reward also surfaces its
+  **alternatives** (`CardRewardAlternative.Generate`, projected into `RewardView.CardAlternatives`) as
+  `TakeCardRewardAlternative` options: a terminal one (Pael's Wing `SACRIFICE`) is staged by id and
+  run through `SelectLocalReward` (the seam resolves it against the live list by id, since the game
+  regenerates and reference-matches the alternative each round); a `REROLL` (Driftwood) calls the
+  reward's `Reroll()` in place and leaves the screen up with new cards. Plain `Skip` is omitted —
+  `ProceedFromRewards` already skips. `GameState.Score` projects `ScoreUtility.CalculateScore`.
 - **Custom rewards** (relic/event `RewardsCmd.OfferCustom`, e.g. Kaleidoscope's two bonus card
   rewards): these go through `RewardsSet.Offer`, which in `TestMode` auto-takes every reward unless
   a `RewardsSet.testSelector` is installed. The harness installs one (`OnCustomRewardsOffered`):
@@ -221,11 +227,13 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 Deck-management screens, boss relic / alternate reward sets and score, ascension, local
 multiplayer. (There are no alternate index-1/2 acts — only index 0 has a second variant, Underdocks,
 which is covered.) The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
-surface, in-combat *and enemy-turn* card-choice injection, the post-combat battle-rewards screen, event
-rooms (opening ancient + regular-event path), custom relic/event reward sets (`OfferCustom`), treasure
-rooms, rest sites, shops, potion use/discard, the act 1→2→3 transition, and the Architect victory.
-Still missing: multi-page events and the event `WillKillPlayer` hint; card-reward alternatives/reroll;
-and full multi-select subset enumeration (min &gt; 1 currently offers a single exact-minimum selection).
+surface, in-combat *and enemy-turn* card-choice injection, the post-combat battle-rewards screen
+(including card-reward alternatives/reroll and the run score), event rooms (opening ancient +
+regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, rest sites, shops,
+potion use/discard, the act 1→2→3 transition, and the Architect victory.
+Still missing: multi-page events and the event `WillKillPlayer` hint; full multi-select subset
+enumeration (min &gt; 1 currently offers a single exact-minimum selection); and breadth coverage of the
+exotic `OfferCustom` reward sets and the full relic roster (deferred — see `docs/plans/` M4 deferred).
 
 **Full content sweep (every act variant).** `Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests`
 enumerate *every* fight and event of every act variant (act 1's Overgrowth + Underdocks — the only

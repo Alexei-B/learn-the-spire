@@ -761,6 +761,18 @@ public sealed class GameHost
                         CardView view = GameStateProjection.ProjectCard(offered, canPlay: false);
                         options.Add(GameOption.TakeCardRewardOption(player, card, offered, view));
                     }
+                    // The card reward's alternatives (Pael's Wing sacrifice, reroll, …). Plain "Skip"
+                    // is omitted — ProceedFromRewards already skips untaken rewards — so only the ones
+                    // with a real effect surface.
+                    foreach (MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative alt
+                             in MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative.Generate(card))
+                    {
+                        if (alt.OptionId == "Skip")
+                        {
+                            continue;
+                        }
+                        options.Add(GameOption.TakeCardRewardAlternativeOption(player, card, alt));
+                    }
                     break;
             }
         }
@@ -966,6 +978,9 @@ public sealed class GameHost
             case OptionKind.TakeReward:
                 TakeReward(option);
                 break;
+            case OptionKind.TakeCardRewardAlternative:
+                TakeCardRewardAlternative(option);
+                break;
             case OptionKind.ProceedFromRewards:
                 ProceedFromRewards();
                 break;
@@ -1023,6 +1038,42 @@ public sealed class GameHost
         DrainActionQueue();
         // The rewards screen stays up (mirroring the in-game proceed button) even once every
         // reward is taken; the player leaves it explicitly via ProceedFromRewards.
+    }
+
+    /// <summary>
+    /// Run a card reward's alternative instead of taking a card, reproducing the logic half of the
+    /// null <c>NCardRewardSelectionScreen</c>. A <c>DoNothing</c> alternative (reroll) runs its effect
+    /// in place and leaves the screen up with the freshly-rolled cards; a terminal alternative
+    /// (Pael's Wing sacrifice, …) is staged by id and run through the synchronizer, which marks the
+    /// reward selected and runs its effect/hooks — the same path as taking a card.
+    /// </summary>
+    private void TakeCardRewardAlternative(GameOption option)
+    {
+        if (PendingRewards is null)
+        {
+            throw new InvalidOperationException("No rewards are pending to take.");
+        }
+        MegaCrit.Sts2.Core.Rewards.Reward reward = option.Reward
+            ?? throw new InvalidOperationException("Card-reward-alternative option carried no reward.");
+        MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative alt =
+            option.CardRewardAlternativeModel
+            ?? throw new InvalidOperationException("Card-reward-alternative option carried no alternative.");
+
+        if (alt.AfterSelected == MegaCrit.Sts2.Core.Entities.Rewards.PostAlternateCardRewardAction.DoNothing)
+        {
+            // Reroll-style: the effect (re-roll the offered cards) leaves the reward open, so run it
+            // directly rather than through the selection loop, then re-project the new cards.
+            Pump(alt.OnSelect());
+            DrainActionQueue();
+            return;
+        }
+
+        // Terminal alternative: stage it by id so the synchronizer's GetSelectedCardReward returns it
+        // (the game regenerates the alternative list each round and matches by reference, so a stale
+        // instance would not match — the id resolves against the fresh list).
+        Selector.NextCardRewardAlternativeId = alt.OptionId;
+        Pump(RunManager.Instance.RewardsSetSynchronizer.SelectLocalReward(reward));
+        DrainActionQueue();
     }
 
     /// <summary>
