@@ -47,9 +47,10 @@ public sealed class GameHost
     // exactly once per room (the relic picking that follows is driven by the agent's options).
     private MegaCrit.Sts2.Core.Rooms.TreasureRoom? _openedTreasureRoom;
 
-    // A treasure room's "extra rewards" (DoExtraRewardsIfNeeded) task, kept in flight when it
-    // suspends on a custom reward screen so ProceedFromRewards can resume it. Null otherwise.
-    private System.Threading.Tasks.Task? _treasureExtraRewardsTask;
+    // A fire-and-forget room/effect task (e.g. a treasure room's DoExtraRewardsIfNeeded, or a
+    // relic's on-obtain AfterObtained) kept in flight when it suspends on a custom reward screen so
+    // ProceedFromRewards can resume it. Null otherwise.
+    private System.Threading.Tasks.Task? _suspendedRoomTask;
 
     // A rest-site option resolution (ChooseLocalOption) task, kept in flight when it suspends on a
     // mid-effect card choice (e.g. Smith's upgrade selection) so Apply can resume it. Null otherwise.
@@ -281,6 +282,33 @@ public sealed class GameHost
                 mutable.RoomType, MegaCrit.Sts2.Core.Map.MapPointType.Unassigned, mutable, showTransition: false));
         DrainActionQueue();
         return room;
+    }
+
+    /// <summary>
+    /// Test/dev seam: grant the local player a relic and pump its on-obtain effect to quiescence or
+    /// a surfaced choice/reward — the same way the treasure path obtains relics. Unlike awaiting
+    /// <c>RelicCmd.Obtain</c> inline (which deadlocks if the relic's <c>AfterObtained</c> raises a
+    /// custom reward through the harness gate, e.g. Orrery/Cauldron/CallingBell), the obtain runs as
+    /// a fire-and-forget task pumped until it finishes or suspends, so any on-obtain reward surfaces
+    /// as <see cref="GamePhase.Reward"/> for the agent to resolve. Returns the obtained mutable relic.
+    /// </summary>
+    public MegaCrit.Sts2.Core.Models.RelicModel ObtainRelicDebug(
+        MegaCrit.Sts2.Core.Models.RelicModel relic)
+    {
+        MegaCrit.Sts2.Core.Models.RelicModel mutable = relic.IsMutable ? relic : relic.ToMutable();
+        System.Threading.Tasks.Task obtain = MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(
+            MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain(mutable, Run.Players[0]));
+        // Keep the obtain task registered while it is still in flight — whether it suspended on a
+        // custom reward (resumed by ProceedFromRewards) or on a mid-effect card choice (resumed by
+        // Apply(SelectCards), e.g. NewLeaf's transform or PreservedFog's removal pick) — so the
+        // resumer pumps it to completion instead of leaving the continuation racing GetState.
+        _suspendedRoomTask = obtain;
+        PumpRoomTaskUntilIdleOrChoice(obtain);
+        if (obtain.IsCompleted)
+        {
+            _suspendedRoomTask = null;
+        }
+        return mutable;
     }
 
     /// <summary>
@@ -967,6 +995,16 @@ public sealed class GameHost
                     PumpRoomTaskUntilIdleOrChoice(shopTask);
                     FinishShopRemovalIfDone();
                 }
+                else if (_suspendedRoomTask is { IsCompleted: false } roomTask)
+                {
+                    // A fire-and-forget room/relic effect (e.g. a relic's on-obtain transform/removal
+                    // pick from ObtainRelicDebug) raised this choice; resume it to completion.
+                    PumpRoomTaskUntilIdleOrChoice(roomTask);
+                    if (_suspendedRoomTask.IsCompleted)
+                    {
+                        _suspendedRoomTask = null;
+                    }
+                }
                 else
                 {
                     PumpEventUntilIdleOrChoice();
@@ -1120,13 +1158,14 @@ public sealed class GameHost
         // is now completed, so unblock it and pump the effect to quiescence (it may finish, raise
         // another choice, or — in combat — continue the action queue).
         resolve.TrySetResult();
-        if (_treasureExtraRewardsTask is { IsCompleted: false } treasureTask)
+        if (_suspendedRoomTask is { IsCompleted: false } roomTask)
         {
-            // The suspended effect was a treasure room's extra-rewards offer; resume it.
-            PumpRoomTaskUntilIdleOrChoice(treasureTask);
+            // The suspended effect was a fire-and-forget room/relic task (treasure extra rewards, a
+            // relic's on-obtain reward, …); resume it.
+            PumpRoomTaskUntilIdleOrChoice(roomTask);
             if (!CustomRewardPending)
             {
-                _treasureExtraRewardsTask = null;
+                _suspendedRoomTask = null;
             }
         }
         else if (InCombat)
@@ -1340,11 +1379,11 @@ public sealed class GameHost
         // Extra rewards (normally none): a relic can add reward sets, which go through
         // RewardsSet.Offer → our custom-reward gate. Run as a task and pump until it finishes or
         // suspends on that gate, so a relic-driven reward screen surfaces instead of deadlocking.
-        _treasureExtraRewardsTask = room.DoExtraRewardsIfNeeded();
-        PumpRoomTaskUntilIdleOrChoice(_treasureExtraRewardsTask);
+        _suspendedRoomTask = room.DoExtraRewardsIfNeeded();
+        PumpRoomTaskUntilIdleOrChoice(_suspendedRoomTask);
         if (!CustomRewardPending)
         {
-            _treasureExtraRewardsTask = null;
+            _suspendedRoomTask = null;
         }
     }
 

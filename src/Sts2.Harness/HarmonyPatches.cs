@@ -69,6 +69,15 @@ internal static class HarmonyPatches
                 AccessTools.Method(typeof(EventModel), nameof(EventModel.GetOptionDescription)),
                 postfix: new HarmonyMethod(typeof(HarmonyPatches), nameof(GetOptionDescriptionPostfix)));
 
+            // CardModel.SelectionScreenPrompt *throws* "No selection screen prompt for X" when its
+            // loc key is missing (our tables are empty), rather than degrading like other lookups.
+            // Cards that raise a mid-effect card selection read it (e.g. Wish's draw-pile pick), so a
+            // missing prompt faults the card mid-play. Swallow the throw and hand back a key-named
+            // LocString (rendered as the key) — the prompt is display-only, irrelevant to mechanics.
+            harmony.Patch(
+                AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Models.CardModel), "SelectionScreenPrompt"),
+                finalizer: new HarmonyMethod(typeof(HarmonyPatches), nameof(SelectionScreenPromptFinalizer)));
+
             // The Crystal Sphere minigame's screen instantiates a UI scene (null headless) and pushes
             // it onto the overlay stack. Skip it and hand the live minigame to the harness, which
             // surfaces it as GamePhase.CrystalSphere and drives the cell-clicks the UI normally would.
@@ -291,6 +300,19 @@ internal static class HarmonyPatches
     private static void GetOptionDescriptionPostfix(EventModel __instance, string key, ref LocString? __result)
     {
         __result ??= new LocString(__instance.LocTable, key + ".description");
+    }
+
+    // CardModel.SelectionScreenPrompt throws when its loc key is missing; on that throw, return a
+    // key-named LocString (which renders as the key via the table/key patches) so the card's
+    // mid-effect selection proceeds with placeholder prompt text instead of faulting.
+    private static Exception? SelectionScreenPromptFinalizer(
+        Exception? __exception, MegaCrit.Sts2.Core.Models.CardModel __instance, ref LocString __result)
+    {
+        if (__exception != null)
+        {
+            __result = new LocString("cards", __instance.Id.Entry + ".selectionScreenPrompt");
+        }
+        return null;
     }
 
     // Skip the Crystal Sphere UI screen entirely (it would instantiate a null scene and NRE), routing

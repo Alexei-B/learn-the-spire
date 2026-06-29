@@ -224,16 +224,17 @@ run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not y
 
 ## Not built yet
 
-Deck-management screens, boss relic / alternate reward sets and score, ascension, local
-multiplayer. (There are no alternate index-1/2 acts — only index 0 has a second variant, Underdocks,
-which is covered.) The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
+Deck-management screens, ascension, local multiplayer. (Custom/alternate reward sets, the run score,
+and the full relic roster are now covered — see below. STS2 act bosses have no separate boss-relic
+pick. There are no alternate index-1/2 acts — only index 0 has a second variant, Underdocks, which is
+covered.) The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
 surface, in-combat *and enemy-turn* card-choice injection, the post-combat battle-rewards screen
 (including card-reward alternatives/reroll and the run score), event rooms (opening ancient +
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, rest sites, shops,
 potion use/discard, the act 1→2→3 transition, and the Architect victory.
 Still missing: multi-page events and the event `WillKillPlayer` hint; full multi-select subset
-enumeration (min &gt; 1 currently offers a single exact-minimum selection); and breadth coverage of the
-exotic `OfferCustom` reward sets and the full relic roster (deferred — see `docs/plans/` M4 deferred).
+enumeration (min &gt; 1 currently offers a single exact-minimum selection). The exotic `OfferCustom`
+reward sets and the full relic roster are now covered (see "Relic & reward-set coverage" below).
 
 **Full content sweep (every act variant).** `Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests`
 enumerate *every* fight and event of every act variant (act 1's Overgrowth + Underdocks — the only
@@ -257,3 +258,19 @@ closed several content-specific shim/UI gaps, each on a TestMode-gated or purely
 - the `NGame.Instance.ScreenShakeTrauma` IL-strip transpiler (generalized) covers Amalgamator's combine
   options as well as PunchOff; and SoulNexus's unguarded death-animation handler is no-op'd.
 → `docs/plans/`. 
+
+**Relic & reward-set coverage (M4-deferred sweeps).** `RelicSweepTests` grants *every* relic
+(`ModelDb.AllRelics`, 294) and drives it through a short seeded combat to post-combat rewards; each
+asserts the relic surfaces in `PlayerState.Relics` and the harness never throws/hangs. Granting goes
+through **`GameHost.ObtainRelicDebug`** — a fire-and-forget `RelicCmd.Obtain` pumped to quiescence (or a
+surfaced choice/reward), because awaiting it inline deadlocks for relics whose `AfterObtained` raises a
+custom reward through the harness gate (Orrery/Cauldron/CallingBell/…). The old treasure-only
+`_treasureExtraRewardsTask` is generalized to **`_suspendedRoomTask`** (any fire-and-forget room/relic
+effect suspended on a custom reward or a card choice); `Apply(SelectCards)` now pumps it too, so a
+relic's on-obtain card choice (NewLeaf transform, PreservedFog removal) is awaited to completion instead
+of leaving its continuation racing `GetState` (an intermittent null-in-deck projection NRE). One more
+loc gap closed: `CardModel.SelectionScreenPrompt` *throws* on a missing key (unlike other lookups), so a
+Harmony finalizer degrades it to a key-named `LocString` — letting a card that raises a mid-effect
+selection (Wish, added by SereTalon) play instead of faulting. `ExoticRewardSetTests` asserts the shape
+of each non-Kaleidoscope `OfferCustom` set (relic-pick / potion / card / mixed), and `RewardSweepTests`
+drives every reward screen on a forward run (several seeds) through reroll/take/proceed with invariants.

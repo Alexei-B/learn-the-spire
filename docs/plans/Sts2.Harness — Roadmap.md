@@ -198,32 +198,38 @@ as the reference for what choices exist:
   elites/bosses, ascension-scaled), computed with the win flag once the run is a victory
   (`ScoreTests`, and the victory score in `WalkthroughTests`).
 
-### M4 — Deferred: reward-set & relic coverage (come back to)
-Two reward-screen tasks plus broad relic coverage, deferred from the M4-polish pass above. None block
-a beaten run; they harden the reward surface and catch content-specific gaps.
-- **Exotic custom reward sets — verify & cover.** The non-Kaleidoscope `RewardsCmd.OfferCustom` relics
-  already route through the harness's custom-reward gate (`OnCustomRewardsOffered` /
-  `RewardsSet.testSelector`): **Orrery, CallingBell, ToyBox, LostCoffer, Cauldron, GlassEye,
-  SmallCapsule**. This is mostly *test-and-fix*, not new architecture: add a test per relic that grants
-  it (or picks its Neow blessing), triggers its reward, and drives the surfaced `GamePhase.Reward` to
-  completion — patching whatever surfaces (a reward shape the projection/options don't yet handle, e.g.
-  a relic-pick or card-removal set, or a content shim gap). Risk: medium — each relic may surface a
-  distinct reward shape.
-- **General relic coverage sweep.** Enumerate **every** relic (`ModelDb.AllRelics`) and drive each to a
-  sane state through the public API, mirroring `Act{1,2,3}FightsTests`: grant the relic, then either
-  (a) play a short seeded combat (catches on-obtain effects, combat-start/turn hooks, on-hit/on-play
-  triggers that NRE on null UI), and/or (b) trigger the reward/shop/rest paths it modifies. Assert no
-  throw/hang and basic invariants. Expect to close a tail of unguarded-UI NREs (the same class as
-  SoulNexus / KaiserCrab / ScreenShakeTrauma). Pair with a relic *projection* check (relics surface in
-  `PlayerState.Relics`). Risk: medium — breadth will surface several content-specific shim/UI gaps.
-- **Reward-screen coverage sweep (property-style).** A seeded test that, across several seeds, drives
-  every reward screen reached on a forward run through *all* its option kinds — take each reward type,
-  take an alternative, reroll, skip via proceed — asserting invariants (gold/HP/deck/relic/potion
-  sanity, no exceptions). Folds toward M8's property-style E2E; mostly exercises the work above.
-- Suggested order: relic sweep first (surfaces the most content gaps), then exotic reward sets (builds
-  on the same fixes), then the property-style sweep (ties them together). Boss-relic rewards were
-  *not* included: STS2 act bosses give gold/potion/card (the final boss none), with no separate
-  boss-relic pick — the original M4 wording was a misnomer.
+### M4 — Deferred: reward-set & relic coverage — _done_
+Two reward-screen tasks plus broad relic coverage, deferred from the M4-polish pass above. None blocked
+a beaten run; they harden the reward surface and caught content-specific gaps.
+- **Exotic custom reward sets — verify & cover** — _done_: `ExoticRewardSetTests` grants each
+  non-Kaleidoscope `RewardsCmd.OfferCustom` relic and drives its surfaced `GamePhase.Reward` set to
+  completion, asserting the set's *shape*: **CallingBell** (3 relic picks + a curse added), **Cauldron**
+  (5 potions → fills the belt), **LostCoffer** (card + potion), **SmallCapsule** (1 relic), and
+  **Orrery / GlassEye** (5 card rewards) / **ToyBox** (4 wax relic picks). All route through the
+  existing custom-reward gate; no new reward shapes were needed (card / potion / relic / mixed all
+  already projected). Granting goes through the new `GameHost.ObtainRelicDebug` seam (see below).
+- **General relic coverage sweep** — _done_: `RelicSweepTests` enumerates **every** relic
+  (`ModelDb.AllRelics`, 294) and drives each through grant → a short seeded combat → post-combat
+  rewards to a terminal state, mirroring `Act{1,2,3}FightsTests` but varying the relic. Each asserts the
+  relic surfaces in `PlayerState.Relics` and that the harness never throws/hangs. Granting uses the new
+  **`GameHost.ObtainRelicDebug`** seam — a fire-and-forget `RelicCmd.Obtain` pumped to quiescence (or a
+  surfaced choice/reward), since awaiting it inline deadlocks for relics whose `AfterObtained` raises a
+  custom reward through the harness gate (Orrery/Cauldron/CallingBell/…). The sweep closed three gaps:
+  - the `_treasureExtraRewardsTask` field was generalized to `_suspendedRoomTask` (a fire-and-forget
+    room/relic effect suspended on a custom reward or card choice), and `Apply(SelectCards)` now pumps
+    it — so a relic's on-obtain card choice (**NewLeaf** transform, **PreservedFog** removal) is awaited
+    to completion instead of leaving the continuation racing `GetState` (an intermittent null-in-deck
+    projection NRE);
+  - a Harmony finalizer degrades `CardModel.SelectionScreenPrompt` (which *throws* on a missing loc key,
+    unlike other lookups) to a key-named `LocString`, so a card raising a mid-effect selection
+    (**Wish**, added by **SereTalon**) plays instead of faulting.
+- **Reward-screen coverage sweep (property-style)** — _done_: `RewardSweepTests` plays a forward run
+  across several seeds and, at every `GamePhase.Reward` screen reached, exercises its option kinds —
+  reroll a card reward when offered, take gold, take a card — asserting invariants (gold only grows,
+  the deck grows by exactly one per card taken, HP untouched, a reroll leaves the deck unchanged and the
+  screen open) before proceeding (skipping any untaken rewards). Folds toward M8's property-style E2E.
+- Boss-relic rewards were *not* included: STS2 act bosses give gold/potion/card (the final boss none),
+  with no separate boss-relic pick — the original M4 wording was a misnomer.
 
 ## M5 — Ascension & game modes
 - Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the
