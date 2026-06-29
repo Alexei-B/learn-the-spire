@@ -211,7 +211,13 @@ a beaten run; they harden the reward surface and caught content-specific gaps.
 - **General relic coverage sweep** — _done_: `RelicSweepTests` enumerates **every** relic
   (`ModelDb.AllRelics`, 294) and drives each through grant → a short seeded combat → post-combat
   rewards to a terminal state, mirroring `Act{1,2,3}FightsTests` but varying the relic. Each asserts the
-  relic surfaces in `PlayerState.Relics` and that the harness never throws/hangs. Granting uses the new
+  relic surfaces in `PlayerState.Relics` and that the harness never throws/hangs. The sweep grants
+  relics the way the game legitimately could in this single-player run: it skips ones the game would
+  never grant here (`!IsAllowed(run)`, e.g. the multiplayer-only **MassiveScroll**, whose card pool is
+  empty in single-player), pins **SeaGlass**'s character (its Orobas event sets `CharacterId` first),
+  and calls the per-player `SetupForPlayer` hook for the event relics that need it
+  (**DustyTome/ArchaicTooth/TouchOfOrobas**) — so their on-obtain effects run against real state
+  instead of logging context-missing errors. Granting uses the new
   **`GameHost.ObtainRelicDebug`** seam — a fire-and-forget `RelicCmd.Obtain` pumped to quiescence (or a
   surfaced choice/reward), since awaiting it inline deadlocks for relics whose `AfterObtained` raises a
   custom reward through the harness gate (Orrery/Cauldron/CallingBell/…). The sweep closed three gaps:

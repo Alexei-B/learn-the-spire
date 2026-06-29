@@ -58,7 +58,37 @@ public sealed class RelicSweepTests
         // rather than dying to chip damage.
         TestNav.SetHp(host, maxHp: 9999, currentHp: 9999);
 
-        RelicModel relic = ModelDb.AllRelics.First(r => r.Id.Entry == relicId);
+        RelicModel relic = ModelDb.AllRelics.First(r => r.Id.Entry == relicId).ToMutable();
+
+        // Skip relics the game would never grant in this single-player run: it filters relic pools by
+        // IsAllowed, so granting a disallowed one exercises an impossible state. e.g. MassiveScroll is
+        // multiplayer-only (IsAllowed => Players.Count > 1); in single-player its card pool is empty
+        // and its on-obtain card generation throws.
+        if (!relic.IsAllowed(host.Run))
+        {
+            _out.WriteLine($"Skipping {relicId}: not allowed in a single-player run.");
+            return;
+        }
+
+        // SeaGlass is a character-specific event relic, granted in-game only via the Orobas event,
+        // which assigns its CharacterId first; granted raw it logs an error and defaults to Ironclad.
+        // Mirror Orobas: pin it to the owner's character so it draws its cards from a real pool.
+        if (relic is MegaCrit.Sts2.Core.Models.Relics.SeaGlass seaGlass)
+        {
+            seaGlass.CharacterId = host.Run.Players[0].Character.Id;
+        }
+
+        // Some event relics need per-player setup before they're granted — their event calls
+        // SetupForPlayer first to pick a card/relic from the player's pool that AfterObtained then
+        // uses (DustyTome/ArchaicTooth/TouchOfOrobas). Mirror that. A bool-returning setup that
+        // fails means the relic isn't applicable to this player (the event skips it), so skip too.
+        System.Reflection.MethodInfo? setup = relic.GetType().GetMethod("SetupForPlayer");
+        if (setup is not null && setup.Invoke(relic, new object[] { host.Run.Players[0] }) is false)
+        {
+            _out.WriteLine($"Skipping {relicId}: SetupForPlayer reported it is not applicable.");
+            return;
+        }
+
         host.ObtainRelicDebug(relic);
 
         // A relic whose on-obtain effect spawns a reward (e.g. Kaleidoscope's bonus card rewards via
