@@ -211,6 +211,17 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   manual-play path for correctness.
 - **The shim is incomplete by design** — each new system surfaces a few more Godot
   members / gated visual branches to stub. Expected cost of breadth.
+- **The Godot script-generator attributes must be loadable.** `sts2.dll` carries
+  `[assembly: AssemblyHasScripts(Type[])]` (plus per-class `[ScriptPath]`/`[GodotClassName]`) from the
+  Godot source generator. When a test run reflects over assembly custom attributes (xUnit does this
+  during discovery/reporting), instantiating that attribute resolves *every* listed script type — so
+  the shim must define the attribute types **and** every Godot base those scripts derive from, or the
+  reflection throws a `TypeLoadException`. That surfaces as xUnit "Catastrophic failure" and a non-zero
+  `dotnet test` exit code **even though every test passes** (and it corrupts test-case discovery, so
+  cases silently vanish). The shim therefore defines the three generator attributes (`ScriptAttributes.cs`)
+  and the script-only node/resource bases the harness never instantiates — UI widgets (`LineEdit`,
+  `TextEdit`, `Range`, `AspectRatioContainer`), VFX (`Line2D`, `CpuParticles2D`, `BackBufferCopy`),
+  `PathFollow2D`, `RichTextEffect`, `ResourceFormatLoader`, and the `Key` enum (`ScriptOnlyNodes.cs`).
 - **`OfferCustom` rewards would auto-take in TestMode**: `RewardsSet.Offer()` (used by relic/event
   custom rewards like Kaleidoscope's bonus cards) **auto-selects every reward** when `TestMode.IsOn`
   if no `RewardsSet.testSelector` is installed. The harness installs one (see Custom rewards under

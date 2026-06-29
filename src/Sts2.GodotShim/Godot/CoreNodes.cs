@@ -37,6 +37,12 @@ public class RefCounted : GodotObject { }
 
 public class Resource : RefCounted { }
 
+// sts2 ships custom ResourceFormatLoader subclasses, listed (with every other script type) in the
+// generator's [assembly: AssemblyHasScripts(Type[])]. Instantiating that attribute via reflection
+// (xUnit scans assembly attributes) resolves every listed type, so the base must exist or the whole
+// reflection throws a TypeLoadException. Inert — these loaders never run headless.
+public class ResourceFormatLoader : RefCounted { }
+
 // Animation/scene types referenced by visual code paths that are skipped headless
 // (skipVisuals / null-guarded UI). They only need to exist as types. Tween (with a
 // real no-op API) lives in Tween.cs.
