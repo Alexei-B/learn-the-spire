@@ -181,6 +181,16 @@ public sealed class GameHost
         RunManager.Instance.SetUpNewSingleplayer(runState, shouldSave: false);
         RunManager.Instance.Launch();
 
+        return InstallHarnessAndCreateHost(runState, seed);
+    }
+
+    /// <summary>
+    /// Install the harness's process-wide seams (card selector, custom-reward gate, Crystal Sphere
+    /// screen hook) for the given run and return the <see cref="GameHost"/> that drives it. Shared by
+    /// <see cref="StartNewRun(string, int, int)"/> and <see cref="Restore"/>.
+    /// </summary>
+    private static GameHost InstallHarnessAndCreateHost(RunState runState, string seed)
+    {
         // Install our card selector so mid-effect choices route to the harness. Disposing the
         // previous scope clears the process-wide selector stack before we claim it.
         _selectorScope?.Dispose();
@@ -198,6 +208,57 @@ public sealed class GameHost
         // surfaces as agent choices instead. Process-wide; the latest run owns it.
         CrystalSphereScreenHook = host.OnCrystalSphereScreenShown;
 
+        return host;
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Snapshot & restore (M7). A run serializes to the game's own SerializableRun save model
+    // (RunManager.ToSave); restoring rebuilds the RunState (RunState.FromSerializable) and re-enters
+    // the run the way the game's load path does (SetUpSavedSingleplayer → Launch → GenerateMap →
+    // LoadIntoLatestMapCoord), minus all UI/asset loading. A snapshot taken on the map passes the
+    // just-finished current room as the save's "pre-finished room" so restore re-enters it as already
+    // completed (rather than re-running the combat). Snapshotting mid-combat is not supported yet
+    // (combat state lives in CombatManager, not RunState).
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Capture a serializable snapshot of the run (the game's own <c>SerializableRun</c> save model).
+    /// Intended for use out of combat (on the map / between rooms); the current room is recorded as
+    /// the save's pre-finished room so <see cref="Restore"/> resumes without re-running it.
+    /// </summary>
+    public MegaCrit.Sts2.Core.Saves.SerializableRun Snapshot()
+    {
+        if (InCombat)
+        {
+            throw new InvalidOperationException(
+                "Snapshotting mid-combat is not supported — snapshot out of combat (on the map).");
+        }
+        return RunManager.Instance.ToSave(Run.CurrentRoom);
+    }
+
+    /// <summary>
+    /// Restore a run from a <see cref="Snapshot"/>, replacing any run in progress. Rebuilds the
+    /// <c>RunState</c> and re-enters it through the logic half of the game's load path. Returns a
+    /// fresh <see cref="GameHost"/> driving the restored run.
+    /// </summary>
+    public static GameHost Restore(MegaCrit.Sts2.Core.Saves.SerializableRun save, string seed)
+    {
+        GameRuntime.EnsureInitialized();
+        if (RunManager.Instance.IsInProgress)
+        {
+            RunManager.Instance.CleanUp();
+        }
+
+        RunState runState = RunState.FromSerializable(save);
+        Pump(RunManager.Instance.SetUpSavedSingleplayer(runState, save));
+        RunManager.Instance.Launch();
+        Pump(RunManager.Instance.GenerateMap());
+        MegaCrit.Sts2.Core.Rooms.AbstractRoom? preFinished =
+            MegaCrit.Sts2.Core.Rooms.AbstractRoom.FromSerializable(save.PreFinishedRoom, runState);
+        Pump(RunManager.Instance.LoadIntoLatestMapCoord(preFinished));
+
+        GameHost host = InstallHarnessAndCreateHost(runState, seed);
+        host.WaitForEventReady();
         return host;
     }
 

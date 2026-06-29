@@ -284,11 +284,24 @@ The action/choice model is already per-player (`ActionQueueSet`,
   use `IsShared` voting; only the local player can currently drive them).
 - One process still hosts one game; multiple agents drive multiple players in it.
 
-## M7 — Determinism, snapshots & persistence
-- Wire `RunState.ToSerializable()` ↔ `FromSerializable` into the harness for
-  snapshot/restore and replay.
-- Verify a master seed reproduces a full run bit-for-bit (RNG stream coverage).
-- Define the save/replay format used by the test corpus.
+## M7 — Determinism, snapshots & persistence — _done (snapshot/restore + determinism)_
+- **Snapshot/restore** — _done_: `GameHost.Snapshot()` captures the game's own `SerializableRun` save
+  model (`RunManager.ToSave`, recording the current room as the save's pre-finished room);
+  `GameHost.Restore(save, seed)` rebuilds the `RunState` (`RunState.FromSerializable`) and re-enters it
+  through the logic half of the game's load path (`SetUpSavedSingleplayer` → `Launch` → `GenerateMap`
+  → `LoadIntoLatestMapCoord`), minus UI/assets. `DeterminismTests` snapshots on the map after a combat,
+  restores into a fresh run, and asserts the restored observable state (players, act/floor/score, map
+  graph) matches the snapshot exactly, then plays the restored run forward. Snapshotting mid-combat is
+  not supported (combat state lives in `CombatManager`, not `RunState`).
+- **A master seed reproduces a full run bit-for-bit** — _done_: `DeterminismTests` plays two
+  independent runs of the same seed forward through identical greedy inputs and asserts a full state
+  signature (players/deck/relics, map graph, combat roster) matches exactly, and that a different seed
+  diverges. **Caveat (faithful):** continued play *after a restore* is not bit-identical — the engine
+  deliberately does not persist non-combat RNG across save/load (`MoveToMapCoordAction`: "does not
+  depend on RNGs being deterministic outside of combat"), so the upcoming room-type rolls may differ.
+  Combat and from-the-start replay are deterministic.
+- **Save/replay format** — the harness reuses the game's `SerializableRun`; the input-driven replay
+  corpus is folded into M8's property-style E2E.
 
 ## M8 — Testing & hardening
 - **Seeded property-style E2E**: parameterized by (input-RNG seed, game seed); random

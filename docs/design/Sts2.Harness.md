@@ -229,10 +229,19 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   Key mechanisms) so the agent chooses instead. The post-combat path is separate — it uses
   `GenerateForRoomEnd` + `BeginRewardsSet`, not `Offer`.
 
-## Determinism
+## Determinism, snapshots & restore
 
-One master seed → `RunRngSet` derives ~12 named RNG streams. Same seed reproduces the
-run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not yet wired in).
+One master seed → `RunRngSet` derives ~12 named RNG streams. Same seed reproduces the run bit-for-bit
+when replayed from the start (`DeterminismTests` asserts a full state signature matches across two
+same-seed runs and diverges across seeds). **Snapshot/restore is wired**: `GameHost.Snapshot()` captures
+the game's own `SerializableRun` (`RunManager.ToSave`, with the current room as the save's pre-finished
+room); `GameHost.Restore(save, seed)` rebuilds the `RunState` (`RunState.FromSerializable`) and re-enters
+it through the logic half of the load path (`SetUpSavedSingleplayer` → `Launch` → `GenerateMap` →
+`LoadIntoLatestMapCoord`), minus UI/assets — restoring the full observable state (players, act/floor/
+score, map graph). Snapshotting is out-of-combat only (combat state lives in `CombatManager`, not
+`RunState`). **Continued play after a restore is not bit-identical** — the engine deliberately does not
+persist non-combat RNG across save/load (`MoveToMapCoordAction`: "does not depend on RNGs being
+deterministic outside of combat"), so upcoming room-type rolls may differ; this is faithful behavior.
 
 ## Ascension
 
