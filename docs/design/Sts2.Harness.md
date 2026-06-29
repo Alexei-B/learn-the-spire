@@ -278,9 +278,21 @@ wired for multiplayer:** the non-combat rooms (treasure/rest/shop/post-combat re
 local player's synchronizer, the shared relic grab-bag is shared-as-local, and **shared (vote-based)
 events** can only be driven for the local player. See `docs/plans/` M6.
 
+## Property-style E2E fuzzing
+
+`PropertyE2ETests` + `RandomPlayer` fuzz full runs: parameterized by (game seed, input seed), the driver
+plays a random legal choice each step through the public option API and checks the mechanical invariants
+after every step — HP in `[0, MaxHp]`, non-negative gold/energy, non-empty deck, enemy HP in range, a
+non-decreasing floor — and that the run never gets stuck (a non-terminal state with no legal option) or
+throws. Two theories over a six-pair corpus: unbuffed (validates the early game + termination) and
+HP-buffed (reaches events/treasure/shops/rest/act transitions for breadth). Failing seed pairs are added
+to the `SeedPairs` member data to pin regressions. The shim invariant (every native call throws, never an
+AccessViolation) is held across the whole suite; a dedicated runs/sec performance pass is not yet done.
+
 ## Not built yet
 
-Deck-management screens, multiplayer map navigation / per-player rooms, the Daily/Custom game modes.
+Deck-management screens, multiplayer map navigation / per-player rooms, the Daily/Custom game modes,
+a hot-path performance pass.
 (Ascension is now plumbed and validated, and multi-player run setup + combat turn sync work — see above.
 Custom/alternate reward sets, the run score,
 and the full relic roster are now covered — see below. STS2 act bosses have no separate boss-relic

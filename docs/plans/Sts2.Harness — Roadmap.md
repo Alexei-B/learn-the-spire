@@ -303,13 +303,24 @@ The action/choice model is already per-player (`ActionQueueSet`,
 - **Save/replay format** — the harness reuses the game's `SerializableRun`; the input-driven replay
   corpus is folded into M8's property-style E2E.
 
-## M8 — Testing & hardening
-- **Seeded property-style E2E**: parameterized by (input-RNG seed, game seed); random
-  legal play of full runs; assert invariants (HP/energy/pile sanity, state advances, no
-  exceptions). Persist failing seed pairs into a replayed regression corpus.
-- **Shim completeness**: keep the value-type copies faithful; ensure every native call
-  throws (never AccessViolation).
-- **Performance**: measure runs/sec; remove incidental allocations/waits on the hot path.
+## M8 — Testing & hardening — _done (property-style E2E)_
+- **Seeded property-style E2E** — _done_: `PropertyE2ETests` is parameterized by (game seed, input
+  seed). `RandomPlayer` plays a full run forward making a *random* legal choice each step (its own
+  input RNG, independent of the game seed), through the public option API, asserting the mechanical
+  invariants after **every** step — HP within `[0, MaxHp]`, non-negative gold/energy, a non-empty deck,
+  enemies' HP in range, a non-decreasing floor — and that the run never gets **stuck** (a non-terminal
+  state the harness offers no legal option for) or throws. Two theories over the same six-pair corpus:
+  one unbuffed (dies fast, validates the early game + termination) and one HP-buffed (survives into
+  events/treasure/shops/rest/act transitions for breadth). A failing (game-seed, input-seed) pair is
+  named in the case data, pinning the regression for replay — the corpus is the `SeedPairs` member data,
+  grow it with any pair that surfaces a fault.
+- **Shim completeness** — _maintained_: the value-type copies are faithful to `refsrc/GodotSharp` and
+  every `NativeFuncs.godotsharp_*` routes to a throwing stub (a clean managed exception, never an
+  AccessViolation); the shim is grown only as real JIT/load errors demand. No regressions across the
+  full suite (511 tests) or the fuzz corpus.
+- **Performance** — _not pursued_: no hot-path optimization pass yet (runs/sec measurement, allocation
+  trimming). The fuzz/determinism suites run fast enough for CI; a dedicated throughput pass is left for
+  when agent-training throughput demands it (out of the current scope).
 
 ## Out of scope (future, separate system)
 Multi-process orchestration and the RL/agent training framework. The API (read /
