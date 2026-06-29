@@ -237,10 +237,20 @@ a beaten run; they harden the reward surface and caught content-specific gaps.
 - Boss-relic rewards were *not* included: STS2 act bosses give gold/potion/card (the final boss none),
   with no separate boss-relic pick — the original M4 wording was a misnomer.
 
-## M5 — Ascension & game modes
-- Plumb `ascensionLevel` end-to-end (already a `StartNewRun` param) and validate the
-  ascension modifiers (HP, enemy scaling, double bosses, etc.).
-- Confirm `GameMode` variants (Standard; Daily/Custom later) behave.
+## M5 — Ascension & game modes — _done (ascension; Standard mode)_
+- **Plumb `ascensionLevel` end-to-end** — _done_: the level (already a `StartNewRun` param flowing
+  into `RunState`) is now projected into the read model as `GameState.AscensionLevel`, so an agent can
+  see the run's difficulty. The game's `AscensionManager` applies the per-level modifiers at run
+  setup (`InitializeNewRun` → `ApplyAscensionEffects`; map gen for the double boss).
+- **Validate the ascension modifiers** — _done_ (`AscensionTests`): the levels are cumulative
+  (`RunManager.HasAscension` true for every level ≤ N, false above), and each observable modifier is
+  asserted through the public state — **TightBelt** (A4) shrinks the potion belt by one slot,
+  **AscendersBane** (A5) adds a single eternal curse to the starting deck, **DoubleBoss** (A10) gives
+  only the final act a distinct `SecondBossEncounter`, and **ToughEnemies** (A8) raises a monster's
+  `MinInitialHp` (enemy HP/damage scaling reads the active run's ascension via `AscensionHelper`).
+- **`GameMode` variants** — _Standard validated_: every run uses `GameMode.Standard` (the only mode
+  the singleplayer boot path sets up). Daily/Custom need their own lobby/daily-seed setup and stay
+  deferred (out of M5's scope, as the original note flagged).
 
 ## M6 — Local multiplayer (multiple agents)
 The action/choice model is already per-player (`ActionQueueSet`,

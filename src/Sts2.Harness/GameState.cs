@@ -94,6 +94,15 @@ public sealed record GameState
     public required string Seed { get; init; }
     public required int ActIndex { get; init; }
     public required int Floor { get; init; }
+
+    /// <summary>
+    /// The run's ascension level (0–10). Higher levels add difficulty modifiers — swarming elites,
+    /// a weaker Neow heal, poverty (less gold), a tighter potion belt, the Ascender's Bane curse,
+    /// inflation, scarcity, tougher/deadlier enemies and a double final boss — applied by the game's
+    /// <c>AscensionManager</c>. Each level is cumulative (a level-N run has every modifier up to N).
+    /// </summary>
+    public required int AscensionLevel { get; init; }
+
     public required bool IsGameOver { get; init; }
 
     /// <summary>

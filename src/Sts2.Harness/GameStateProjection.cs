@@ -31,6 +31,7 @@ internal static class GameStateProjection
             Seed = host.Seed,
             ActIndex = run.CurrentActIndex,
             Floor = run.TotalFloor,
+            AscensionLevel = run.AscensionLevel,
             IsGameOver = run.IsGameOver,
             IsVictory = run.IsGameOver && RunManager.Instance.WinTime > 0,
             Score = ScoreUtility.CalculateScore(run, won: RunManager.Instance.WinTime > 0),

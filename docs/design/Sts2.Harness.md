@@ -17,8 +17,9 @@ boss rewards-screen proceed (act transition / victory — see Key mechanisms). S
 variant (act 1's Overgrowth + Underdocks — the only index with an alternate — plus the shared events)
 and drive each to a terminal state in isolation; **all resolve, no exclusions**, including the two
 that needed new harness capability — enemy-turn-triggered player choices (KnowledgeDemon) and the
-Trial event's portrait UI (see Key mechanisms). Remaining breadth (multiplayer/ascension/boss-relic
-reward sets) is **not built**; see `docs/plans/`.
+Trial event's portrait UI (see Key mechanisms). Ascension is plumbed end-to-end and its modifiers
+validated (`AscensionTests`; see Ascension below). Remaining breadth (local multiplayer, deck-management
+screens, Daily/Custom modes) is **not built**; see `docs/plans/`.
 
 ## What it is
 
@@ -233,9 +234,21 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 One master seed → `RunRngSet` derives ~12 named RNG streams. Same seed reproduces the
 run. Full snapshot via `RunState.ToSerializable()` ↔ `FromSerializable` (not yet wired in).
 
+## Ascension
+
+A run is created at an `ascensionLevel` (0–10, a `StartNewRun` param into `RunState`); the game's
+`AscensionManager` applies the cumulative per-level modifiers at setup (`InitializeNewRun` →
+`ApplyAscensionEffects` for the player-level ones; `GenerateRooms` for the double boss). The level is
+projected into the read model as `GameState.AscensionLevel`. `AscensionTests` validates the observable
+modifiers through the public state: levels are cumulative (`RunManager.HasAscension`), TightBelt (A4)
+shrinks the potion belt, AscendersBane (A5) adds the eternal curse to the starting deck, DoubleBoss
+(A10) gives only the final act a distinct `SecondBossEncounter`, and ToughEnemies (A8) raises a
+monster's `MinInitialHp`. Every run uses `GameMode.Standard`; Daily/Custom modes are not built.
+
 ## Not built yet
 
-Deck-management screens, ascension, local multiplayer. (Custom/alternate reward sets, the run score,
+Deck-management screens, local multiplayer, the Daily/Custom game modes. (Ascension is now plumbed and
+validated — see above. Custom/alternate reward sets, the run score,
 and the full relic roster are now covered — see below. STS2 act bosses have no separate boss-relic
 pick. There are no alternate index-1/2 acts — only index 0 has a second variant, Underdocks, which is
 covered.) The `GameState` read model and `ListOptions`/`Apply` span the combat + map-move
