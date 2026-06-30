@@ -261,11 +261,15 @@ The action/choice model is already per-player (`ActionQueueSet`,
   supports (`RunManager.IsSingleplayerOrFakeMultiplayer` keeps turn/choice waits from blocking on
   absent remote peers). The read model already iterates `run.Players`, so every player's
   status/deck/relics/potions surface (`MultiplayerTests`). `GetPlayerById(netId)` exposes a player.
-- **Synchronize turn structure across players in combat** — _done_: the enemy turn only resolves once
-  *every* player has ended (`CombatManager.AllPlayersReadyToEndTurn`), so `GameHost.EndTurn` now
-  returns control after a non-final player ends and only the last player waits out the enemy turn
-  (collapsing to the usual flow in single-player). `MultiplayerTests` drives a shared 2-player combat —
-  both players play cards via `ListOptions(netId)`/`Apply` each round — to resolution.
+- **Shared combat turn structure** — _done_: in the fake-multiplayer model both players occupy the
+  *same* Play phase — each plays their **own** cards (own deck/hand/energy) via `ListOptions(netId)`/
+  `Apply`, contributing to the shared fight — and the turn ends as a **unit**: the game treats the round
+  as endable as soon as one player ends (`CombatManager.AllPlayersReadyToEndTurn` is unconditionally
+  true under `IsSingleplayerOrFakeMultiplayer`), so `GameHost.EndTurn` triggers and waits out the enemy
+  turn. `MultiplayerTests` drives a shared 2-player combat to resolution, asserting both players get to
+  play cards in the same Play phase. **Note:** independent per-player turn-ending (the enemy waiting for
+  every player to end their *own* turn) is a property of the real multiplayer net path
+  (`SetUpNewMultiplayer`, `IsMultiplayer()`), **not** fake-multiplayer — out of current scope.
 - **Per-player events + map voting (forward navigation)** — _done_: each player resolves their **own**
   event instance — `ListOptions(netId)` lists that player's `ChooseEventOption`s (via
   `EventSynchronizer.GetEventForPlayer`); `Apply` routes the local player through `ChooseLocalOption`

@@ -261,11 +261,15 @@ fake-multiplayer** path: the singleplayer net service (`NetSingleplayerGameServi
 (NetIds 1..N, successive `ModelDb.AllCharacters`). The game supports this — `RunManager.
 IsSingleplayerOrFakeMultiplayer` is true (net type is Singleplayer regardless of player count), so
 turn/choice waits don't block on absent remote peers. The read model already iterates `run.Players`, so
-every player's state surfaces; `GetPlayerById(netId)` exposes a live player. **Combat turn structure is
-synchronized**: the enemy turn fires only once every player has ended (`CombatManager.
-AllPlayersReadyToEndTurn`), so `EndTurn` returns after a non-final player ends and only the last player
-waits out the enemy turn (the same flow as single-player when there is one player). `MultiplayerTests`
-drives a shared 2-player combat through `ListOptions(netId)`/`Apply` to resolution. **Forward navigation
+every player's state surfaces; `GetPlayerById(netId)` exposes a live player. **Shared combat**: both
+players occupy the same Play phase — each plays their own cards (own deck/hand/energy) via
+`ListOptions(netId)`/`Apply`, contributing to the one fight — and the turn ends as a **unit**: under
+fake-multiplayer the game treats the round as endable as soon as one player ends
+(`CombatManager.AllPlayersReadyToEndTurn` is unconditionally true when `IsSingleplayerOrFakeMultiplayer`),
+so `EndTurn` triggers and waits out the enemy turn. `MultiplayerTests` drives a shared 2-player combat to
+resolution, asserting both players play cards in the same Play phase. Independent per-player turn-ending
+(the enemy waiting for each player to end their own turn) belongs to the real multiplayer net path
+(`SetUpNewMultiplayer`), not fake-multiplayer — not built. **Forward navigation
 works**: each player resolves their **own** event instance (`ListOptions(netId)` lists that player's
 options via `EventSynchronizer.GetEventForPlayer`; `Apply` drives the local player through
 `ChooseLocalOption` and any other player through the per-player `ChooseOptionForEvent` seam — reached by

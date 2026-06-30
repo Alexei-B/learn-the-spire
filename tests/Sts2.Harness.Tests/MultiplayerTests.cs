@@ -141,66 +141,67 @@ public sealed class MultiplayerTests
         host.EnterEncounterDebug(encounter);
         Assert.True(host.InCombat, "expected both players to be in the shared combat");
 
-        // Both players have their own combat state, hand and turn phase.
+        // Both players have their own combat state, hand and turn phase, both able to act.
         Assert.All(host.Run.Players, p => Assert.NotNull(p.PlayerCombatState));
 
-        // Drive up to a handful of rounds: each round, every player plays what it can then ends its
-        // turn. The enemy turn only fires after the *second* player ends — validating the shared
-        // turn structure. Stop when combat ends (won → rewards/map).
-        for (int round = 0; round < 40 && host.InCombat; round++)
+        // Drive the shared fight. In the fake-multiplayer turn model both players act during the *same*
+        // Play phase; ending any player ends the shared round (the enemy turn fires), so each step:
+        //   1) resolve a pending mid-effect card choice (e.g. Silent's Survivor discard), else
+        //   2) let any player still in Play play one of their cards, else
+        //   3) no one has a card to play → end the turn once (local player) to trigger the enemy turn.
+        // Stop when combat ends (won → rewards/map).
+        bool bothPlayersGotToAct = false;
+        for (int step = 0; step < 2000 && host.InCombat; step++)
         {
-            foreach (Player player in host.Run.Players)
-            {
-                if (!host.InCombat)
-                {
-                    break;
-                }
-                PlayUntilNoCardThenEndTurn(host, player.NetId);
-            }
-        }
-
-        Assert.False(host.InCombat, "the two-player fight should have resolved within the round budget");
-        GameState end = host.GetState();
-        _out.WriteLine($"ended phase={end.Phase} p1={end.Players[0].CurrentHp} p2={end.Players[1].CurrentHp}");
-        Assert.True(end.Phase is GamePhase.Reward or GamePhase.Map or GamePhase.Choice,
-            $"unexpected terminal phase {end.Phase}");
-    }
-
-    /// <summary>
-    /// Greedily play one player's playable cards (focus-firing the first hittable enemy), then end
-    /// that player's turn. Mirrors the per-player option API: list options for the netId, apply them.
-    /// </summary>
-    private static void PlayUntilNoCardThenEndTurn(GameHost host, ulong netId)
-    {
-        PlayerCombatState? pcs = host.GetPlayerById(netId).PlayerCombatState;
-        if (pcs is null || pcs.Phase != PlayerTurnPhase.Play)
-        {
-            return; // not this player's turn to act (already ended / combat transitioning)
-        }
-
-        // Play playable cards until none remain (or combat ends / a choice surfaces).
-        for (int guard = 0; guard < 50 && host.InCombat; guard++)
-        {
-            GameOption? play = host.ListOptions(netId).FirstOrDefault(o => o.Kind == OptionKind.PlayCard);
-            if (play is null)
-            {
-                break;
-            }
-            host.Apply(play);
             if (host.GetState().Phase == GamePhase.Choice)
             {
-                break; // leave any mid-effect choice for the caller; keeps this helper simple
+                host.Apply(host.ListOptions().First(o => o.Kind == OptionKind.SelectCards));
+                continue;
             }
-        }
 
-        if (!host.InCombat)
-        {
-            return;
-        }
-        GameOption? end = host.ListOptions(netId).FirstOrDefault(o => o.Kind == OptionKind.EndTurn);
-        if (end is not null)
-        {
+            GameOption? play = null;
+            int playersWhoCanPlay = 0;
+            foreach (Player player in host.Run.Players)
+            {
+                if (player.PlayerCombatState?.Phase != PlayerTurnPhase.Play)
+                {
+                    continue;
+                }
+                GameOption? candidate = host.ListOptions(player.NetId)
+                    .FirstOrDefault(o => o.Kind == OptionKind.PlayCard);
+                if (candidate is not null)
+                {
+                    playersWhoCanPlay++;
+                    play ??= candidate;
+                }
+            }
+            if (playersWhoCanPlay == 2)
+            {
+                bothPlayersGotToAct = true; // both players had a playable card in the same Play phase
+            }
+
+            if (play is not null)
+            {
+                host.Apply(play);
+                continue;
+            }
+
+            // No player has a card to play this turn — end the shared round (local player), which
+            // triggers the enemy turn (fake-multiplayer: any end ends the round).
+            GameOption? end = host.ListOptions(host.Run.Players[0].NetId)
+                .FirstOrDefault(o => o.Kind == OptionKind.EndTurn);
+            if (end is null)
+            {
+                break; // nothing to do (transitioning) — avoid spinning
+            }
             host.Apply(end);
         }
+
+        Assert.False(host.InCombat, "the two-player fight should have resolved within the step budget");
+        Assert.True(bothPlayersGotToAct, "both players should have been able to play cards in the shared combat");
+        GameState end2 = host.GetState();
+        _out.WriteLine($"ended phase={end2.Phase} p1={end2.Players[0].CurrentHp} p2={end2.Players[1].CurrentHp}");
+        Assert.True(end2.Phase is GamePhase.Reward or GamePhase.Map or GamePhase.Choice,
+            $"unexpected terminal phase {end2.Phase}");
     }
 }

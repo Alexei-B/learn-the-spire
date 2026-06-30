@@ -578,13 +578,13 @@ public sealed class GameHost
     }
 
     /// <summary>
-    /// Mark the given player ready to end their turn. The enemy turn only resolves once *every*
-    /// player has ended (the game gates it on <c>CombatManager.AllPlayersReadyToEndTurn</c>), so in a
-    /// multi-player (fake-multiplayer) combat this returns control after a non-final player ends —
-    /// the other players still need to act — and only the last player to end waits out the enemy turn.
-    /// The enemy turn runs on background tasks (not the player action queue), so that wait goes
-    /// through the combat events until the players can act again or combat ends. In single-player
-    /// the local player is always the last, so this is the usual end-turn-then-resolve flow.
+    /// End the turn and resolve the enemy turn to quiescence. In the single-process
+    /// "fake-multiplayer" model the game treats the turn as endable as soon as one player ends
+    /// (<c>CombatManager.AllPlayersReadyToEndTurn</c> is unconditionally true when
+    /// <c>IsSingleplayerOrFakeMultiplayer</c>), so ending *any* player ends the shared round and
+    /// starts the enemy turn — the other players act during the same Play phase *before* this end,
+    /// they do not take independent turns. The enemy turn runs on background tasks (not the player
+    /// action queue), so we wait via the combat events until the players can act again or combat ends.
     /// </summary>
     public void EndTurn(Player player)
     {
