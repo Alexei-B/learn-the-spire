@@ -287,9 +287,14 @@ chests** are per-player too: a multi-player chest offers one relic per player; o
 auto-votes the dummies (fake-multiplayer shortcut), which the harness resets (reflecting the
 synchronizer's `_votes`) so each player picks for real via `OnPicked` — a non-final picker waits until
 everyone has, then the game awards the relics (sole voter gets it; conflicts → rock-paper-scissors).
-`TreasureView.Votes` surfaces each player's pending pick. **Not yet wired for multiplayer:** the remaining
-non-combat rooms (rest/shop/post-combat rewards) still route to the local player's synchronizer, and the
-shared relic grab-bag is shared-as-local. See `docs/plans/` M6.
+`TreasureView.Votes` surfaces each player's pending pick. **Rest sites, shops and post-combat rewards** are
+per-player too: each player rests on their own slot (`RestSiteSynchronizer.GetOptionsForPlayer` +
+`ChooseOption`), buys from their own `MerchantInventory` (`MerchantRoom.Inventories[slot]`) with their own
+gold, and receives their own end-of-combat rewards (the game generates one set per alive player; the
+harness surfaces them one at a time, routing take/skip by the set owner via `SelectLocalReward`/
+`SelectRewardForPlayer`). M6 is **done** for the fake-multiplayer model; the only unmodelled thing is
+independent per-player combat turn-ending, which needs the real multiplayer net path. The shared relic
+grab-bag stays shared-as-local. See `docs/plans/` M6.
 
 ## Property-style E2E fuzzing
 

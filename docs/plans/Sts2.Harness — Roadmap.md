@@ -252,9 +252,14 @@ a beaten run; they harden the reward surface and caught content-specific gaps.
   the singleplayer boot path sets up). Daily/Custom need their own lobby/daily-seed setup and stay
   deferred (out of M5's scope, as the original note flagged).
 
-## M6 — Local multiplayer (multiple agents) — _in progress (setup + combat turn sync done)_
+## M6 — Local multiplayer (multiple agents) — _done (fake-multiplayer; all rooms per-player)_
 The action/choice model is already per-player (`ActionQueueSet`,
-`PlayerChoiceSynchronizer`, `IPlayerCollection`); wire it up for N local players.
+`PlayerChoiceSynchronizer`, `IPlayerCollection`); wired up for N local players. Every room an agent can
+diverge on is per-player: combat (shared Play phase), per-player + shared/voted events, map voting,
+treasure (relic voting), rest, shop, and post-combat rewards — each with vote visibility where the room
+is a shared vote. The one thing fake-multiplayer can't model is **independent per-player combat
+turn-ending** (the enemy waiting for each player to end their *own* turn); that needs the real
+multiplayer net path (`SetUpNewMultiplayer`, `IsMultiplayer()`), out of scope.
 - **Create runs with multiple `Player`s** — _done_: `GameHost.StartNewRun(seed, playerCount, ascension)`
   builds an N-player run on the **single-process "fake multiplayer"** path — the singleplayer net
   service hosting N players (NetIds 1..N, successive `ModelDb.AllCharacters`), which the game itself
@@ -296,10 +301,16 @@ The action/choice model is already per-player (`ActionQueueSet`,
   rock-paper-scissors). **Vote visibility**: `TreasureView.Votes` surfaces each player's pending pick
   (`TreasureRoomRelicSynchronizer.GetPlayerVote`). `MultiplayerTests` drives a 2-player chest: each picks
   a different relic and gets it, seeing the other's indicated pick mid-vote.
-- **Per-player `ListOptions`/`Apply`** for the remaining rooms — _partial_: combat, events (per-player
-  *and* shared), map moves and treasure are per-player; the remaining **non-combat rooms** (rest, shop,
-  post-combat rewards) are still routed to the *local* player's synchronizer (`GetLocal*`), as is the
-  shared relic grab-bag. **Remaining:** per-player room state for rest/shop/rewards.
+- **Rest sites, shops, post-combat rewards** — _done_: each player acts on their **own** slot.
+  **Rest**: `ListOptions(netId)` lists that player's options (`RestSiteSynchronizer.GetOptionsForPlayer`);
+  the local player rests via `ChooseLocalOption`, others via the per-player `ChooseOption` seam — a
+  player who has rested waits until everyone is done. **Shop**: each player buys from their own
+  `MerchantInventory` (`MerchantRoom.Inventories[slot]`) with their own gold. **Post-combat rewards**:
+  the game gives each alive player their own set (`CombatRoom.OfferRoomEndRewards` loops the players);
+  the harness generates one per player and surfaces them one at a time, routing take/skip by the set's
+  owner (`SelectLocalReward`/`SkipLocalRewardsSet` for the local player, the per-player
+  `SelectRewardForPlayer`/`SkipRewardsSetOnStackTopForPlayer` seams for the others). `MultiplayerTests`
+  covers all three.
 - One process still hosts one game; multiple agents drive multiple players in it.
 
 ## M7 — Determinism, snapshots & persistence — _done (snapshot/restore + determinism)_

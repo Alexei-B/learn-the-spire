@@ -333,6 +333,51 @@ public sealed class MultiplayerTests
     }
 
     [Fact]
+    public async Task TwoPlayers_PostCombatRewards_EachPlayerGetsTheirOwn()
+    {
+        await Task.Run(RunPostCombatRewards).WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    private void RunPostCombatRewards()
+    {
+        GameHost host = GameHost.StartNewRun(seed: "TESTSEED", playerCount: 2);
+        foreach (Player p in host.Run.Players)
+        {
+            p.Creature.SetMaxHpInternal(9999);
+            p.Creature.SetCurrentHpInternal(9999);
+        }
+
+        host.EnterEncounterDebug(Act1FightsTests.ResolveEncounter("SlimesNormal"));
+        DriveSharedCombatToEnd(host);
+
+        // After the win, each alive player gets their own end-of-combat rewards, surfaced one player
+        // at a time. Walk the reward screens, taking each owner's gold then proceeding.
+        Assert.Equal(GamePhase.Reward, host.GetState().Phase);
+        var goldTakenBy = new System.Collections.Generic.HashSet<ulong>();
+        for (int guard = 0; guard < 10 && host.GetState().Phase == GamePhase.Reward; guard++)
+        {
+            GameOption? gold = host.ListOptions()
+                .FirstOrDefault(o => o.Kind == OptionKind.TakeReward
+                                     && o.Description.Contains("gold", StringComparison.Ordinal));
+            if (gold is not null)
+            {
+                ulong owner = gold.PlayerId;
+                int before = host.GetPlayerById(owner).Gold;
+                host.Apply(gold);
+                Assert.True(host.GetPlayerById(owner).Gold > before,
+                    $"player {owner} should have gained reward gold");
+                goldTakenBy.Add(owner);
+            }
+            host.Apply(host.ListOptions().First(o => o.Kind == OptionKind.ProceedFromRewards));
+        }
+
+        _out.WriteLine($"gold taken by: [{string.Join(",", goldTakenBy)}] final phase={host.GetState().Phase}");
+        // Both players received and took their own gold reward.
+        Assert.Contains(1uL, goldTakenBy);
+        Assert.Contains(2uL, goldTakenBy);
+    }
+
+    [Fact]
     public async Task TwoPlayers_BothActInOneCombat_AndTheFightResolves()
     {
         await Task.Run(RunTwoPlayerCombat).WaitAsync(TimeSpan.FromSeconds(90));
@@ -416,5 +461,49 @@ public sealed class MultiplayerTests
         _out.WriteLine($"ended phase={end2.Phase} p1={end2.Players[0].CurrentHp} p2={end2.Players[1].CurrentHp}");
         Assert.True(end2.Phase is GamePhase.Reward or GamePhase.Map or GamePhase.Choice,
             $"unexpected terminal phase {end2.Phase}");
+    }
+
+    /// <summary>
+    /// Drive a shared two-player combat to its end. Each step: resolve a pending mid-effect card
+    /// choice, else let any player still in Play play a card, else end the shared round (any end ends
+    /// it in fake-multiplayer). Stops when combat ends.
+    /// </summary>
+    private static void DriveSharedCombatToEnd(GameHost host)
+    {
+        for (int step = 0; step < 2000 && host.InCombat; step++)
+        {
+            if (host.GetState().Phase == GamePhase.Choice)
+            {
+                host.Apply(host.ListOptions().First(o => o.Kind == OptionKind.SelectCards));
+                continue;
+            }
+
+            GameOption? play = null;
+            foreach (Player player in host.Run.Players)
+            {
+                if (player.PlayerCombatState?.Phase != PlayerTurnPhase.Play)
+                {
+                    continue;
+                }
+                play = host.ListOptions(player.NetId).FirstOrDefault(o => o.Kind == OptionKind.PlayCard);
+                if (play is not null)
+                {
+                    break;
+                }
+            }
+            if (play is not null)
+            {
+                host.Apply(play);
+                continue;
+            }
+
+            GameOption? end = host.ListOptions(host.Run.Players[0].NetId)
+                .FirstOrDefault(o => o.Kind == OptionKind.EndTurn);
+            if (end is null)
+            {
+                break;
+            }
+            host.Apply(end);
+        }
     }
 }

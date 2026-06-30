@@ -34,10 +34,15 @@ public sealed class GameHost
     private static IDisposable? _selectorScope;
 
     /// <summary>
-    /// The post-combat rewards currently on offer, or null when not on the rewards screen.
-    /// Surfaced as <see cref="GamePhase.Reward"/> and resolved through the reward options.
+    /// The rewards set currently on offer (for its <c>set.Player</c>), or null when not on the rewards
+    /// screen. Surfaced as <see cref="GamePhase.Reward"/> and resolved through the reward options.
     /// </summary>
     internal MegaCrit.Sts2.Core.Rewards.RewardsSet? PendingRewards { get; private set; }
+
+    // Additional players' post-combat reward sets awaiting their turn. A multi-player fight gives each
+    // alive player their own rewards; the harness surfaces them one player at a time (PendingRewards),
+    // dequeuing the next when the current player proceeds. Empty in single-player.
+    private readonly System.Collections.Generic.Queue<MegaCrit.Sts2.Core.Rewards.RewardsSet> _queuedRewardSets = new();
 
     // The combat room whose rewards we have already generated, so we offer them exactly once
     // per fight even while the player lingers on the rewards screen before moving on.
@@ -702,8 +707,8 @@ public sealed class GameHost
         {
             return;
         }
-        // Only the victor gets rewards; a dead player means a loss (handled as game over).
-        if (!Run.Players[0].Creature.IsAlive)
+        // The team won unless every player is dead (all dead = a loss, handled as game over).
+        if (Run.Players.All(p => !p.Creature.IsAlive))
         {
             return;
         }
@@ -713,15 +718,34 @@ public sealed class GameHost
         }
 
         _rewardedRoom = room;
-        Player player = Run.Players[0];
 
-        // GenerateForRoomEnd populates the rewards and runs reward-modifying hooks but does not
-        // offer them; we then register the set so the synchronizer's select/skip APIs work.
-        MegaCrit.Sts2.Core.Rewards.RewardsSet set =
-            Pump(MegaCrit.Sts2.Core.Commands.RewardsCmd.GenerateForRoomEnd(player, room));
-        _ = RunManager.Instance.RewardsSetSynchronizer.BeginRewardsSet(set);
-        PendingRewards = set;
+        // The game gives each (alive) player their own end-of-combat rewards (CombatRoom.
+        // OfferRoomEndRewards loops the players). GenerateForRoomEnd populates a set + runs its
+        // reward-modifying hooks without offering it; BeginRewardsSet registers it for the
+        // select/skip APIs. The first player's set is surfaced now; the rest are queued and surface
+        // one at a time as each player proceeds (see ProceedFromRewards).
+        var sets = new List<MegaCrit.Sts2.Core.Rewards.RewardsSet>();
+        foreach (Player player in Run.Players)
+        {
+            if (!player.Creature.IsAlive)
+            {
+                continue;
+            }
+            MegaCrit.Sts2.Core.Rewards.RewardsSet set =
+                Pump(MegaCrit.Sts2.Core.Commands.RewardsCmd.GenerateForRoomEnd(player, room));
+            _ = RunManager.Instance.RewardsSetSynchronizer.BeginRewardsSet(set);
+            sets.Add(set);
+        }
+
+        PendingRewards = sets[0];
+        for (int i = 1; i < sets.Count; i++)
+        {
+            _queuedRewardSets.Enqueue(sets[i]);
+        }
     }
+
+    /// <summary>True when the given player is the local player (NetId 1).</summary>
+    private bool IsLocalPlayer(Player player) => player.NetId == Run.Players[0].NetId;
 
     private static T Pump<T>(System.Threading.Tasks.Task<T> task) => task.GetAwaiter().GetResult();
 
@@ -761,10 +785,11 @@ public sealed class GameHost
             return BuildCrystalSphereOptions(player, minigame);
         }
 
-        // The post-combat rewards screen: take rewards then proceed back to the map.
+        // The post-combat rewards screen: take rewards then proceed back to the map. The options are
+        // attributed to the set's owner (in multi-player the players' rewards surface one at a time).
         if (PendingRewards is not null)
         {
-            return BuildRewardOptions(player, PendingRewards);
+            return BuildRewardOptions(PendingRewards);
         }
 
         // A treasure room with its chest open: take one of the offered relics or skip. Multi-player
@@ -965,8 +990,9 @@ public sealed class GameHost
     /// reward (card rewards expand to one option per offered card), plus a proceed option that
     /// leaves the screen and skips whatever is left.
     /// </summary>
-    private static IReadOnlyList<GameOption> BuildRewardOptions(Player player, MegaCrit.Sts2.Core.Rewards.RewardsSet set)
+    private static IReadOnlyList<GameOption> BuildRewardOptions(MegaCrit.Sts2.Core.Rewards.RewardsSet set)
     {
+        Player player = set.Player;
         var options = new List<GameOption>();
         foreach (MegaCrit.Sts2.Core.Rewards.Reward reward in set.Rewards)
         {
@@ -1259,6 +1285,56 @@ public sealed class GameHost
         }
     }
 
+    // RewardsSetSynchronizer's select/skip have local-only public entries (SelectLocalReward /
+    // SkipLocalRewardsSet); the per-player seams the net-message handler uses are private. In a
+    // multi-player run a non-local player's reward set is driven through those directly.
+    private static readonly System.Reflection.MethodInfo _selectRewardForPlayer =
+        typeof(MegaCrit.Sts2.Core.Multiplayer.Game.RewardsSetSynchronizer).GetMethod(
+            "SelectRewardForPlayer",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+            binder: null, types: new[] { typeof(Player), typeof(int) }, modifiers: null)
+        ?? throw new InvalidOperationException(
+            "RewardsSetSynchronizer.SelectRewardForPlayer(Player, int) not found — the game's rewards API changed.");
+
+    private static readonly System.Reflection.MethodInfo _skipRewardsForPlayer =
+        typeof(MegaCrit.Sts2.Core.Multiplayer.Game.RewardsSetSynchronizer).GetMethod(
+            "SkipRewardsSetOnStackTopForPlayer",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+            binder: null, types: new[] { typeof(Player) }, modifiers: null)
+        ?? throw new InvalidOperationException(
+            "RewardsSetSynchronizer.SkipRewardsSetOnStackTopForPlayer(Player) not found — the game's rewards API changed.");
+
+    /// <summary>
+    /// Select <paramref name="reward"/> from the current pending set, routing by its owner: the local
+    /// player uses the faithful <c>SelectLocalReward</c>; any other player goes through the per-player
+    /// <c>SelectRewardForPlayer(player, index)</c> seam (the index into the set's reward list).
+    /// </summary>
+    private void SelectRewardForOwner(MegaCrit.Sts2.Core.Rewards.Reward reward)
+    {
+        MegaCrit.Sts2.Core.Rewards.RewardsSet set = PendingRewards!;
+        var sync = RunManager.Instance.RewardsSetSynchronizer;
+        if (IsLocalPlayer(set.Player))
+        {
+            Pump(sync.SelectLocalReward(reward));
+            return;
+        }
+        int index = IndexOfReward(set, reward);
+        Pump((System.Threading.Tasks.Task)_selectRewardForPlayer.Invoke(sync, new object[] { set.Player, index })!);
+    }
+
+    private static int IndexOfReward(
+        MegaCrit.Sts2.Core.Rewards.RewardsSet set, MegaCrit.Sts2.Core.Rewards.Reward reward)
+    {
+        for (int i = 0; i < set.Rewards.Count; i++)
+        {
+            if (ReferenceEquals(set.Rewards[i], reward))
+            {
+                return i;
+            }
+        }
+        throw new InvalidOperationException("Reward not found in the pending set.");
+    }
+
     /// <summary>
     /// Claim one reward from the pending rewards set. For a card reward, the chosen card is
     /// staged on the selector so the game's <c>GetSelectedCardReward</c> seam returns it. The
@@ -1280,7 +1356,7 @@ public sealed class GameHost
             Selector.NextCardRewardPick = option.CardModel;
         }
 
-        Pump(RunManager.Instance.RewardsSetSynchronizer.SelectLocalReward(reward));
+        SelectRewardForOwner(reward);
         DrainActionQueue();
         // The rewards screen stays up (mirroring the in-game proceed button) even once every
         // reward is taken; the player leaves it explicitly via ProceedFromRewards.
@@ -1318,7 +1394,7 @@ public sealed class GameHost
         // (the game regenerates the alternative list each round and matches by reference, so a stale
         // instance would not match — the id resolves against the fresh list).
         Selector.NextCardRewardAlternativeId = alt.OptionId;
-        Pump(RunManager.Instance.RewardsSetSynchronizer.SelectLocalReward(reward));
+        SelectRewardForOwner(reward);
         DrainActionQueue();
     }
 
@@ -1337,7 +1413,15 @@ public sealed class GameHost
         var sync = RunManager.Instance.RewardsSetSynchronizer;
         if (!sync.IsRewardsSetCompleted(PendingRewards))
         {
-            sync.SkipLocalRewardsSet();
+            // Skip the remaining rewards of the current set, routed by its owner.
+            if (IsLocalPlayer(PendingRewards.Player))
+            {
+                sync.SkipLocalRewardsSet();
+            }
+            else
+            {
+                _skipRewardsForPlayer.Invoke(sync, new object[] { PendingRewards.Player });
+            }
         }
         DrainActionQueue();
 
@@ -1355,9 +1439,18 @@ public sealed class GameHost
 
         if (resolve is null)
         {
-            // Post-combat terminal set. If this was an act-ending boss room, advance to the next
-            // act (or, on the final act, into the Architect victory event) instead of returning to
-            // the now-empty map. Otherwise the player is back on the map.
+            // A post-combat set. In a multi-player fight each alive player gets their own rewards,
+            // surfaced one at a time — if another player's set is queued, surface it and stay on the
+            // rewards screen rather than leaving the room.
+            if (_queuedRewardSets.Count > 0)
+            {
+                PendingRewards = _queuedRewardSets.Dequeue();
+                return;
+            }
+
+            // Last set done. If this was an act-ending boss room, advance to the next act (or, on the
+            // final act, into the Architect victory event) instead of returning to the now-empty map.
+            // Otherwise the player is back on the map.
             TryAdvanceActAfterBoss();
             return;
         }
