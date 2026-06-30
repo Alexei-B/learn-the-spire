@@ -477,11 +477,27 @@ public sealed class GameHost
     /// option — is not actionable: the party leaves by moving on the map.
     /// </summary>
     internal bool HasActionableEvent =>
-        InEventRoom && Run.Players.Any(p => EventIsActionable(CurrentEventForPlayer(p)));
+        InEventRoom && Run.Players.Any(HasActionableEventForPlayer);
 
-    /// <summary>True when the given player's own event is awaiting a real choice.</summary>
-    internal bool HasActionableEventForPlayer(Player player) =>
-        EventIsActionable(CurrentEventForPlayer(player));
+    /// <summary>
+    /// True when the given player still has a choice to make in the current event. For a per-player
+    /// event that means the event has a real (non-proceed, unlocked) option. For a shared (vote-based)
+    /// event the same, but a player who has already cast their vote this round is waiting for the
+    /// others — not actionable — until every vote is in and the option resolves.
+    /// </summary>
+    internal bool HasActionableEventForPlayer(Player player)
+    {
+        MegaCrit.Sts2.Core.Models.EventModel? e = CurrentEventForPlayer(player);
+        if (!EventIsActionable(e))
+        {
+            return false;
+        }
+        if (e!.IsShared && RunManager.Instance.EventSynchronizer.GetPlayerVote(player).HasValue)
+        {
+            return false; // already voted this round; awaiting the other players
+        }
+        return true;
+    }
 
     /// <summary>The current room as a treasure room, or null when not standing in one.</summary>
     internal MegaCrit.Sts2.Core.Rooms.TreasureRoom? CurrentTreasureRoom =>
@@ -1466,25 +1482,55 @@ public sealed class GameHost
         ?? throw new InvalidOperationException(
             "EventSynchronizer.ChooseOptionForEvent(Player, int) not found — the game's event API changed.");
 
+    // For a *shared* (vote-based) event the per-player seam is PlayerVotedForSharedOptionIndex(Player,
+    // uint optionIndex, uint pageIndex) — also private, also normally reached via the net-message
+    // handler. The current page lives in the private _pageIndex field; we read it for the page arg.
+    private static readonly System.Reflection.MethodInfo _playerVotedForShared =
+        typeof(MegaCrit.Sts2.Core.Multiplayer.Game.EventSynchronizer).GetMethod(
+            "PlayerVotedForSharedOptionIndex",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(Player), typeof(uint), typeof(uint) },
+            modifiers: null)
+        ?? throw new InvalidOperationException(
+            "EventSynchronizer.PlayerVotedForSharedOptionIndex(Player, uint, uint) not found — the game's event API changed.");
+
+    private static readonly System.Reflection.FieldInfo _eventPageIndexField =
+        typeof(MegaCrit.Sts2.Core.Multiplayer.Game.EventSynchronizer).GetField(
+            "_pageIndex",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException(
+            "EventSynchronizer._pageIndex not found — the game's event API changed.");
+
     /// <summary>
     /// Choose event option <paramref name="index"/> for the given player. The local player (NetId 1)
-    /// uses the faithful <c>ChooseLocalOption</c> path; any other player in a fake-multiplayer run is
-    /// driven through the per-player <c>ChooseOptionForEvent</c> seam (see <see cref="_chooseOptionForEvent"/>).
-    /// Shared (vote-based) events are not yet supported for non-local players.
+    /// uses the faithful <c>ChooseLocalOption</c> path. Any other player in a fake-multiplayer run is
+    /// driven through the per-player seam the game's net-message handler would invoke — for a per-player
+    /// event that is <c>ChooseOptionForEvent</c>, for a shared (vote-based) event it is
+    /// <c>PlayerVotedForSharedOptionIndex</c> (the harness is the input source for every player, so
+    /// there is no remote client to send the message). In a shared event the option only *resolves*
+    /// once every player has voted; an earlier voter just records their vote.
     /// </summary>
     private void ChooseEventOptionForPlayer(Player player, int index)
     {
         MegaCrit.Sts2.Core.Multiplayer.Game.EventSynchronizer sync = RunManager.Instance.EventSynchronizer;
-        if (player.NetId == Run.Players[0].NetId)
+        bool isLocal = player.NetId == Run.Players[0].NetId;
+
+        if (isLocal)
         {
+            // ChooseLocalOption handles both kinds for the local player: it votes for a shared event
+            // and runs the option for a per-player one.
             sync.ChooseLocalOption(index);
             return;
         }
+
         if (sync.GetEventForPlayer(player).IsShared)
         {
-            throw new System.NotSupportedException(
-                "Driving a non-local player through a shared (vote-based) event is not yet supported.");
+            uint page = (uint)_eventPageIndexField.GetValue(sync)!;
+            _playerVotedForShared.Invoke(sync, new object[] { player, (uint)index, page });
+            return;
         }
+
         _chooseOptionForEvent.Invoke(sync, new object[] { player, index });
     }
 

@@ -277,10 +277,14 @@ reflection, since the harness originates every player's input and there is no re
 message the handler would otherwise receive). **Map voting**: `MoveTo(player, coord)` registers a vote
 (`MapSelectionSynchronizer.PlayerVotedForMapCoord`); only once every player has voted does the game pick
 a destination and move via the faithful `MoveToMapCoordAction` (TestMode → `EnterMapCoord`).
-`MultiplayerTests` drives a 2-player run through both players' Neow into a shared first combat. **Not yet
+`MultiplayerTests` drives a 2-player run through both players' Neow into a shared first combat. **Shared
+(vote-based) events** work for every player: the local player votes via `ChooseLocalOption`, any other
+via the per-player `PlayerVotedForSharedOptionIndex` seam (with the live `_pageIndex`); a non-final voter
+just records their vote (the event stays actionable only for un-voted players) and the option resolves
+for all once everyone has voted. `EventView.Votes` surfaces each player's pending vote (has-voted + which
+option) so an agent sees the others' indicated choices before resolution (`MultiplayerTests`). **Not yet
 wired for multiplayer:** the non-combat rooms (treasure/rest/shop/post-combat rewards) still route to the
-local player's synchronizer, the shared relic grab-bag is shared-as-local, and **shared (vote-based)
-events** can only be driven for the local player. See `docs/plans/` M6.
+local player's synchronizer, and the shared relic grab-bag is shared-as-local. See `docs/plans/` M6.
 
 ## Property-style E2E fuzzing
 

@@ -120,6 +120,68 @@ public sealed class MultiplayerTests
     }
 
     [Fact]
+    public async Task TwoPlayers_SharedEvent_EachVotes_AndSeesTheOthersIndicatedChoice()
+    {
+        await Task.Run(RunSharedEventVoting).WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    private void RunSharedEventVoting()
+    {
+        GameHost host = GameHost.StartNewRun(seed: "TESTSEED", playerCount: 2);
+        host.EnterFirstRoom();
+        foreach (Player player in host.Run.Players) // resolve each player's own Neow
+        {
+            int idx = BenignNeowOptionIndex(player);
+            host.Apply(host.ListOptions(player.NetId)
+                .First(o => o.Kind == OptionKind.ChooseEventOption && o.EventOptionIndex == idx));
+        }
+
+        // Drop the party into a shared (vote-based) event. Both players get their own instance and
+        // vote on a single shared option.
+        EventModel ev = Act1EventsTests.ResolveEvent("DenseVegetation");
+        Assert.True(ev.IsShared, "DenseVegetation should be a shared event");
+        host.EnterEventDebug(ev);
+
+        EventView before = host.GetState().Event!;
+        Assert.True(before.IsShared);
+        Assert.Equal(2, before.Votes.Count);
+        Assert.All(before.Votes, v => Assert.False(v.HasVoted)); // nobody has voted yet
+
+        // Player 1 votes for the first option. The vote is recorded but the event does not resolve —
+        // it waits for player 2 — and player 2 can see player 1's indicated choice.
+        int chosenIndex = host.ListOptions(1uL)
+            .First(o => o.Kind == OptionKind.ChooseEventOption).EventOptionIndex!.Value;
+        host.Apply(host.ListOptions(1uL)
+            .First(o => o.Kind == OptionKind.ChooseEventOption && o.EventOptionIndex == chosenIndex));
+
+        GameState afterP1 = host.GetState();
+        Assert.Equal(GamePhase.Event, afterP1.Phase); // still in the event, awaiting player 2
+        EventVoteView p1Vote = afterP1.Event!.Votes.First(v => v.NetId == 1uL);
+        EventVoteView p2Vote = afterP1.Event!.Votes.First(v => v.NetId == 2uL);
+        Assert.True(p1Vote.HasVoted);
+        Assert.Equal(chosenIndex, p1Vote.VotedOptionIndex);
+        Assert.False(p2Vote.HasVoted); // player 2 still to vote
+        _out.WriteLine($"after p1 vote: p1={p1Vote.VotedOptionIndex} p2 voted={p2Vote.HasVoted}");
+
+        // Player 1 (already voted) is not offered another choice; player 2 still is.
+        Assert.DoesNotContain(host.ListOptions(1uL), o => o.Kind == OptionKind.ChooseEventOption);
+        Assert.Contains(host.ListOptions(2uL), o => o.Kind == OptionKind.ChooseEventOption);
+
+        // Player 2 votes the same option, completing the tally — the shared option now resolves.
+        host.Apply(host.ListOptions(2uL)
+            .First(o => o.Kind == OptionKind.ChooseEventOption && o.EventOptionIndex == chosenIndex));
+
+        // The event advanced (votes cleared on resolution; the event is no longer awaiting the initial
+        // vote — DenseVegetation's "Rest" leads to a follow-up, others finish to the map).
+        GameState resolved = host.GetState();
+        _out.WriteLine($"resolved phase={resolved.Phase}");
+        bool initialVotePending = resolved.Event is { } e
+            && e.Votes.Any(v => v.HasVoted)
+            && e.Options.Any(o => o.Index == chosenIndex);
+        Assert.False(initialVotePending, "the shared option should have resolved after both votes");
+    }
+
+    [Fact]
     public async Task TwoPlayers_BothActInOneCombat_AndTheFightResolves()
     {
         await Task.Run(RunTwoPlayerCombat).WaitAsync(TimeSpan.FromSeconds(90));

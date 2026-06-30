@@ -281,11 +281,18 @@ The action/choice model is already per-player (`ActionQueueSet`,
   does the game pick a destination and move, driven by the faithful `MoveToMapCoordAction` (TestMode →
   `EnterMapCoord`). `MultiplayerTests` drives a 2-player run: each resolves their own Neow, then the
   party votes together into the first combat.
-- **Per-player `ListOptions`/`Apply`** for the remaining rooms — _partial_: combat, events and map
-  moves are per-player; the **non-combat rooms** (treasure, rest, shop, post-combat rewards) are still
-  routed to the *local* player's synchronizer (`GetLocal*`), as is the shared relic grab-bag. **Remaining:**
-  per-player room state for those, plus **shared (vote-based) events** for non-local players (8 events
-  use `IsShared` voting; only the local player can currently drive them).
+- **Shared (vote-based) events** — _done_: every player votes on a shared event through the same option
+  API — the local player via `ChooseLocalOption`, any other player via the per-player
+  `PlayerVotedForSharedOptionIndex` seam (with the live `_pageIndex`). A non-final voter just records
+  their vote (the event stays actionable only for players who have not voted); once everyone has voted
+  the game picks an option and resolves it for all. **Vote visibility**: `EventView.Votes` surfaces each
+  player's pending vote (whether they have voted, and for which option) so an agent can see the others'
+  indicated choices before resolution (`MultiplayerTests` drives a 2-player shared event end to end).
+- **Per-player `ListOptions`/`Apply`** for the remaining rooms — _partial_: combat, events (per-player
+  *and* shared) and map moves are per-player; the **non-combat rooms** (treasure, rest, shop, post-combat
+  rewards) are still routed to the *local* player's synchronizer (`GetLocal*`), as is the shared relic
+  grab-bag. **Remaining:** per-player room state for those (e.g. treasure relic voting — see
+  `TreasureRoomRelicSynchronizer.GetPlayerVote`, the same vote-visibility shape).
 - One process still hosts one game; multiple agents drive multiple players in it.
 
 ## M7 — Determinism, snapshots & persistence — _done (snapshot/restore + determinism)_

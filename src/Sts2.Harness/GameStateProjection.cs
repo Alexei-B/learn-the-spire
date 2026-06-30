@@ -40,7 +40,7 @@ internal static class GameStateProjection
             Map = ProjectMap(run),
             PendingChoice = pending is null ? null : ProjectPendingChoice(pending),
             Rewards = host.PendingRewards is null ? null : ProjectRewards(host.PendingRewards),
-            Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!) : null,
+            Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!, run) : null,
             Treasure = host.HasTreasureChoice ? ProjectTreasure(host) : null,
             RestSite = host.HasRestChoice ? ProjectRestSite() : null,
             Shop = host.HasShopChoice ? ProjectShop(host) : null,
@@ -153,7 +153,7 @@ internal static class GameStateProjection
             MaxSelect = pending.MaxSelect,
         };
 
-    private static EventView ProjectEvent(MegaCrit.Sts2.Core.Models.EventModel ev)
+    private static EventView ProjectEvent(MegaCrit.Sts2.Core.Models.EventModel ev, RunState run)
     {
         var options = new List<EventOptionView>();
         IReadOnlyList<MegaCrit.Sts2.Core.Events.EventOption> current = ev.CurrentOptions;
@@ -171,11 +171,32 @@ internal static class GameStateProjection
                 RelicId = opt.Relic?.Id.Entry,
             });
         }
+
+        // For a shared (vote-based) event, surface each player's pending vote so an agent can see what
+        // the others have indicated. Per-player events resolve independently — no votes to show.
+        var votes = new List<EventVoteView>();
+        if (ev.IsShared)
+        {
+            MegaCrit.Sts2.Core.Multiplayer.Game.EventSynchronizer sync = RunManager.Instance.EventSynchronizer;
+            foreach (Player p in run.Players)
+            {
+                uint? vote = sync.GetPlayerVote(p);
+                votes.Add(new EventVoteView
+                {
+                    NetId = p.NetId,
+                    HasVoted = vote.HasValue,
+                    VotedOptionIndex = vote.HasValue ? (int)vote.Value : null,
+                });
+            }
+        }
+
         return new EventView
         {
             EventId = ev.Id.Entry,
             IsAncient = ev is MegaCrit.Sts2.Core.Models.AncientEventModel,
+            IsShared = ev.IsShared,
             Options = options,
+            Votes = votes,
         };
     }
 

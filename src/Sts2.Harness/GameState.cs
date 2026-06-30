@@ -264,8 +264,33 @@ public sealed record EventView
     /// <summary>True when this is an ancient event (Neow-style run-start / map node).</summary>
     public required bool IsAncient { get; init; }
 
+    /// <summary>
+    /// True when this is a shared (vote-based) event: all players vote on a single option and the game
+    /// picks one once everyone has voted. False for a per-player event, where each player resolves
+    /// their own instance independently.
+    /// </summary>
+    public required bool IsShared { get; init; }
+
     /// <summary>The selectable options, in the same order as the resolving options.</summary>
     public required IReadOnlyList<EventOptionView> Options { get; init; }
+
+    /// <summary>
+    /// For a shared event, what each player is currently indicating — their pending vote — so an agent
+    /// can see the others' choices before the vote resolves. Empty for a per-player event.
+    /// </summary>
+    public required IReadOnlyList<EventVoteView> Votes { get; init; }
+}
+
+/// <summary>One player's pending vote on a shared event.</summary>
+public sealed record EventVoteView
+{
+    public required ulong NetId { get; init; }
+
+    /// <summary>True once this player has cast a vote this round.</summary>
+    public required bool HasVoted { get; init; }
+
+    /// <summary>The option index this player voted for, or null if they have not voted yet.</summary>
+    public int? VotedOptionIndex { get; init; }
 }
 
 /// <summary>One selectable option on an event screen.</summary>
