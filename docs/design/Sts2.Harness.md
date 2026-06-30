@@ -293,6 +293,13 @@ HP-buffed (reaches events/treasure/shops/rest/act transitions for breadth). Fail
 to the `SeedPairs` member data to pin regressions. The shim invariant (every native call throws, never an
 AccessViolation) is held across the whole suite; a dedicated runs/sec performance pass is not yet done.
 
+The fuzz runs also install a `LogErrorSink` (subscribes to the static `Log.LogCallback`) and fail on any
+`Error`-level log — turning **swallowed** exceptions on fire-and-forget tasks (combat/enemy-turn/event
+option) into failures, so a faulted effect can't hide behind a healthy-looking run. This caught the
+shared `JungleMazeAdventure`/`DenseVegetation` events NRE-ing on null UI singletons inside their
+`if (LocalContext.IsMe(owner))` cosmetic blocks (`NDebugAudioManager.Instance` SFX and
+`NGame.Instance.ScreenRumble`); the generalized cosmetic-call IL-strip (see below) drops those calls.
+
 ## Not built yet
 
 Deck-management screens, multiplayer map navigation / per-player rooms, the Daily/Custom game modes,
@@ -331,6 +338,14 @@ closed several content-specific shim/UI gaps, each on a TestMode-gated or purely
   that node's `Play*` anim methods are no-op'd;
 - the `NGame.Instance.ScreenShakeTrauma` IL-strip transpiler (generalized) covers Amalgamator's combine
   options as well as PunchOff; and SoulNexus's unguarded death-animation handler is no-op'd.
+- a cosmetic-call IL-strip (`StripCosmeticUiTranspiler`) drops unguarded calls to null UI singletons from
+  event-option state machines — `NDebugAudioManager.Instance.Play/Stop/StopAll` (temporary SFX) and
+  `NGame.Instance.ScreenRumble` — for the shared `JungleMazeAdventure` and `DenseVegetation` events,
+  whose `if (LocalContext.IsMe(owner))` blocks run headless (the local player *is* "me") and NRE'd the
+  option's effect before its mechanical payout. Patching the audio methods directly is impossible
+  (Harmony can't read `NDebugAudioManager.Play`'s body — it references `Godot.AudioStream`, absent from
+  the shim), so the call is stripped at the call site (pop the null receiver + args, push a default
+  return), leaving the gold/heal/finish logic intact (`SharedEventTests`).
 → `docs/plans/`. 
 
 **Relic & reward-set coverage (M4-deferred sweeps).** `RelicSweepTests` grants *every* relic

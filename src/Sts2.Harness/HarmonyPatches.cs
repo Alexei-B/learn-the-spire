@@ -122,6 +122,8 @@ internal static class HarmonyPatches
                     typeof(MegaCrit.Sts2.Core.Nodes.Audio.NAudioManager), "Instance"),
                 prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(AudioManagerInstancePrefix)));
 
+            ApplyCosmeticUiStripPatches(harmony);
+
             _applied = true;
         }
     }
@@ -203,6 +205,88 @@ internal static class HarmonyPatches
         }
         __result = _inertAudio;
         return false;
+    }
+
+    // Several events run cosmetic UI calls inside an `if (LocalContext.IsMe(owner))` block — which is
+    // TRUE for the local player headless — that NRE on null UI singletons: NDebugAudioManager.Instance
+    // (= NGame.Instance?.DebugAudio, null) for temporary SFX, and NGame.Instance for screen rumble. The
+    // shared JungleMazeAdventure ("Safety in Numbers") and DenseVegetation ("Rest") options both fault
+    // their fire-and-forget effect task this way *before* the mechanical payout (gold/heal/finish). We
+    // can't no-op the audio methods directly (Harmony can't read NDebugAudioManager.Play's body — it
+    // references Godot.AudioStream, absent from the shim) nor make NGame.Instance non-null (hundreds of
+    // `?.` guards rely on it). So, like the existing ScreenShakeTrauma strip, we transpile the cosmetic
+    // *calls* out of the option state machines: the (null) receiver and args are popped and a default
+    // return value pushed, dropping the call while every mechanical instruction runs untouched.
+    private static void ApplyCosmeticUiStripPatches(Harmony harmony)
+    {
+        StripCosmeticUi(harmony, typeof(MegaCrit.Sts2.Core.Models.Events.JungleMazeAdventure),
+            "SafetyInNumbers", "DontNeedHelp");
+        StripCosmeticUi(harmony, typeof(MegaCrit.Sts2.Core.Models.Events.DenseVegetation),
+            "TrudgeOn", "Rest");
+    }
+
+    // The cosmetic UI calls we strip: NDebugAudioManager's playback methods and NGame's screen-shake.
+    private static readonly HashSet<MethodBase> _cosmeticCalls = new()
+    {
+        AccessTools.Method(typeof(MegaCrit.Sts2.Core.Audio.Debug.NDebugAudioManager), "Play"),
+        AccessTools.Method(typeof(MegaCrit.Sts2.Core.Audio.Debug.NDebugAudioManager), "Stop"),
+        AccessTools.Method(typeof(MegaCrit.Sts2.Core.Audio.Debug.NDebugAudioManager), "StopAll"),
+        AccessTools.Method(typeof(NGame), nameof(NGame.ScreenRumble)),
+    };
+
+    // Patch the compiler-generated MoveNext of each named async option method (matched by name
+    // fragment among the type's nested IAsyncStateMachine types) with the cosmetic-call-stripping
+    // transpiler. Mirrors StripScreenShake.
+    private static void StripCosmeticUi(Harmony harmony, Type containing, params string[] methodNameFragments)
+    {
+        Type[] nested = containing.GetNestedTypes(BindingFlags.NonPublic | BindingFlags.Public);
+        foreach (string fragment in methodNameFragments)
+        {
+            Type stateMachine = nested.First(t =>
+                t.Name.Contains(fragment) && typeof(IAsyncStateMachine).IsAssignableFrom(t));
+            harmony.Patch(
+                AccessTools.Method(stateMachine, "MoveNext"),
+                transpiler: new HarmonyMethod(typeof(HarmonyPatches), nameof(StripCosmeticUiTranspiler)));
+        }
+    }
+
+    // Drop each call to a cosmetic UI method: pop its arguments and (null) receiver to keep the stack
+    // balanced, and — for the one that returns a value (NDebugAudioManager.Play → int) — push a default
+    // in its place. Every other instruction (including the receiver-producing get_Instance, which on a
+    // null-conditional just yields null) is left exactly as is.
+    private static IEnumerable<CodeInstruction> StripCosmeticUiTranspiler(IEnumerable<CodeInstruction> instructions)
+    {
+        foreach (CodeInstruction instruction in instructions)
+        {
+            if (instruction.operand is MethodInfo method && _cosmeticCalls.Contains(method))
+            {
+                int pops = method.GetParameters().Length + 1; // arguments + the receiver
+                for (int i = 0; i < pops; i++)
+                {
+                    var pop = new CodeInstruction(OpCodes.Pop);
+                    if (i == 0)
+                    {
+                        // Carry the original call's branch labels / exception blocks onto the first pop.
+                        pop.labels.AddRange(instruction.labels);
+                        pop.blocks.AddRange(instruction.blocks);
+                    }
+                    yield return pop;
+                }
+                if (method.ReturnType == typeof(int))
+                {
+                    yield return new CodeInstruction(OpCodes.Ldc_I4_0);
+                }
+                else if (method.ReturnType != typeof(void))
+                {
+                    throw new InvalidOperationException(
+                        $"StripCosmeticUiTranspiler can't supply a default for {method.ReturnType} ({method}).");
+                }
+            }
+            else
+            {
+                yield return instruction;
+            }
+        }
     }
 
     // The Trial event's Accept option drives the event through the event-room portrait UI:

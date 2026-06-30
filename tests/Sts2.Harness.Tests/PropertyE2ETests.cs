@@ -50,8 +50,27 @@ public sealed class PropertyE2ETests
 
     private GameState RunOne(string gameSeed, int inputSeed)
     {
+        using var errors = new LogErrorSink();
         GameHost host = TestNav.StartOnMap(gameSeed);
-        return RandomPlayer.PlayFullRun(host, inputSeed, maxSteps: 6000, log: _out);
+        GameState end = RandomPlayer.PlayFullRun(host, inputSeed, maxSteps: 6000, log: _out);
+        AssertNoSwallowedErrors(errors);
+        return end;
+    }
+
+    /// <summary>
+    /// Fail if the run logged any error-level message — these are exceptions the game swallowed on
+    /// fire-and-forget tasks (e.g. an NRE on a null UI singleton inside an event option), which would
+    /// otherwise leave the run looking healthy. Turns those invisible faults into a test failure.
+    /// </summary>
+    private void AssertNoSwallowedErrors(LogErrorSink errors)
+    {
+        IReadOnlyList<string> captured = errors.Errors;
+        foreach (string e in captured)
+        {
+            _out.WriteLine($"SWALLOWED ERROR: {e}");
+        }
+        Assert.True(captured.Count == 0,
+            $"the run swallowed {captured.Count} error-level log(s); first: {(captured.Count > 0 ? captured[0] : "")}");
     }
 
     [Theory]
@@ -74,8 +93,11 @@ public sealed class PropertyE2ETests
 
     private GameState RunBuffed(string gameSeed, int inputSeed)
     {
+        using var errors = new LogErrorSink();
         GameHost host = TestNav.StartOnMap(gameSeed);
         TestNav.SetHp(host, maxHp: 140, currentHp: 140);
-        return RandomPlayer.PlayFullRun(host, inputSeed, maxSteps: 8000, log: _out);
+        GameState end = RandomPlayer.PlayFullRun(host, inputSeed, maxSteps: 8000, log: _out);
+        AssertNoSwallowedErrors(errors);
+        return end;
     }
 }
