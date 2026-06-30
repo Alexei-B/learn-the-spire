@@ -288,11 +288,18 @@ The action/choice model is already per-player (`ActionQueueSet`,
   the game picks an option and resolves it for all. **Vote visibility**: `EventView.Votes` surfaces each
   player's pending vote (whether they have voted, and for which option) so an agent can see the others'
   indicated choices before resolution (`MultiplayerTests` drives a 2-player shared event end to end).
+- **Treasure chests (per-player relic voting)** — _done_: a multi-player chest generates one relic per
+  player; on entry the game *auto-votes* the dummies (the fake-multiplayer shortcut), which the harness
+  resets so every player picks for real through the option API. Each player takes a relic (or skips) via
+  `TreasureRoomRelicSynchronizer.OnPicked`; a non-final picker waits (no options) until everyone has
+  picked, when the game awards the relics (a player who alone voted a relic gets it; conflicts go to
+  rock-paper-scissors). **Vote visibility**: `TreasureView.Votes` surfaces each player's pending pick
+  (`TreasureRoomRelicSynchronizer.GetPlayerVote`). `MultiplayerTests` drives a 2-player chest: each picks
+  a different relic and gets it, seeing the other's indicated pick mid-vote.
 - **Per-player `ListOptions`/`Apply`** for the remaining rooms — _partial_: combat, events (per-player
-  *and* shared) and map moves are per-player; the **non-combat rooms** (treasure, rest, shop, post-combat
-  rewards) are still routed to the *local* player's synchronizer (`GetLocal*`), as is the shared relic
-  grab-bag. **Remaining:** per-player room state for those (e.g. treasure relic voting — see
-  `TreasureRoomRelicSynchronizer.GetPlayerVote`, the same vote-visibility shape).
+  *and* shared), map moves and treasure are per-player; the remaining **non-combat rooms** (rest, shop,
+  post-combat rewards) are still routed to the *local* player's synchronizer (`GetLocal*`), as is the
+  shared relic grab-bag. **Remaining:** per-player room state for rest/shop/rewards.
 - One process still hosts one game; multiple agents drive multiple players in it.
 
 ## M7 — Determinism, snapshots & persistence — _done (snapshot/restore + determinism)_

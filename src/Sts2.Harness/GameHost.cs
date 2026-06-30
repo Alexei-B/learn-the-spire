@@ -519,6 +519,25 @@ public sealed class GameHost
         && Selector.Pending is null
         && TreasureSync.CurrentRelics is { Count: > 0 };
 
+    /// <summary>
+    /// True when the given player still has a treasure pick to make. Single-player: the same as
+    /// <see cref="HasTreasureChoice"/>. Multi-player: the chest is a vote — each player picks one relic
+    /// (or skips), so a player who has already cast their pick is waiting for the others (not
+    /// actionable) until everyone has, when the game awards the relics (conflicts resolved by it).
+    /// </summary>
+    internal bool HasTreasureChoiceForPlayer(Player player)
+    {
+        if (!HasTreasureChoice)
+        {
+            return false;
+        }
+        if (Run.Players.Count <= 1)
+        {
+            return true;
+        }
+        return !TreasureSync.GetPlayerVote(player).voteReceived;
+    }
+
     /// <summary>The current room as a rest site, or null when not standing in one.</summary>
     internal MegaCrit.Sts2.Core.Rooms.RestSiteRoom? CurrentRestSiteRoom =>
         RunManager.Instance.IsInProgress && !InCombat
@@ -737,10 +756,15 @@ public sealed class GameHost
             return BuildRewardOptions(player, PendingRewards);
         }
 
-        // A treasure room with its chest open: take one of the offered relics or skip.
-        if (HasTreasureChoice)
+        // A treasure room with its chest open: take one of the offered relics or skip. Multi-player
+        // is a per-player vote — a player who has already picked waits for the others (no options).
+        if (HasTreasureChoiceForPlayer(player))
         {
             return BuildTreasureOptions(player);
+        }
+        if (HasTreasureChoice)
+        {
+            return options; // this player has picked; awaiting the others
         }
 
         // A rest site: choose a rest action (rest/smith/…).
@@ -1187,10 +1211,10 @@ public sealed class GameHost
                 ProceedFromRewards();
                 break;
             case OptionKind.TakeTreasureRelic:
-                PickTreasureRelic(option.TreasureRelicIndex!.Value);
+                PickTreasureRelicForPlayer(option.Player!, option.TreasureRelicIndex!.Value);
                 break;
             case OptionKind.SkipTreasure:
-                PickTreasureRelic(null);
+                PickTreasureRelicForPlayer(option.Player!, null);
                 break;
             case OptionKind.ChooseRestOption:
                 ChooseRestOption(option.RestOptionIndex!.Value);
@@ -1617,6 +1641,38 @@ public sealed class GameHost
         {
             _suspendedRoomTask = null;
         }
+
+        // A multi-player chest generates one relic per player; on entry BeginRelicPicking *auto-votes*
+        // for every non-local player (the fake-multiplayer dummy shortcut). The harness drives those
+        // players as real agents, so clear the auto-votes — every player then casts their own pick
+        // through the option API (see PickTreasureRelicForPlayer).
+        ResetNonLocalTreasureVotes();
+    }
+
+    // TreasureRoomRelicSynchronizer._votes is the private per-player vote list; the harness clears the
+    // auto-assigned non-local votes so each player picks for real.
+    private static readonly System.Reflection.FieldInfo _treasureVotesField =
+        typeof(MegaCrit.Sts2.Core.Multiplayer.Game.TreasureRoomRelicSynchronizer).GetField(
+            "_votes",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException(
+            "TreasureRoomRelicSynchronizer._votes not found — the game's treasure API changed.");
+
+    private void ResetNonLocalTreasureVotes()
+    {
+        if (Run.Players.Count <= 1 || TreasureSync.CurrentRelics is not { Count: > 0 })
+        {
+            return;
+        }
+        var votes = (System.Collections.Generic.List<
+            MegaCrit.Sts2.Core.Multiplayer.Game.TreasureRoomRelicSynchronizer.PlayerVote>)
+            _treasureVotesField.GetValue(TreasureSync)!;
+        // Slot 0 is the local player (never auto-voted); reset the rest so they pick for themselves.
+        for (int i = 1; i < votes.Count; i++)
+        {
+            votes[i].voteReceived = false;
+            votes[i].index = null;
+        }
     }
 
     /// <summary>
@@ -1626,7 +1682,14 @@ public sealed class GameHost
     /// that normally does so is null). A singleplayer skip keeps the relics pending until room
     /// exit, so we end the voting explicitly to return the player to the map.
     /// </summary>
-    private void PickTreasureRelic(int? index)
+    /// <summary>
+    /// Cast the given player's treasure pick (a relic index, or null to skip). Single-player drives the
+    /// faithful local path (<c>PickRelicLocally</c>/<c>SkipRelicLocally</c>); multi-player records the
+    /// pick directly via the synchronizer's <c>OnPicked</c> seam (the path a peer's vote would reach),
+    /// resolving and awarding the relics only once every player has picked. Mirrors how the harness
+    /// drives non-local players elsewhere (events): it is the input source for all of them.
+    /// </summary>
+    private void PickTreasureRelicForPlayer(Player player, int? index)
     {
         var sync = TreasureSync;
         System.Collections.Generic.List<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult>? results = null;
@@ -1635,16 +1698,25 @@ public sealed class GameHost
         sync.RelicsAwarded += OnAwarded;
         try
         {
-            if (index is null)
+            if (Run.Players.Count <= 1)
             {
-                sync.SkipRelicLocally();
+                if (index is null)
+                {
+                    sync.SkipRelicLocally();
+                }
+                else
+                {
+                    sync.PickRelicLocally(index);
+                }
+                // Executes the PickRelicAction → OnPicked → AwardRelics → RelicsAwarded.
+                DrainActionQueue();
             }
             else
             {
-                sync.PickRelicLocally(index);
+                // Record this player's pick. AwardRelics fires (→ RelicsAwarded) only on the last one.
+                sync.OnPicked(player, index);
+                DrainActionQueue();
             }
-            // Executes the PickRelicAction → OnPicked → AwardRelics → RelicsAwarded.
-            DrainActionQueue();
         }
         finally
         {
@@ -1653,25 +1725,33 @@ public sealed class GameHost
 
         if (results is not null)
         {
-            foreach (var result in results)
-            {
-                if (result.type == MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResultType.Skipped
-                    || result.player is null)
-                {
-                    continue;
-                }
-                MegaCrit.Sts2.Core.Models.RelicModel relic = result.relic.ToMutable();
-                System.Threading.Tasks.Task obtain = MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(
-                    MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain(relic, result.player));
-                PumpRoomTaskUntilIdleOrChoice(obtain);
-            }
+            ObtainAwardedRelics(results);
         }
 
-        // A singleplayer skip records the skip but keeps CurrentRelics until the room is exited;
-        // end voting now so the player is no longer mid-pick and can move on via the map.
-        if (index is null)
+        // A singleplayer skip records the skip but keeps CurrentRelics until the room is exited; end
+        // voting now so the player is no longer mid-pick and can move on via the map. (Multi-player
+        // resolves through AwardRelics on the final pick, which ends voting itself.)
+        if (index is null && Run.Players.Count <= 1)
         {
             sync.OnRoomExited();
+        }
+    }
+
+    /// <summary>Obtain each relic the synchronizer awarded to a player (the UI node normally does this).</summary>
+    private void ObtainAwardedRelics(
+        System.Collections.Generic.List<MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResult> results)
+    {
+        foreach (var result in results)
+        {
+            if (result.type == MegaCrit.Sts2.Core.Entities.TreasureRelicPicking.RelicPickingResultType.Skipped
+                || result.player is null)
+            {
+                continue;
+            }
+            MegaCrit.Sts2.Core.Models.RelicModel relic = result.relic.ToMutable();
+            System.Threading.Tasks.Task obtain = MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(
+                MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain(relic, result.player));
+            PumpRoomTaskUntilIdleOrChoice(obtain);
         }
     }
 

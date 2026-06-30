@@ -182,6 +182,70 @@ public sealed class MultiplayerTests
     }
 
     [Fact]
+    public async Task TwoPlayers_TreasureChest_EachPicksTheirOwnRelic_WithVoteVisibility()
+    {
+        await Task.Run(RunTreasureVoting).WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    private void RunTreasureVoting()
+    {
+        GameHost host = GameHost.StartNewRun(seed: "TESTSEED", playerCount: 2);
+        host.EnterFirstRoom();
+        foreach (Player player in host.Run.Players) // resolve each player's own Neow
+        {
+            int idx = BenignNeowOptionIndex(player);
+            host.Apply(host.ListOptions(player.NetId)
+                .First(o => o.Kind == OptionKind.ChooseEventOption && o.EventOptionIndex == idx));
+        }
+
+        // Jump the party straight to the act's treasure node (direct move; the vote path isn't needed
+        // to set up the room). A multi-player chest offers one relic per player.
+        MapPointView treasure = host.GetState().Map!.Points
+            .First(p => p.PointType == MegaCrit.Sts2.Core.Map.MapPointType.Treasure);
+        host.MoveTo(treasure.Coord.ToMapCoord());
+
+        GameState atChest = host.GetState();
+        Assert.Equal(GamePhase.Treasure, atChest.Phase);
+        TreasureView view = atChest.Treasure!;
+        _out.WriteLine($"chest relics=[{string.Join(",", view.Relics)}] votes={view.Votes.Count}");
+        Assert.Equal(2, view.Relics.Count);          // one relic per player
+        Assert.Equal(2, view.Votes.Count);
+        Assert.All(view.Votes, v => Assert.False(v.HasVoted)); // auto-votes were reset; nobody picked
+
+        string relic0 = view.Relics[0];
+        string relic1 = view.Relics[1];
+
+        // Player 1 picks relic 0. The pick is recorded but the chest does not resolve — it waits for
+        // player 2 — and player 2 can see player 1's indicated pick.
+        host.Apply(host.ListOptions(1uL)
+            .First(o => o.Kind == OptionKind.TakeTreasureRelic && o.TreasureRelicIndex == 0));
+
+        GameState afterP1 = host.GetState();
+        Assert.Equal(GamePhase.Treasure, afterP1.Phase);
+        TreasureVoteView p1 = afterP1.Treasure!.Votes.First(v => v.NetId == 1uL);
+        TreasureVoteView p2 = afterP1.Treasure!.Votes.First(v => v.NetId == 2uL);
+        Assert.True(p1.HasVoted);
+        Assert.Equal(0, p1.VotedRelicIndex);
+        Assert.False(p2.HasVoted);
+        // Player 1 (picked) is no longer offered a choice; player 2 still is.
+        Assert.DoesNotContain(host.ListOptions(1uL), o => o.Kind == OptionKind.TakeTreasureRelic);
+        Assert.Contains(host.ListOptions(2uL), o => o.Kind == OptionKind.TakeTreasureRelic);
+
+        // Player 2 picks relic 1 (a different relic — no conflict), completing the vote. The chest
+        // resolves: each player gets the relic only they voted for, and the party returns to the map.
+        host.Apply(host.ListOptions(2uL)
+            .First(o => o.Kind == OptionKind.TakeTreasureRelic && o.TreasureRelicIndex == 1));
+
+        GameState resolved = host.GetState();
+        _out.WriteLine($"resolved phase={resolved.Phase} p1 relics=[{string.Join(",", resolved.Players[0].Relics)}] " +
+                       $"p2 relics=[{string.Join(",", resolved.Players[1].Relics)}]");
+        Assert.Null(resolved.Treasure);
+        Assert.Equal(GamePhase.Map, resolved.Phase);
+        Assert.Contains(relic0, resolved.Players[0].Relics); // player 1 got relic 0
+        Assert.Contains(relic1, resolved.Players[1].Relics); // player 2 got relic 1
+    }
+
+    [Fact]
     public async Task TwoPlayers_BothActInOneCombat_AndTheFightResolves()
     {
         await Task.Run(RunTwoPlayerCombat).WaitAsync(TimeSpan.FromSeconds(90));

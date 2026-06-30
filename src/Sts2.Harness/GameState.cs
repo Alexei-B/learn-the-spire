@@ -250,9 +250,28 @@ public sealed record TreasureView
 {
     /// <summary>
     /// The relics on offer, in index order (the index is what <see cref="OptionKind.TakeTreasureRelic"/>
-    /// resolves against). Singleplayer always offers exactly one.
+    /// resolves against). Singleplayer offers exactly one; a multi-player chest offers one per player,
+    /// and the players vote — each picks one (or skips), conflicts resolved by the game.
     /// </summary>
     public required IReadOnlyList<string> Relics { get; init; }
+
+    /// <summary>
+    /// In a multi-player chest, what each player is currently indicating — their pending relic vote —
+    /// so an agent can see the others' picks before the chest resolves. Empty in single-player.
+    /// </summary>
+    public required IReadOnlyList<TreasureVoteView> Votes { get; init; }
+}
+
+/// <summary>One player's pending pick at a multi-player treasure chest.</summary>
+public sealed record TreasureVoteView
+{
+    public required ulong NetId { get; init; }
+
+    /// <summary>True once this player has cast their pick (a relic or a skip).</summary>
+    public required bool HasVoted { get; init; }
+
+    /// <summary>The relic index this player picked, or null if they skipped or have not picked yet.</summary>
+    public int? VotedRelicIndex { get; init; }
 }
 
 /// <summary>An event room awaiting a choice, with its currently-offered options.</summary>

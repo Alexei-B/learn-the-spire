@@ -282,9 +282,14 @@ a destination and move via the faithful `MoveToMapCoordAction` (TestMode → `En
 via the per-player `PlayerVotedForSharedOptionIndex` seam (with the live `_pageIndex`); a non-final voter
 just records their vote (the event stays actionable only for un-voted players) and the option resolves
 for all once everyone has voted. `EventView.Votes` surfaces each player's pending vote (has-voted + which
-option) so an agent sees the others' indicated choices before resolution (`MultiplayerTests`). **Not yet
-wired for multiplayer:** the non-combat rooms (treasure/rest/shop/post-combat rewards) still route to the
-local player's synchronizer, and the shared relic grab-bag is shared-as-local. See `docs/plans/` M6.
+option) so an agent sees the others' indicated choices before resolution (`MultiplayerTests`). **Treasure
+chests** are per-player too: a multi-player chest offers one relic per player; on entry the game
+auto-votes the dummies (fake-multiplayer shortcut), which the harness resets (reflecting the
+synchronizer's `_votes`) so each player picks for real via `OnPicked` — a non-final picker waits until
+everyone has, then the game awards the relics (sole voter gets it; conflicts → rock-paper-scissors).
+`TreasureView.Votes` surfaces each player's pending pick. **Not yet wired for multiplayer:** the remaining
+non-combat rooms (rest/shop/post-combat rewards) still route to the local player's synchronizer, and the
+shared relic grab-bag is shared-as-local. See `docs/plans/` M6.
 
 ## Property-style E2E fuzzing
 

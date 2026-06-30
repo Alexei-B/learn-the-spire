@@ -202,13 +202,35 @@ internal static class GameStateProjection
 
     private static TreasureView ProjectTreasure(GameHost host)
     {
+        MegaCrit.Sts2.Core.Multiplayer.Game.TreasureRoomRelicSynchronizer sync =
+            RunManager.Instance.TreasureRoomRelicSynchronizer;
         System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Models.RelicModel>? relics =
-            host.CurrentTreasureRoom is null ? null : RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics;
+            host.CurrentTreasureRoom is null ? null : sync.CurrentRelics;
+
+        // In a multi-player chest, surface each player's pending pick so an agent sees the others'
+        // choices before it resolves. Single-player has no votes to show.
+        var votes = new List<TreasureVoteView>();
+        if (relics is not null && host.Run.Players.Count > 1)
+        {
+            foreach (Player p in host.Run.Players)
+            {
+                MegaCrit.Sts2.Core.Multiplayer.Game.TreasureRoomRelicSynchronizer.PlayerVote vote =
+                    sync.GetPlayerVote(p);
+                votes.Add(new TreasureVoteView
+                {
+                    NetId = p.NetId,
+                    HasVoted = vote.voteReceived,
+                    VotedRelicIndex = vote.voteReceived ? vote.index : null,
+                });
+            }
+        }
+
         return new TreasureView
         {
             Relics = relics is null
                 ? Array.Empty<string>()
                 : relics.Select(r => r.Id.Entry).ToList(),
+            Votes = votes,
         };
     }
 
