@@ -556,7 +556,18 @@ public sealed class GameHost
         CurrentRestSiteRoom is not null
         && PendingRewards is null
         && Selector.Pending is null
-        && RestSiteSync.GetLocalOptions().Any(o => o.IsEnabled);
+        && Run.Players.Any(p => RestSiteSync.GetOptionsForPlayer(p.NetId).Any(o => o.IsEnabled));
+
+    /// <summary>
+    /// True while the given player still has a usable rest action. Each player rests independently
+    /// (their own rest/smith/…); choosing one consumes that player's rest (the game clears their
+    /// remaining options). The party leaves the rest site by moving on the map once every player is done.
+    /// </summary>
+    internal bool HasRestChoiceForPlayer(Player player) =>
+        CurrentRestSiteRoom is not null
+        && PendingRewards is null
+        && Selector.Pending is null
+        && RestSiteSync.GetOptionsForPlayer(player.NetId).Any(o => o.IsEnabled);
 
     /// <summary>The current room as a merchant shop, or null when not standing in one.</summary>
     internal MegaCrit.Sts2.Core.Rooms.MerchantRoom? CurrentMerchantRoom =>
@@ -767,10 +778,15 @@ public sealed class GameHost
             return options; // this player has picked; awaiting the others
         }
 
-        // A rest site: choose a rest action (rest/smith/…).
-        if (HasRestChoice)
+        // A rest site: choose a rest action (rest/smith/…). Each player rests independently; one who
+        // has already rested waits (no options) until everyone is done and the party moves on.
+        if (HasRestChoiceForPlayer(player))
         {
             return BuildRestOptions(player);
+        }
+        if (HasRestChoice)
+        {
+            return options; // this player is done resting; awaiting the others
         }
 
         // A merchant shop: buy affordable items / card removal, or leave by moving on the map.
@@ -1046,7 +1062,7 @@ public sealed class GameHost
     {
         var options = new List<GameOption>();
         System.Collections.Generic.IReadOnlyList<MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption> rest =
-            RestSiteSync.GetLocalOptions();
+            RestSiteSync.GetOptionsForPlayer(player.NetId);
         for (int i = 0; i < rest.Count; i++)
         {
             if (rest[i].IsEnabled)
@@ -1063,10 +1079,14 @@ public sealed class GameHost
     /// can leave. Unaffordable/out-of-stock items are omitted from the actionable set (they are
     /// still visible in <see cref="ShopView"/>).
     /// </summary>
+    /// <summary>The given player's own merchant inventory (each player shops their own stock/gold).</summary>
+    private MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory InventoryFor(Player player) =>
+        CurrentMerchantRoom!.Inventories[Run.GetPlayerSlotIndex(player)];
+
     private IReadOnlyList<GameOption> BuildShopOptions(Player player)
     {
         var options = new List<GameOption>();
-        MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory inv = CurrentMerchantRoom!.GetLocalInventory();
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory inv = InventoryFor(player);
         foreach (MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry entry in inv.AllEntries)
         {
             if (!entry.IsStocked || !entry.EnoughGold)
@@ -1217,7 +1237,7 @@ public sealed class GameHost
                 PickTreasureRelicForPlayer(option.Player!, null);
                 break;
             case OptionKind.ChooseRestOption:
-                ChooseRestOption(option.RestOptionIndex!.Value);
+                ChooseRestOption(option.Player!, option.RestOptionIndex!.Value);
                 break;
             case OptionKind.BuyShopItem:
                 BuyShopItem(option);
@@ -1784,14 +1804,31 @@ public sealed class GameHost
     // successful choice the game clears the remaining options, leaving the player on the map.
     // ---------------------------------------------------------------------------------
 
+    // RestSiteSynchronizer.ChooseOption(Player, int) is the per-player seam the net-message handler
+    // invokes; private (the public ChooseLocalOption only drives the local player). The harness drives
+    // each player, so a non-local player goes through it directly (returns the option's effect Task).
+    private static readonly System.Reflection.MethodInfo _chooseRestOption =
+        typeof(MegaCrit.Sts2.Core.Multiplayer.Game.RestSiteSynchronizer).GetMethod(
+            "ChooseOption",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(Player), typeof(int) },
+            modifiers: null)
+        ?? throw new InvalidOperationException(
+            "RestSiteSynchronizer.ChooseOption(Player, int) not found — the game's rest API changed.");
+
     /// <summary>
-    /// Choose the rest-site option at <paramref name="index"/> (into the synchronizer's live option
-    /// list). The option's effect runs as a task; pump it until it finishes or suspends on a card
-    /// choice (Smith) so the choice surfaces instead of deadlocking.
+    /// Choose the rest-site option at <paramref name="index"/> for the given player (into that player's
+    /// live option list). The local player uses the faithful <c>ChooseLocalOption</c>; any other player
+    /// in a multi-player run goes through the per-player <c>ChooseOption</c> seam. The option's effect
+    /// runs as a task; pump it until it finishes or suspends on a card choice (Smith) so the choice
+    /// surfaces instead of deadlocking.
     /// </summary>
-    private void ChooseRestOption(int index)
+    private void ChooseRestOption(Player player, int index)
     {
-        _restChoiceTask = RestSiteSync.ChooseLocalOption(index);
+        _restChoiceTask = player.NetId == Run.Players[0].NetId
+            ? RestSiteSync.ChooseLocalOption(index)
+            : (System.Threading.Tasks.Task)_chooseRestOption.Invoke(RestSiteSync, new object[] { player, index })!;
         PumpRoomTaskUntilIdleOrChoice(_restChoiceTask);
         if (_restChoiceTask.IsCompleted)
         {
@@ -1821,7 +1858,7 @@ public sealed class GameHost
     {
         MegaCrit.Sts2.Core.Entities.Merchant.MerchantEntry entry = option.ShopEntry
             ?? throw new InvalidOperationException("Buy option carried no shop entry.");
-        MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory inv = CurrentMerchantRoom!.GetLocalInventory();
+        MegaCrit.Sts2.Core.Entities.Merchant.MerchantInventory inv = InventoryFor(option.Player!);
 
         if (entry is MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardRemovalEntry removal)
         {

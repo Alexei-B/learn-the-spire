@@ -181,6 +181,93 @@ public sealed class MultiplayerTests
         Assert.False(initialVotePending, "the shared option should have resolved after both votes");
     }
 
+    /// <summary>Start a 2-player run and advance to the act map (resolving each player's own Neow).</summary>
+    private static GameHost StartTwoPlayerOnMap(string seed)
+    {
+        GameHost host = GameHost.StartNewRun(seed, playerCount: 2);
+        host.EnterFirstRoom();
+        foreach (Player player in host.Run.Players)
+        {
+            int idx = BenignNeowOptionIndex(player);
+            host.Apply(host.ListOptions(player.NetId)
+                .First(o => o.Kind == OptionKind.ChooseEventOption && o.EventOptionIndex == idx));
+        }
+        return host;
+    }
+
+    [Fact]
+    public async Task TwoPlayers_RestSite_EachRestsIndependently()
+    {
+        await Task.Run(RunRestSite).WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    private void RunRestSite()
+    {
+        GameHost host = StartTwoPlayerOnMap("TESTSEED");
+        // Damage both players so a rest (heal 30% max HP) is observable.
+        foreach (Player p in host.Run.Players)
+        {
+            p.Creature.SetCurrentHpInternal(p.Creature.MaxHp / 2);
+        }
+
+        MapPointView rest = host.GetState().Map!.Points
+            .First(p => p.PointType == MegaCrit.Sts2.Core.Map.MapPointType.RestSite);
+        host.MoveTo(rest.Coord.ToMapCoord());
+        Assert.Equal(GamePhase.RestSite, host.GetState().Phase);
+
+        int p1Before = host.Run.Players[0].Creature.CurrentHp;
+        int p2Before = host.Run.Players[1].Creature.CurrentHp;
+
+        // Player 1 rests (heals). Player 2 still has their own rest options.
+        host.Apply(host.ListOptions(1uL).First(o => o.Kind == OptionKind.ChooseRestOption && o.RestOptionId == "HEAL"));
+        Assert.True(host.Run.Players[0].Creature.CurrentHp > p1Before, "player 1 should have healed");
+        Assert.DoesNotContain(host.ListOptions(1uL), o => o.Kind == OptionKind.ChooseRestOption);
+        Assert.Contains(host.ListOptions(2uL), o => o.Kind == OptionKind.ChooseRestOption);
+
+        // Player 2 rests too. Now both have rested and the party can move on.
+        host.Apply(host.ListOptions(2uL).First(o => o.Kind == OptionKind.ChooseRestOption && o.RestOptionId == "HEAL"));
+        Assert.True(host.Run.Players[1].Creature.CurrentHp > p2Before, "player 2 should have healed");
+
+        _out.WriteLine($"after rest: phase={host.GetState().Phase} p1={host.Run.Players[0].Creature.CurrentHp} p2={host.Run.Players[1].Creature.CurrentHp}");
+        Assert.Equal(GamePhase.Map, host.GetState().Phase);
+    }
+
+    [Fact]
+    public async Task TwoPlayers_Shop_EachBuysFromTheirOwnInventory()
+    {
+        await Task.Run(RunShop).WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    private void RunShop()
+    {
+        GameHost host = StartTwoPlayerOnMap("TESTSEED");
+        foreach (Player p in host.Run.Players)
+        {
+            p.Gold += 999; // afford anything
+        }
+
+        MapPointView shop = host.GetState().Map!.Points
+            .First(p => p.PointType == MegaCrit.Sts2.Core.Map.MapPointType.Shop);
+        host.MoveTo(shop.Coord.ToMapCoord());
+        Assert.Equal(GamePhase.Shop, host.GetState().Phase);
+
+        // Each player buys a card from *their own* inventory, spending their own gold.
+        foreach (Player buyer in host.Run.Players)
+        {
+            int goldBefore = buyer.Gold;
+            int deckBefore = buyer.Deck.Cards.Count;
+            GameOption buy = host.ListOptions(buyer.NetId)
+                .First(o => o.Kind == OptionKind.BuyShopItem && o.ShopItemType == "Card");
+            _out.WriteLine($"p{buyer.NetId} buying {o_id(buy)} for {buy.ShopItemCost}");
+            host.Apply(buy);
+
+            Assert.True(buyer.Gold < goldBefore, $"player {buyer.NetId} should have spent gold");
+            Assert.Equal(deckBefore + 1, buyer.Deck.Cards.Count); // the bought card went to *their* deck
+        }
+    }
+
+    private static string o_id(GameOption o) => o.ShopItemId ?? "?";
+
     [Fact]
     public async Task TwoPlayers_TreasureChest_EachPicksTheirOwnRelic_WithVoteVisibility()
     {
