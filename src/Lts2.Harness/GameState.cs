@@ -392,6 +392,10 @@ public sealed record PendingChoiceView
 
     /// <summary>Maximum cards that may be selected.</summary>
     public required int MaxSelect { get; init; }
+
+    /// <summary>True when this choice picks a card to upgrade (the rest-site forge); its options are
+    /// shown as the upgraded card they would become.</summary>
+    public bool IsUpgradeSelection { get; init; }
 }
 
 /// <summary>Run-level state for one player (persists across combats).</summary>

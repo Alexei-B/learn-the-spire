@@ -1009,8 +1009,10 @@ public sealed class GameHost
     private static IReadOnlyList<GameOption> BuildChoiceOptions(Player player, PendingChoice pending)
     {
         var options = new List<GameOption>();
+        // A forge choice previews each card as its upgraded form.
+        bool? upgradePreview = pending.IsUpgradeSelection ? true : (bool?)null;
         var views = pending.Options
-            .Select(c => GameStateProjection.ProjectCard(c, canPlay: false))
+            .Select(c => GameStateProjection.ProjectCard(c, canPlay: false, upgradePreview))
             .ToList();
 
         if (pending.MinSelect <= 1)
@@ -1971,10 +1973,19 @@ public sealed class GameHost
     /// </summary>
     private void ChooseRestOption(Player player, int index)
     {
+        // The forge ("SMITH") suspends on a deck card choice; remember it so the surfaced choice can be
+        // shown as an upgrade preview (the cards the player picks from become their upgraded form).
+        bool isForge = index >= 0 && index < RestSiteSync.GetOptionsForPlayer(player.NetId).Count
+            && RestSiteSync.GetOptionsForPlayer(player.NetId)[index].OptionId == "SMITH";
+
         _restChoiceTask = player.NetId == Run.Players[0].NetId
             ? RestSiteSync.ChooseLocalOption(index)
             : (System.Threading.Tasks.Task)_chooseRestOption.Invoke(RestSiteSync, new object[] { player, index })!;
         PumpRoomTaskUntilIdleOrChoice(_restChoiceTask);
+        if (isForge && Selector.Pending is { } choice)
+        {
+            choice.IsUpgradeSelection = true;
+        }
         if (_restChoiceTask.IsCompleted)
         {
             _restChoiceTask = null;

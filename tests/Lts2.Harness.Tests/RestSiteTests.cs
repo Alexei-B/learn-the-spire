@@ -69,6 +69,13 @@ public sealed class RestSiteTests
         Assert.Equal(GamePhase.Choice, choosing.Phase);
         Assert.NotNull(choosing.PendingChoice);
 
+        // The forge choice previews every candidate as the upgraded card it would become.
+        Assert.True(choosing.PendingChoice!.IsUpgradeSelection);
+        Assert.All(choosing.PendingChoice.Options, c => Assert.True(c.Upgraded));
+        Assert.All(
+            host.ListOptions().Where(o => o.Kind == OptionKind.SelectCards && o.SelectedCards!.Count > 0),
+            o => Assert.True(o.Card!.Upgraded));
+
         // Pick the first upgradable card.
         GameOption pick = host.ListOptions().First(o => o.Kind == OptionKind.SelectCards && o.SelectedCards!.Count > 0);
         string upgradedId = pick.SelectedCards![0].CardId;

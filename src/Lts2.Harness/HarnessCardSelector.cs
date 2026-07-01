@@ -26,6 +26,12 @@ public sealed class PendingChoice
     /// <summary>Maximum number of cards that may be selected.</summary>
     public int MaxSelect { get; }
 
+    /// <summary>
+    /// True when this choice picks a card to *upgrade* (the rest-site forge), so the options can be
+    /// shown as the upgraded card they would become rather than their current form.
+    /// </summary>
+    public bool IsUpgradeSelection { get; internal set; }
+
     internal TaskCompletionSource<IReadOnlyList<CardModel>> Completion { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 

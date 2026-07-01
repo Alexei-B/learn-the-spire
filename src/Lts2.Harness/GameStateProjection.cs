@@ -140,7 +140,7 @@ internal static class GameStateProjection
             Powers = osty.Powers.Select(ProjectPower).ToList(),
         };
 
-    internal static CardView ProjectCard(CardModel card, bool canPlay)
+    internal static CardView ProjectCard(CardModel card, bool canPlay, bool? upgradedOverride = null)
     {
         CostModifiers modifiers = card.IsInCombat ? CostModifiers.All : CostModifiers.None;
         return new CardView
@@ -151,18 +151,24 @@ internal static class GameStateProjection
             Type = card.Type,
             Rarity = card.Rarity,
             TargetType = card.TargetType,
-            Upgraded = card.IsUpgraded,
+            // The forge shows each candidate as the upgraded card it would become; override the flag so
+            // the UI renders it with a "+" and the upgraded description.
+            Upgraded = upgradedOverride ?? card.IsUpgraded,
             CanPlay = canPlay,
         };
     }
 
-    private static PendingChoiceView ProjectPendingChoice(PendingChoice pending) =>
-        new()
+    private static PendingChoiceView ProjectPendingChoice(PendingChoice pending)
+    {
+        bool? upgradePreview = pending.IsUpgradeSelection ? true : (bool?)null;
+        return new PendingChoiceView
         {
-            Options = pending.Options.Select(c => ProjectCard(c, canPlay: false)).ToList(),
+            Options = pending.Options.Select(c => ProjectCard(c, canPlay: false, upgradePreview)).ToList(),
             MinSelect = pending.MinSelect,
             MaxSelect = pending.MaxSelect,
+            IsUpgradeSelection = pending.IsUpgradeSelection,
         };
+    }
 
     private static EventView ProjectEvent(MegaCrit.Sts2.Core.Models.EventModel ev, RunState run)
     {

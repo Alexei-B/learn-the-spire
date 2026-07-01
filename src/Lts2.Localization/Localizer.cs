@@ -60,7 +60,14 @@ public static class Localizer
     public static string CardName(string id) =>
         Cards.TryGetValue(id, out CardModel? c) ? Name(c.TitleLocString, id) : id;
 
-    public static string CardDescription(string id)
+    public static string CardDescription(string id) => CardDescription(id, upgraded: false);
+
+    /// <summary>
+    /// The card's description (raw markup kept). When <paramref name="upgraded"/> is true, renders the
+    /// upgraded text (the values a +1 card shows) rather than the base text, so upgraded cards read
+    /// correctly. Also used to preview what an un-upgraded card becomes (e.g. the rest-site forge).
+    /// </summary>
+    public static string CardDescription(string id, bool upgraded)
     {
         if (!Cards.TryGetValue(id, out CardModel? c))
         {
@@ -68,18 +75,49 @@ public static class Localizer
         }
         try
         {
-            if (!c.Description.Exists())
+            CardModel model = upgraded && !c.IsUpgraded ? UpgradedModel(c) : c;
+            if (!model.Description.Exists())
             {
                 return string.Empty;
             }
             // Raw (markup kept: colours + energy icons) — the caller renders it.
-            string s = c.GetDescriptionForPile(PileType.None);
+            string s = model.GetDescriptionForPile(PileType.None);
             return string.IsNullOrWhiteSpace(s) ? string.Empty : s;
         }
         catch
         {
             return string.Empty;
         }
+    }
+
+    // A cached, upgraded clone of a canonical card, so its GetDescriptionForPile renders the upgraded
+    // text. Falls back to the canonical model if the upgrade path throws for a given card.
+    private static readonly Dictionary<string, CardModel> _upgraded = new();
+
+    private static CardModel UpgradedModel(CardModel canonical)
+    {
+        string key = canonical.Id.Entry;
+        if (_upgraded.TryGetValue(key, out CardModel? cached))
+        {
+            return cached;
+        }
+        CardModel model = canonical;
+        try
+        {
+            CardModel clone = canonical.ToMutable();
+            if (clone.IsUpgradable)
+            {
+                clone.UpgradeInternal();
+                clone.FinalizeUpgradeInternal();
+            }
+            model = clone;
+        }
+        catch
+        {
+            model = canonical;
+        }
+        _upgraded[key] = model;
+        return model;
     }
 
     // ---- Relics ----------------------------------------------------------------

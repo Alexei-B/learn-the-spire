@@ -339,7 +339,10 @@ internal static class BoardRenderer
     private static void ChoiceLines(PendingChoiceView pc, List<Line> lines)
     {
         lines.Add(new Line());
-        lines.Add(new Line().Add($"CHOOSE {pc.MinSelect}-{pc.MaxSelect} CARD(S)", Theme.Teal));
+        string heading = pc.IsUpgradeSelection
+            ? "CHOOSE A CARD TO FORGE (shown upgraded)"
+            : $"CHOOSE {pc.MinSelect}-{pc.MaxSelect} CARD(S)";
+        lines.Add(new Line().Add(heading, Theme.Teal));
         foreach (CardView c in pc.Options)
         {
             lines.Add(CardLine(c));
@@ -943,9 +946,9 @@ internal static class BoardRenderer
 
     private static (string name, string desc) Subject(GameOption o, GameState state) => o.Kind switch
     {
-        OptionKind.PlayCard when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId)),
-        OptionKind.SelectCards when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId)),
-        OptionKind.TakeReward when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId)),
+        OptionKind.PlayCard when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId, c.Upgraded)),
+        OptionKind.SelectCards when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId, c.Upgraded)),
+        OptionKind.TakeReward when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId, c.Upgraded)),
         OptionKind.TakeTreasureRelic when o.TreasureRelicId is { } rid => (Localizer.RelicName(rid), Localizer.RelicDescription(rid)),
         OptionKind.BuyShopItem => ShopSubject(o),
         OptionKind.UsePotion when o.PotionId is { } pid => (Localizer.PotionName(pid), Localizer.PotionDescription(pid)),
@@ -958,7 +961,7 @@ internal static class BoardRenderer
 
     private static (string, string) ShopSubject(GameOption o) => o.ShopItemType switch
     {
-        "Card" when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId)),
+        "Card" when o.Card is { } c => (CardName(c), Localizer.CardDescription(c.CardId, c.Upgraded)),
         "Relic" => (Localizer.RelicName(o.ShopItemId ?? "?"), Localizer.RelicDescription(o.ShopItemId ?? "?")),
         "Potion" => (Localizer.PotionName(o.ShopItemId ?? "?"), Localizer.PotionDescription(o.ShopItemId ?? "?")),
         "CardRemoval" => ("Card Removal", "Remove a card from your deck."),
