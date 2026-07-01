@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Sts2.Harness;
 using Terminal.Gui;
@@ -8,11 +9,12 @@ using Terminal.Gui;
 namespace Sts2.Tui;
 
 /// <summary>
-/// The live game screen: the state board on top, and the decision area (the legal options, with
-/// their localized descriptions) on the bottom. Reading state and listing options is synchronous;
-/// applying an option *pumps the game* (a card play, or the whole enemy turn), which is run on a
-/// background thread — never the Terminal.Gui UI thread, whose SynchronizationContext the game's
-/// async continuations would capture and then deadlock against while the UI thread waits.
+/// The live game screen: the state board (top-left), the map/piles side panel (top-right), the
+/// decision area (bottom-left) and a scrolling event log (bottom-right). Reading state and listing
+/// options is synchronous; applying an option *pumps the game* (a card play, or the whole enemy
+/// turn), which is run on a background thread — never the Terminal.Gui UI thread, whose
+/// SynchronizationContext the game's async continuations would capture and then deadlock against
+/// while the UI thread waits. Loading a save pumps the game too, so it runs off-thread as well.
 /// </summary>
 internal sealed class GameScreen
 {
@@ -22,7 +24,11 @@ internal sealed class GameScreen
     private readonly FrameView _sideFrame;
     private readonly BoardView _side;
     private readonly OptionsView _optionsView;
+    private readonly FrameView _logFrame;
+    private readonly BoardView _log;
     private readonly Label _msg;
+
+    private readonly GameLog _gameLog = new();
 
     private GameHost? _host;
     private GameState? _state;
@@ -42,6 +48,9 @@ internal sealed class GameScreen
                 new MenuBarItem("_Game", new[]
                 {
                     new MenuItem("_New Run", "", () => PromptNewRun()),
+                    new MenuItem("_Continue (autosave)", "", ContinueRun),
+                    new MenuItem("_Save Run", "", SaveRun),
+                    new MenuItem("_Load Run", "", LoadRun),
                     new MenuItem("_Quit", "", () => Application.RequestStop(_root)),
                 }),
                 new MenuBarItem("_View", new[]
@@ -83,7 +92,7 @@ internal sealed class GameScreen
             Title = "Decisions  (↑↓ · 1-9 · Enter)",
             X = 0,
             Y = Pos.Bottom(_boardFrame),
-            Width = Dim.Fill(),
+            Width = Dim.Percent(68),
             Height = Dim.Fill(1),
             ColorScheme = Theme.Frame,
             BorderStyle = LineStyle.Rounded,
@@ -92,30 +101,56 @@ internal sealed class GameScreen
         _optionsView.Activated += Choose;
         optionsFrame.Add(_optionsView);
 
+        _logFrame = new FrameView
+        {
+            Title = "Log",
+            X = Pos.Right(optionsFrame),
+            Y = Pos.Bottom(_boardFrame),
+            Width = Dim.Fill(),
+            Height = Dim.Fill(1),
+            ColorScheme = Theme.Frame,
+            BorderStyle = LineStyle.Rounded,
+        };
+        _log = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
+        _log.SetRenderer((w, h) => _gameLog.Render(w, h));
+        _logFrame.Add(_log);
+
         _msg = new Label { X = 1, Y = Pos.AnchorEnd(1), Width = Dim.Fill(1), Text = "" };
 
-        _root.Add(menu, _boardFrame, _sideFrame, optionsFrame, _msg);
+        _root.Add(menu, _boardFrame, _sideFrame, optionsFrame, _logFrame, _msg);
         Refresh();
     }
 
     public Toplevel Root => _root;
 
-    /// <summary>Show the new-run dialog and, if confirmed, start the run. Returns false if cancelled.</summary>
+    /// <summary>
+    /// Show the opening dialog and act on it: start a new run, resume the autosave, or (cancelled)
+    /// return false so the caller can exit. A resume loads asynchronously (see <see cref="LoadFrom"/>).
+    /// </summary>
     public bool PromptNewRun()
     {
-        RunConfig? cfg = NewRunDialog.Show();
-        if (cfg is null)
+        NewRunChoice? choice = NewRunDialog.Show();
+        if (choice is null)
         {
             return false;
         }
+        if (choice.Continue)
+        {
+            LoadFrom(SaveStore.AutosavePath);
+            return true;
+        }
+
+        RunConfig cfg = choice.Config!;
         _gameOverShown = false;
         _host = GameHost.StartNewRun(cfg.Seed, new[] { cfg.Character }, cfg.Ascension);
         _host.EnterFirstRoom();
+        _gameLog.Clear();
+        _gameLog.Note($"New run — {cfg.Character.Id.Entry}, ascension {cfg.Ascension}, seed {cfg.Seed}.");
         Refresh();
         return true;
     }
 
-    /// <summary>Re-read the game state and repaint the board + decision area.</summary>
+    /// <summary>Re-read the game state and repaint the board, side panel, decisions and log.</summary>
     public void Refresh()
     {
         if (_host is null)
@@ -147,6 +182,7 @@ internal sealed class GameScreen
         }
         _optionsView.SetEntries(entries);
         _optionsView.SetFocus();
+        _log.SetNeedsDraw();
 
         _msg.Text = state.IsGameOver
             ? " Run over.  Game ▸ New Run to play again."
@@ -170,6 +206,8 @@ internal sealed class GameScreen
         }
         GameHost host = _host;
         GameOption option = _options[index];
+        GameState? before = _state;
+        string header = OptionHeader(option, before);
         _busy = true;
         _msg.Text = " Resolving…";
 
@@ -179,7 +217,7 @@ internal sealed class GameScreen
         // back to the (blocked) UI thread. Marshal the result back to the UI thread to repaint.
         Task.Run(() =>
         {
-            System.Threading.SynchronizationContext.SetSynchronizationContext(null);
+            SynchronizationContext.SetSynchronizationContext(null);
             try
             {
                 host.Apply(option);
@@ -193,10 +231,139 @@ internal sealed class GameScreen
         }).ContinueWith(t => Application.Invoke(() =>
         {
             _busy = false;
-            _msg.Text = t.Result is string err ? $" Rejected: {err}" : $" Applied: {option.Description}";
+            if (t.Result is string err)
+            {
+                _msg.Text = $" Rejected: {err}";
+                Refresh();
+                return;
+            }
+
+            GameState after = host.GetState();
+            _gameLog.Record(header, before, after);
+            // Checkpoint between rooms (the harness snapshot is only valid out of combat).
+            if (after.Phase == GamePhase.Map && !after.IsGameOver)
+            {
+                SaveStore.Autosave(host, after);
+            }
+            _msg.Text = $" Applied: {option.Description}";
             Refresh();
         }));
     }
+
+    /// <summary>A short, human-readable header for the log describing the option just applied.</summary>
+    private static string OptionHeader(GameOption option, GameState? state)
+    {
+        if (state is null)
+        {
+            return option.Description;
+        }
+        string label = string.Concat(BoardRenderer.OptionLabel(option, state).Select(s => s.Text)).Trim();
+        return string.IsNullOrWhiteSpace(label) ? option.Description : label;
+    }
+
+    // ---- Save / load -----------------------------------------------------------
+
+    private void SaveRun()
+    {
+        if (_host is null || _busy)
+        {
+            return;
+        }
+        GameState s = _host.GetState();
+        if (s.Phase is GamePhase.Combat or GamePhase.Choice)
+        {
+            MessageBox.Query("Save Run", "\nYou can't save during combat.\nSave from the map, between rooms.\n", "OK");
+            return;
+        }
+        if (s.IsGameOver)
+        {
+            MessageBox.Query("Save Run", "\nThe run is over — nothing to save.\n", "OK");
+            return;
+        }
+        string? name = SaveDialogs.PromptSaveName($"{s.Players[0].Character}-{s.Seed}");
+        if (name is null)
+        {
+            return;
+        }
+        try
+        {
+            SaveStore.Save(_host, s, name);
+            _msg.Text = " Run saved.";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.ErrorQuery("Save failed", "\n" + ex.Message + "\n", "OK");
+        }
+    }
+
+    private void LoadRun()
+    {
+        if (_busy)
+        {
+            return;
+        }
+        string? path = SaveDialogs.PromptLoad();
+        if (path is not null)
+        {
+            LoadFrom(path);
+        }
+    }
+
+    private void ContinueRun()
+    {
+        if (_busy)
+        {
+            return;
+        }
+        if (!SaveStore.HasAutosave)
+        {
+            MessageBox.Query("Continue", "\nNo autosave found.\n", "OK");
+            return;
+        }
+        LoadFrom(SaveStore.AutosavePath);
+    }
+
+    /// <summary>Restore a run from a save file off the UI thread (restore pumps the game), then repaint.</summary>
+    private void LoadFrom(string path)
+    {
+        if (_busy)
+        {
+            return;
+        }
+        _busy = true;
+        _msg.Text = " Loading…";
+        Task.Run(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            try
+            {
+                return ((GameHost?)SaveStore.Load(path), (string?)null);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex);
+                return ((GameHost?)null, ex.Message);
+            }
+        }).ContinueWith(t => Application.Invoke(() =>
+        {
+            _busy = false;
+            (GameHost? host, string? err) = t.Result;
+            if (host is null)
+            {
+                MessageBox.ErrorQuery("Load failed", "\n" + err + "\n", "OK");
+                _msg.Text = " Load failed.";
+                return;
+            }
+            _host = host;
+            _gameOverShown = false;
+            _gameLog.Clear();
+            _gameLog.Note("Loaded run.");
+            Refresh();
+            _msg.Text = " Run loaded.";
+        }));
+    }
+
+    // ---- Popups ----------------------------------------------------------------
 
     private void ShowDeck()
     {

@@ -38,7 +38,8 @@ pwsh scripts/extract-localization.ps1   # uses GDRE Tools to pull res://localiza
 If you skip this, the TUI still works — it just shows model ids (e.g. `BASH`) instead of names.
 The harness itself never depends on this; only the TUI (via the library) does.
 
-A **New Run** dialog opens first (character, ascension 0–10, seed). Then the main screen:
+A **New Run** dialog opens first (character, ascension 0–10, seed; plus **Continue** when an autosave
+exists). Then the main screen:
 
 ```
  Game   View
@@ -46,29 +47,35 @@ A **New Run** dialog opens first (character, ascension 0–10, seed). Then the m
 │ Act 1 · Floor 2 · 80/80 HP · 99g …               ││ DRAW (5)           │
 │ ┌ IRONCLAD ─────────┐  ┌ #1 Leaf Slime (S) ────┐ ││   Strike x4  Bash  │
 │ │ ███████████ 80/80 │  │ ██████████ 12/12      │ ││ DISCARD (0)        │
-│ │ Energy 3/3 Hand 5 │  │ Intent: Attack 3      │ ││ EXHAUST (0)        │
+│ │ Energy ●●● Hand 5 │  │ Intent: Attack 3      │ ││ EXHAUST (0)        │
 │ └───────────────────┘  └───────────────────────┘ ││                    │
 │ …                                                 ││                    │
 └───────────────────────────────────────────────────┘└────────────────────┘
-┌ Decisions  (↑↓ · 1-9 · Enter) ─────────────────────────────────────────────┐
-│ [1] (1) Strike → #1                                                         │
-│       Deal 6 damage.                                                        │
-│ [2] (1) Defend                                                              │
-│       Gain 5 Block.                                                         │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌ Decisions  (↑↓ · 1-9 · Enter) ─────────────┐┌ Log ────────────────────┐
+│ [1] ● Strike → #1                          ││ ▸ End turn              │
+│       Deal 6 damage.                       ││  · IRONCLAD took 7 dmg  │
+│ [2] ● Defend                               ││  · gained Vulnerable 2  │
+│       Gain 5 Block.                        ││ ▸ ● Strike → #1         │
+└─────────────────────────────────────────────┘└─────────────────────────┘
 ```
 
 - **Board** (top-left) — the live state for the phase. In **combat**: allies (players + Osty) on the
   left and enemies on the right, each a bordered box with a coloured **health bar** (red current HP,
   dark lost HP, green = HP poison will remove this turn, purple = doom threshold; the border turns
   green/purple if they'd die to poison/doom this turn, grey if they have block), an info line
-  (energy + hand / enemy intent), and its powers. On the **map** screen: the act map with connections
-  drawn between rooms.
+  (energy as teal ●/○ circles + hand / enemy intent), and its powers. On the **map** screen: the act
+  map with connections drawn between rooms. In an **event**: the flavour body text plus each option's
+  outcome text, with the real per-run numbers (energy shown as teal circles, colours applied).
 - **Side panel** (top-right) — the act **map** (with connections) on every screen, except in combat
   where it shows your **draw / discard / exhaust piles**.
-- **Decisions** (bottom) — the legal options with their localized descriptions inline. Move with
+- **Decisions** (bottom-left) — the legal options with their localized descriptions inline. Move with
   **↑/↓**, **1–9** to quick-pick, **Enter** to apply; scrolls when there are more than fit.
-- **Menus** — **Game** (New Run / Quit), **View** (Deck/Relics, Map popups). `Alt+G` / `Alt+V`.
+- **Log** (bottom-right) — a scrolling record of what changed on each decision (damage taken, cards
+  gained or moved between piles, relics/potions/gold/powers, enemy defeats, phase changes), derived
+  by diffing the state before/after each apply.
+- **Menus** — **Game** (New Run / Continue / Save Run / Load Run / Quit), **View** (Deck/Relics, Map
+  popups). `Alt+G` / `Alt+V`. Saving is only possible out of combat (on the map); the app also
+  autosaves whenever you reach the map, so **Continue** resumes your latest checkpoint.
 
 ### How it maps onto the harness
 
@@ -95,9 +102,16 @@ to the live console.) Look in `sts2-tui.log` if something misbehaves.
 
 ### Self-test (no terminal)
 
-A non-interactive mode (no Terminal.Gui) auto-plays random legal options, printing a one-line
-summary per step — handy for verifying the render-model + harness path on a machine without a TTY:
+Non-interactive modes (no Terminal.Gui) exercise the render-model, localization and harness path on a
+machine without a TTY:
 
 ```sh
+# Auto-play random legal options, one summary line per step, then print the event-log tail.
 dotnet run --project src/Sts2.Tui -- --smoke [seed] [steps] [ascension] [character]
+
+# Render the board / side panel / decisions of the first combat and map frame as plain text.
+dotnet run --project src/Sts2.Tui -- --dump [seed] [character]
+
+# Enter one event by type name (e.g. SelfHelpBook) and dump its body + per-option outcome text.
+dotnet run --project src/Sts2.Tui -- --dumpevent [EventTypeName]
 ```

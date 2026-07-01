@@ -53,12 +53,19 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   navigation (resolve the opening Neow event, move into the first combat) lives in `TestNav`.
 - **`src/Sts2.Tui`** → a **full-screen** terminal client (Terminal.Gui **v2** — owns the screen like
   ncurses, soft true-colour theme) that plays full single-player runs purely through the public
-  `GetState`/`ListOptions`/`Apply` trio — a manual-testing front end (character/ascension/seed select, then a board canvas +
-  an option list). It is the only consumer of the `StartNewRun(seed, IReadOnlyList<CharacterModel>,
-  ascension)` overload (added for character selection; the `playerCount` overloads still assign
-  characters automatically). Because a screen-owning driver and the game both write to the console,
-  the shim's `GD.Out`/`GD.Err` are **redirectable** (default to the live console, so tests are
-  unaffected); the TUI points them at a log file. See `src/Sts2.Tui/README.md`.
+  `GetState`/`ListOptions`/`Apply` trio — a manual-testing front end (character/ascension/seed select, then a board canvas,
+  a map/piles side panel, a numbered option list, and a scrolling **event log**). It is the only consumer of the
+  `StartNewRun(seed, IReadOnlyList<CharacterModel>, ascension)` overload (added for character selection; the
+  `playerCount` overloads still assign characters automatically). The event log needs no game-side event
+  stream: it **diffs consecutive `GameState`s** (HP/gold/relics/potions/powers, cards gained or moved between
+  combat piles, enemy defeats, phase changes). **Save/load** round-trips through the harness's
+  `GameHost.ToSaveJson()` / `RestoreFromJson()` (which wrap `Snapshot`/`Restore` over the game's own
+  `SerializableRun` JSON) — the app autosaves on reaching the map and offers Continue/Save/Load; snapshotting
+  is out-of-combat only. **Event body + per-option outcome text** come from the projection, which renders the
+  live event's LocStrings *after binding its dynamic vars* (`Event.DynamicVars.AddTo`, mirroring the game UI) so
+  per-run numbers are correct (e.g. "Choose an Attack to Enchant with Sharp 2"). Because a screen-owning driver
+  and the game both write to the console, the shim's `GD.Out`/`GD.Err` are **redirectable** (default to the live
+  console, so tests are unaffected); the TUI points them at a log file. See `src/Sts2.Tui/README.md`.
 - **`src/Sts2.Localization`** → an **opt-in** library that gives real names/descriptions for content
   (cards/relics/potions/powers/events) by reusing the game's own loc pipeline. The game loads its loc
   tables from `res://localization/<lang>/*.json` (plain JSON key→SmartFormat-text dicts) via

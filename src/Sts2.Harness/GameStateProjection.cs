@@ -179,6 +179,8 @@ internal static class GameStateProjection
             {
                 Index = i,
                 TextKey = opt.TextKey,
+                Title = RenderEventLoc(ev, opt.Title),
+                Description = RenderEventLoc(ev, opt.Description),
                 RelicId = opt.Relic?.Id.Entry,
             });
         }
@@ -204,11 +206,72 @@ internal static class GameStateProjection
         return new EventView
         {
             EventId = ev.Id.Entry,
+            Description = RenderEventLoc(ev, ev.Description) ?? RenderEventLoc(ev, SafeInitialDescription(ev)),
             IsAncient = ev is MegaCrit.Sts2.Core.Models.AncientEventModel,
             IsShared = ev.IsShared,
             Options = options,
             Votes = votes,
         };
+    }
+
+    /// <summary>The event's initial-page description LocString, or null if it cannot be resolved.</summary>
+    private static MegaCrit.Sts2.Core.Localization.LocString? SafeInitialDescription(
+        MegaCrit.Sts2.Core.Models.EventModel ev)
+    {
+        try
+        {
+            return ev.InitialDescription;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Render an event LocString after binding the event's dynamic variables (Enchantment names,
+    /// amounts, …) — the same step the game's event UI does before formatting
+    /// (<c>Event.DynamicVars.AddTo(...)</c>). Without it, per-run placeholders like
+    /// <c>{Enchantment1Amount}</c> stay unbound and formatting fails. Returns null on any failure.
+    /// </summary>
+    private static string? RenderEventLoc(
+        MegaCrit.Sts2.Core.Models.EventModel ev, MegaCrit.Sts2.Core.Localization.LocString? ls)
+    {
+        if (ls is null)
+        {
+            return null;
+        }
+        try
+        {
+            ev.DynamicVars.AddTo(ls);
+        }
+        catch
+        {
+            // Fall through and render whatever binds — RenderLoc still guards the format call.
+        }
+        return RenderLoc(ls);
+    }
+
+    /// <summary>
+    /// Render a live game LocString to raw markup text (dynamic numbers already bound), or null when it
+    /// is null, absent, whitespace, or throws. Kept id-agnostic: the harness stays pak-free (missing
+    /// localization degrades to the key via the Harmony patch); callers may parse/strip the markup.
+    /// </summary>
+    private static string? RenderLoc(MegaCrit.Sts2.Core.Localization.LocString? ls)
+    {
+        try
+        {
+            if (ls is null || !ls.Exists())
+            {
+                return null;
+            }
+            string s = ls.GetFormattedText();
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static TreasureView ProjectTreasure(GameHost host)

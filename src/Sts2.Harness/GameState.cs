@@ -280,6 +280,13 @@ public sealed record EventView
     /// <summary>The event model id (e.g. "NEOW").</summary>
     public required string EventId { get; init; }
 
+    /// <summary>
+    /// The event's current body/description text (raw game markup, with dynamic numbers filled in),
+    /// or null when the event has none. This is the live current-page description — the flavour text
+    /// shown above the options — rendered from the running event so its numbers are correct.
+    /// </summary>
+    public string? Description { get; init; }
+
     /// <summary>True when this is an ancient event (Neow-style run-start / map node).</summary>
     public required bool IsAncient { get; init; }
 
@@ -320,6 +327,20 @@ public sealed record EventOptionView
 
     /// <summary>The option's localization key (stable identifier for the choice).</summary>
     public required string TextKey { get; init; }
+
+    /// <summary>
+    /// The option's live title text (raw game markup with bound dynamic numbers), or null when it has
+    /// none. Rendered from the running event option, so any per-run numbers are correct. Prefer this
+    /// over a by-key re-lookup, which misses the live dynamic-variable bindings.
+    /// </summary>
+    public string? Title { get; init; }
+
+    /// <summary>
+    /// The option's live outcome/description text (raw game markup with bound dynamic numbers), or
+    /// null when it has none (e.g. "Choose an Attack to Enchant with Sharp 2"). Rendered from the
+    /// running event option so its numbers reflect this run.
+    /// </summary>
+    public string? Description { get; init; }
 
     /// <summary>The relic this option grants, if any; null otherwise.</summary>
     public string? RelicId { get; init; }

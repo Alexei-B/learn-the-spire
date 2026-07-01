@@ -292,6 +292,30 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Serialize a <see cref="Snapshot"/> to the game's own save JSON (the format the game persists
+    /// runs in). Out of combat only (see <see cref="Snapshot"/>); the seed is not stored in the run
+    /// save, so keep it alongside if you need it to <see cref="RestoreFromJson"/>.
+    /// </summary>
+    public string ToSaveJson() =>
+        MegaCrit.Sts2.Core.Saves.JsonSerializationUtility.ToJson(Snapshot());
+
+    /// <summary>
+    /// Restore a run from save JSON produced by <see cref="ToSaveJson"/> (or the game's own run save),
+    /// replacing any run in progress. Returns a fresh <see cref="GameHost"/> driving the restored run.
+    /// </summary>
+    public static GameHost RestoreFromJson(string json, string seed)
+    {
+        MegaCrit.Sts2.Core.Saves.ReadSaveResult<MegaCrit.Sts2.Core.Saves.SerializableRun> result =
+            MegaCrit.Sts2.Core.Saves.JsonSerializationUtility.FromJson<MegaCrit.Sts2.Core.Saves.SerializableRun>(json);
+        if (!result.Success || result.SaveData is null)
+        {
+            throw new InvalidOperationException(
+                $"Could not read save JSON: status={result.Status} {result.ErrorMessage}");
+        }
+        return Restore(result.SaveData, seed);
+    }
+
+    /// <summary>
     /// The seam invoked (via a Harmony patch on <c>NCrystalSphereScreen.ShowScreen</c>) when the
     /// Crystal Sphere event would open its UI minigame. Records the live <c>CrystalSphereMinigame</c>
     /// so it surfaces as <see cref="GamePhase.CrystalSphere"/>; the offering event-option task then

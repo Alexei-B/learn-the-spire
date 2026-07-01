@@ -9,11 +9,17 @@ namespace Sts2.Tui;
 /// <summary>The choices made on the new-run screen.</summary>
 internal sealed record RunConfig(CharacterModel Character, int Ascension, string Seed);
 
-/// <summary>A modal dialog to configure a new run (character / ascension / seed).</summary>
+/// <summary>The opening-dialog outcome: either resume the autosave, or start a fresh run.</summary>
+internal sealed record NewRunChoice(RunConfig? Config, bool Continue);
+
+/// <summary>A modal dialog to configure a new run (character / ascension / seed), or resume a save.</summary>
 internal static class NewRunDialog
 {
-    /// <summary>Show the dialog (modal). Returns the chosen config, or null if cancelled.</summary>
-    public static RunConfig? Show()
+    /// <summary>
+    /// Show the dialog (modal). Returns the chosen outcome (a new-run config, or a request to continue
+    /// the autosave), or null if cancelled. A "Continue" button appears only when an autosave exists.
+    /// </summary>
+    public static NewRunChoice? Show()
     {
         var characters = ModelDb.AllCharacters.ToList();
         string[] names = characters.Select(c => c.Id.Entry).ToArray();
@@ -27,7 +33,7 @@ internal static class NewRunDialog
         var seedLabel = new Label { X = 1, Y = Pos.Bottom(ascLabel) + 1, Text = "Seed:" };
         var seedField = new TextField { X = Pos.Right(seedLabel) + 1, Y = Pos.Top(seedLabel), Width = 24, Text = RandomSeed() };
 
-        RunConfig? result = null;
+        NewRunChoice? result = null;
 
         var dlg = new Dialog { Title = "New Run", Width = 58, Height = 16, ColorScheme = Theme.Base };
 
@@ -41,9 +47,25 @@ internal static class NewRunDialog
             {
                 seed = RandomSeed();
             }
-            result = new RunConfig(characters[radio.SelectedItem], asc, seed.Trim());
+            result = new NewRunChoice(new RunConfig(characters[radio.SelectedItem], asc, seed.Trim()), Continue: false);
             Application.RequestStop(dlg);
         };
+
+        dlg.Add(charLabel, radio, ascLabel, ascField, seedLabel, seedField);
+        dlg.AddButton(start);
+
+        // Offer to resume an in-progress run when one has been autosaved.
+        if (SaveStore.HasAutosave)
+        {
+            var cont = new Button { Text = "Continue" };
+            cont.Accepting += (_, e) =>
+            {
+                e.Cancel = true;
+                result = new NewRunChoice(null, Continue: true);
+                Application.RequestStop(dlg);
+            };
+            dlg.AddButton(cont);
+        }
 
         var cancel = new Button { Text = "Cancel" };
         cancel.Accepting += (_, e) =>
@@ -52,10 +74,8 @@ internal static class NewRunDialog
             result = null;
             Application.RequestStop(dlg);
         };
-
-        dlg.Add(charLabel, radio, ascLabel, ascField, seedLabel, seedField);
-        dlg.AddButton(start);
         dlg.AddButton(cancel);
+
         Application.Run(dlg);
         dlg.Dispose();
         return result;

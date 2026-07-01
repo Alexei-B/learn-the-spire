@@ -84,6 +84,42 @@ public sealed class DeterminismTests
             $"restored run failed to advance (stopped at phase {end.Phase}, floor {end.Floor})");
     }
 
+    [Fact]
+    public async Task SaveJson_RoundTrip_PreservesState_AndIsPlayable()
+    {
+        await Task.Run(RunSaveJsonRoundTrip).WaitAsync(TimeSpan.FromSeconds(120));
+    }
+
+    /// <summary>
+    /// Round-trip a run through the JSON save layer the front-end uses (<see cref="GameHost.ToSaveJson"/>
+    /// / <see cref="GameHost.RestoreFromJson"/>): serialize on the map, restore into a fresh run, and
+    /// assert the observable state matches and the restored run is playable.
+    /// </summary>
+    private void RunSaveJsonRoundTrip()
+    {
+        GameHost host = TestNav.StartOnMap("SAVEJSON");
+        TestNav.SetHp(host, maxHp: 9999, currentHp: 9999);
+        AutoPlayer.Advance(host, stop: s => s.Phase == GamePhase.Reward, maxSteps: 2000);
+        AutoPlayer.Advance(host, stop: s => s.Phase == GamePhase.Map, maxSteps: 200);
+
+        GameState before = host.GetState();
+        string sigBefore = Signature(before);
+
+        string json = host.ToSaveJson();
+        Assert.False(string.IsNullOrWhiteSpace(json));
+
+        GameHost restored = GameHost.RestoreFromJson(json, "SAVEJSON");
+        Assert.Equal(sigBefore, Signature(restored.GetState()));
+
+        TestNav.SetHp(restored, maxHp: 9999, currentHp: 9999);
+        GameState end = AutoPlayer.Advance(
+            restored,
+            stop: s => s.Floor >= before.Floor + 1 || s.Phase == GamePhase.GameOver,
+            maxSteps: 3000);
+        Assert.True(end.Floor >= before.Floor + 1 || end.Phase == GamePhase.GameOver,
+            $"restored run failed to advance (stopped at phase {end.Phase}, floor {end.Floor})");
+    }
+
     /// <summary>
     /// Play a fresh run of the given seed forward (greedy legal play) until it has climbed a few
     /// floors (or ended), buffing HP so the early combats are survived, then return a deterministic

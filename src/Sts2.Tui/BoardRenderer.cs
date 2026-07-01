@@ -36,7 +36,7 @@ internal static class BoardRenderer
                 Rewards(state, lines);
                 break;
             case GamePhase.Event:
-                Event(state, lines);
+                Event(state, lines, width);
                 break;
             case GamePhase.Treasure:
                 Treasure(state, lines);
@@ -399,29 +399,58 @@ internal static class BoardRenderer
         }
     }
 
-    private static void Event(GameState state, List<Line> lines)
+    private static void Event(GameState state, List<Line> lines, int width)
     {
         if (state.Event is not { } ev)
         {
             return;
         }
-        var head = new Line().Add(ev.EventId, Theme.Teal);
+        var head = new Line().Add(Localizer.EventName(ev.EventId), Theme.Teal);
         if (ev.IsAncient)
         {
             head.Dim("  (ancient)");
         }
         lines.Add(head);
+
+        // The event's body/flavour text (raw game markup, wrapped to the board width).
+        if (!string.IsNullOrWhiteSpace(ev.Description))
+        {
+            lines.Add(new Line());
+            foreach (List<Seg> wrapped in Markup.Wrap(Markup.Parse(ev.Description, Theme.Fg), Math.Max(20, width - 2)))
+            {
+                lines.Add(WrapLine(wrapped));
+            }
+        }
+
         lines.Add(new Line());
         foreach (EventOptionView o in ev.Options)
         {
-            string title = EventTitle(ev.EventId, o.TextKey, o.RelicId);
+            string title = EventTitle(ev.EventId, o, o.TextKey, o.RelicId);
             var l = new Line().Add("  • ", Theme.Gold).T(title);
             if (o.RelicId is not null && !title.Contains(Localizer.RelicName(o.RelicId)))
             {
                 l.Add($"  (relic {Localizer.RelicName(o.RelicId)})", Theme.Teal);
             }
             lines.Add(l);
+
+            // The option's outcome text under it (raw markup, wrapped & indented).
+            string desc = EventDesc(ev.EventId, o, o.TextKey, o.RelicId);
+            if (!string.IsNullOrWhiteSpace(desc))
+            {
+                foreach (List<Seg> wrapped in Markup.Wrap(Markup.Parse(desc, Theme.Dim), Math.Max(20, width - 6)))
+                {
+                    lines.Add(WrapLine(wrapped, "      "));
+                }
+            }
         }
+    }
+
+    /// <summary>Wrap a run of wrapped segments into a <see cref="Line"/> with an optional indent prefix.</summary>
+    private static Line WrapLine(List<Seg> segs, string indent = "  ")
+    {
+        var l = new Line().Dim(indent);
+        l.AddRange(segs);
+        return l;
     }
 
     private static void Treasure(GameState state, List<Line> lines)
@@ -768,9 +797,9 @@ internal static class BoardRenderer
 
     private static List<Seg> EventLabelSegs(GameOption o, GameState state)
     {
-        string? textKey = state.Event?.Options.FirstOrDefault(x => x.Index == o.EventOptionIndex)?.TextKey;
+        EventOptionView? ov = state.Event?.Options.FirstOrDefault(x => x.Index == o.EventOptionIndex);
         string eventId = state.Event?.EventId ?? "";
-        string title = EventTitle(eventId, textKey, o.EventOptionRelicId);
+        string title = EventTitle(eventId, ov, ov?.TextKey, o.EventOptionRelicId);
         var segs = new List<Seg> { new(title, Theme.Fg) };
         if (o.EventOptionRelicId is { } rid && !title.Contains(Localizer.RelicName(rid)))
         {
@@ -780,11 +809,16 @@ internal static class BoardRenderer
     }
 
     /// <summary>
-    /// An event option's display title: the localized title, else the granted relic's name, else a
-    /// prettified last segment of the text key.
+    /// An event option's display title: the live rendered title (with correct dynamic numbers, markup
+    /// stripped), else the by-key localized title, else the granted relic's name, else a prettified
+    /// last segment of the text key.
     /// </summary>
-    public static string EventTitle(string eventId, string? textKey, string? relicId)
+    public static string EventTitle(string eventId, EventOptionView? ov, string? textKey, string? relicId)
     {
+        if (ov?.Title is { } live && Localizer.Clean(live) is { Length: > 0 } cleaned)
+        {
+            return cleaned;
+        }
         if (textKey is not null && Localizer.EventOptionTitle(eventId, textKey) is { } t)
         {
             return t;
@@ -796,8 +830,16 @@ internal static class BoardRenderer
         return Pretty(textKey);
     }
 
-    public static string EventDesc(string eventId, string? textKey, string? relicId)
+    /// <summary>
+    /// An event option's outcome text (raw markup kept for colouring): the live rendered description
+    /// (correct dynamic numbers), else the by-key localized description, else the granted relic's.
+    /// </summary>
+    public static string EventDesc(string eventId, EventOptionView? ov, string? textKey, string? relicId)
     {
+        if (ov?.Description is { } live && !string.IsNullOrWhiteSpace(live))
+        {
+            return live;
+        }
         if (textKey is not null && Localizer.EventOptionDescription(eventId, textKey) is { } d)
         {
             return d;
@@ -832,7 +874,9 @@ internal static class BoardRenderer
         OptionKind.TakeTreasureRelic when o.TreasureRelicId is { } rid => (Localizer.RelicName(rid), Localizer.RelicDescription(rid)),
         OptionKind.BuyShopItem => ShopSubject(o),
         OptionKind.UsePotion when o.PotionId is { } pid => (Localizer.PotionName(pid), Localizer.PotionDescription(pid)),
-        OptionKind.DiscardPotion when o.PotionId is { } pid => (Localizer.PotionName(pid), Localizer.PotionDescription(pid)),
+        // Discard shows no description: the potion's use-text ("gain regen 5") reads as if discarding
+        // grants the effect, which is confusing. The label already names the potion being discarded.
+        OptionKind.DiscardPotion when o.PotionId is { } pid => (Localizer.PotionName(pid), string.Empty),
         OptionKind.ChooseEventOption => EventSubject(o, state),
         _ => (string.Empty, string.Empty),
     };
@@ -848,9 +892,10 @@ internal static class BoardRenderer
 
     private static (string, string) EventSubject(GameOption o, GameState state)
     {
-        string? textKey = state.Event?.Options.FirstOrDefault(x => x.Index == o.EventOptionIndex)?.TextKey;
+        EventOptionView? ov = state.Event?.Options.FirstOrDefault(x => x.Index == o.EventOptionIndex);
         string eventId = state.Event?.EventId ?? "";
-        return (EventTitle(eventId, textKey, o.EventOptionRelicId), EventDesc(eventId, textKey, o.EventOptionRelicId));
+        return (EventTitle(eventId, ov, ov?.TextKey, o.EventOptionRelicId),
+                EventDesc(eventId, ov, ov?.TextKey, o.EventOptionRelicId));
     }
 
 }

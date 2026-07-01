@@ -35,6 +35,13 @@ internal static class Program
                 return Dump(args.Skip(1).ToArray());
             }
 
+            if (args.Length > 0 && args[0] == "--dumpevent")
+            {
+                Godot.GD.Out = logWriter;
+                Godot.GD.Err = logWriter;
+                return DumpEvent(args.Skip(1).ToArray());
+            }
+
             if (args.Length > 0 && args[0] == "--smoke")
             {
                 Godot.GD.Out = logWriter;
@@ -121,6 +128,28 @@ internal static class Program
             }
             host.Apply(pool[rng.Next(pool.Count)]);
         }
+        return 0;
+    }
+
+    // Enter one event by type name (e.g. SelfHelpBook) and dump its board (body text) + decisions
+    // (per-option outcome text), so the event-text rendering can be eyeballed without a terminal.
+    private static int DumpEvent(string[] args)
+    {
+        string typeName = args.Length > 0 ? args[0] : "SelfHelpBook";
+        GameRuntime.EnsureInitialized();
+        Console.WriteLine($"Localizer.Available = {Localizer.Available}");
+        CharacterModel character = ModelDb.AllCharacters.First();
+        GameHost host = GameHost.StartNewRun("EVTDUMP", new[] { character }, 0);
+        host.EnterFirstRoom();
+
+        EventModel ev = ModelDb.ActsByIndex[0]
+            .SelectMany(a => a.AllEvents)
+            .Concat(ModelDb.AllSharedEvents)
+            .First(e => e.GetType().Name == typeName);
+        host.EnterEventDebug(ev);
+
+        GameState state = host.GetState();
+        DumpFrame($"EVENT {typeName}", state, host.ListOptions());
         return 0;
     }
 
@@ -217,6 +246,7 @@ internal static class Program
         GameHost host = GameHost.StartNewRun(seed, new[] { character }, ascension);
         host.EnterFirstRoom();
 
+        var gameLog = new GameLog();
         for (int i = 0; i < steps; i++)
         {
             GameState state = host.GetState();
@@ -235,22 +265,29 @@ internal static class Program
             if (state.IsGameOver)
             {
                 Console.WriteLine($"Run ended — victory={state.IsVictory}, score={state.Score}");
-                return 0;
+                break;
             }
 
-            IReadOnlyList<GameOption> options = host.ListOptions();
-            if (options.Count == 0)
+            if (opts.Count == 0)
             {
                 Console.WriteLine("No options; stopping.");
-                return 0;
+                break;
             }
-            List<GameOption> nonEnd = options.Where(o => o.Kind != OptionKind.EndTurn).ToList();
-            List<GameOption> pool = nonEnd.Count > 0 ? nonEnd : options.ToList();
+            List<GameOption> nonEnd = opts.Where(o => o.Kind != OptionKind.EndTurn).ToList();
+            List<GameOption> pool = nonEnd.Count > 0 ? nonEnd : opts.ToList();
             GameOption pick = pool[rng.Next(pool.Count)];
             Console.WriteLine($"      -> {pick.Description}");
             host.Apply(pick);
+            // Exercise the event-log differ over the real state transition (before → after).
+            gameLog.Record(string.Concat(BoardRenderer.OptionLabel(pick, state).Select(s => s.Text)), state, host.GetState());
         }
 
+        Console.WriteLine();
+        Console.WriteLine("---- event log tail ----");
+        foreach (Line l in gameLog.Render(80, 24))
+        {
+            Console.WriteLine(string.Concat(l.Select(s => s.Text)));
+        }
         Console.WriteLine("Smoke run completed without errors.");
         return 0;
     }
