@@ -244,9 +244,12 @@ public sealed class GameOption
         string desc = cardModels.Count == 0
             ? "Skip selection"
             : "Select " + string.Join(", ", cardModels.Select(c => c.Id.Entry));
+        // For a single-card selection (the common case: discover/search/potion card picks) carry the
+        // card view so the UI can render the card's name and description; multi-card picks leave it null.
+        CardView? single = cards.Count == 1 ? cards[0] : null;
         return new GameOption(
             OptionKind.SelectCards, player.NetId, desc,
-            selectedCards: cards, selectedCardModels: cardModels, player: player);
+            card: single, selectedCards: cards, selectedCardModels: cardModels, player: player);
     }
 
     /// <summary>

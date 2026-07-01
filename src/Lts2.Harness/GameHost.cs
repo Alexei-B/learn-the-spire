@@ -837,7 +837,11 @@ public sealed class GameHost
         // attributed to the set's owner (in multi-player the players' rewards surface one at a time).
         if (PendingRewards is not null)
         {
-            return BuildRewardOptions(PendingRewards);
+            var rewardOptions = new List<GameOption>(BuildRewardOptions(PendingRewards));
+            // The potion belt stays usable on the reward screen (out of combat, so only AnyTime
+            // potions apply — CombatOnly ones are gated by CanUsePotionNow).
+            AddPotionOptions(player, rewardOptions);
+            return rewardOptions;
         }
 
         // A treasure room with its chest open: take one of the offered relics or skip. Multi-player

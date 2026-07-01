@@ -14,7 +14,7 @@ internal static class BoardRenderer
 {
     // ---- Board (left/centre canvas) --------------------------------------------
 
-    public static List<Line> Board(GameState state, int width, int height = 1000)
+    public static List<Line> Board(GameState state, int width, int height = 1000, Coord? mapHighlight = null)
     {
         if (width <= 0)
         {
@@ -56,7 +56,7 @@ internal static class BoardRenderer
             default:
                 if (state.Map is { } map)
                 {
-                    MapLines(map, lines, width, height);
+                    MapLines(map, lines, width, height, mapHighlight);
                 }
                 break;
         }
@@ -64,7 +64,7 @@ internal static class BoardRenderer
     }
 
     /// <summary>The right-hand side panel: the piles in combat, the act map (with connections) elsewhere.</summary>
-    public static List<Line> SidePanel(GameState state, int width, int height = 1000)
+    public static List<Line> SidePanel(GameState state, int width, int height = 1000, Coord? mapHighlight = null)
     {
         if (width <= 0)
         {
@@ -77,7 +77,7 @@ internal static class BoardRenderer
         }
         else if (state.Map is { } map)
         {
-            MapLines(map, lines, width, height);
+            MapLines(map, lines, width, height, mapHighlight);
         }
         return lines;
     }
@@ -553,13 +553,18 @@ internal static class BoardRenderer
 
     // ---- Map -------------------------------------------------------------------
 
-    public static void MapLines(MapView map, List<Line> lines, int width, int height = 1000)
+    public static void MapLines(MapView map, List<Line> lines, int width, int height = 1000, Coord? highlight = null)
     {
         if (map.Points.Count == 0)
         {
             lines.Add(new Line().Dim("(no map)"));
             return;
         }
+
+        // When a move option is highlighted, "lit" is that node plus everything reachable onward from
+        // it; nodes outside the set are drawn dark so it's clear where that move would let you go.
+        HashSet<Coord>? lit = highlight is { } hi ? Descendants(map, hi) : null;
+
         var header = new Line().Add($"Act {map.ActIndex + 1}", Theme.Gold);
         if (map.BossEncounterId is { } bossId)
         {
@@ -606,10 +611,40 @@ internal static class BoardRenderer
                 int nc = NodeCol(pt.Coord.Col);
                 bool cur = map.CurrentCoord is { } cc && cc.Equals(pt.Coord);
                 bool go = reachable.Contains(pt.Coord);
-                Color marker = cur ? Theme.Fg : go ? Theme.Green : Theme.Dim;
-                Put(ch, co, nc - 1, cur ? '[' : go ? '<' : ' ', marker);
-                Put(ch, co, nc, Icon(pt.PointType)[0], cur ? Theme.Fg : go ? Theme.Green : IconColor(pt.PointType));
-                Put(ch, co, nc + 1, cur ? ']' : go ? '>' : ' ', marker);
+                bool isHi = highlight is { } hh && hh.Equals(pt.Coord);
+                bool dark = lit is not null && !lit.Contains(pt.Coord);
+                char lb, rb, icon = Icon(pt.PointType)[0];
+                Color marker, iconColor;
+                if (dark)
+                {
+                    // Not reachable from the highlighted move: draw it dark/desaturated.
+                    lb = rb = ' ';
+                    marker = iconColor = Theme.HpLost;
+                }
+                else if (isHi)
+                {
+                    lb = '{'; rb = '}';
+                    marker = iconColor = Theme.Gold;
+                }
+                else if (cur)
+                {
+                    lb = '['; rb = ']';
+                    marker = iconColor = Theme.Fg;
+                }
+                else if (go)
+                {
+                    lb = '<'; rb = '>';
+                    marker = iconColor = Theme.Green;
+                }
+                else
+                {
+                    lb = rb = ' ';
+                    marker = Theme.Dim;
+                    iconColor = IconColor(pt.PointType);
+                }
+                Put(ch, co, nc - 1, lb, marker);
+                Put(ch, co, nc, icon, iconColor);
+                Put(ch, co, nc + 1, rb, marker);
             }
             lines.Add(CellsToLine(ch, co));
 
@@ -627,17 +662,20 @@ internal static class BoardRenderer
                     int nc = NodeCol(pt.Coord.Col);
                     foreach (Coord child in pt.Children.Where(c => c.Row == row))
                     {
+                        // An edge is lit only when it stays inside the highlighted subtree (both ends lit).
+                        bool onPath = lit is null || (lit.Contains(pt.Coord) && lit.Contains(child));
+                        Color edge = onPath ? Theme.Dim : Theme.HpLost;
                         if (child.Col == pt.Coord.Col)
                         {
-                            Put(cch, cco, nc, '|', Theme.Dim);
+                            Put(cch, cco, nc, '|', edge);
                         }
                         else if (child.Col < pt.Coord.Col)
                         {
-                            Put(cch, cco, nc - 1, '\\', Theme.Dim);
+                            Put(cch, cco, nc - 1, '\\', edge);
                         }
                         else
                         {
-                            Put(cch, cco, nc + 1, '/', Theme.Dim);
+                            Put(cch, cco, nc + 1, '/', edge);
                         }
                     }
                 }
@@ -651,7 +689,33 @@ internal static class BoardRenderer
             .Add("B", Theme.Red).T("oss ").Add("R", Theme.Green).T("est"));
         lines.Add(new Line()
             .Add("$", Theme.Gold).T("hop ").Add("T", Theme.Gold).T("reas ")
-            .Add("?", Theme.Teal).T("evt  ").Add("[x]", Theme.Fg).Dim("here ").Add("<x>", Theme.Green).Dim("go"));
+            .Add("?", Theme.Teal).T("evt  ").Add("[x]", Theme.Fg).Dim("here ").Add("<x>", Theme.Green).Dim("go ")
+            .Add("{x}", Theme.Gold).Dim("sel"));
+    }
+
+    // The highlighted node plus every node reachable onward from it (its descendants in the map graph),
+    // so the map can dim everything a given move can't lead to.
+    private static HashSet<Coord> Descendants(MapView map, Coord start)
+    {
+        var children = map.Points.ToDictionary(p => p.Coord, p => p.Children);
+        var seen = new HashSet<Coord> { start };
+        var stack = new Stack<Coord>();
+        stack.Push(start);
+        while (stack.Count > 0)
+        {
+            Coord c = stack.Pop();
+            if (children.TryGetValue(c, out IReadOnlyList<Coord>? kids))
+            {
+                foreach (Coord k in kids)
+                {
+                    if (seen.Add(k))
+                    {
+                        stack.Push(k);
+                    }
+                }
+            }
+        }
+        return seen;
     }
 
     private static void Put(char[] ch, Color[] co, int i, char c, Color color)

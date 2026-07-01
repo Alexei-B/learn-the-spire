@@ -36,6 +36,11 @@ internal sealed class GameScreen
     private bool _busy;
     private bool _gameOverShown;
 
+    // The map node the currently-highlighted move option leads to (null when the selection is not a
+    // move). Read by the board/side renderers each draw so the map highlights where a move would take
+    // you and dims the nodes that don't follow on from it.
+    private Coord? _mapHighlight;
+
     public GameScreen()
     {
         _root = new Toplevel { ColorScheme = Theme.Base };
@@ -89,7 +94,7 @@ internal sealed class GameScreen
 
         var optionsFrame = new FrameView
         {
-            Title = "Decisions  (↑↓ · 1-9 · Enter)",
+            Title = "Decisions  (↑↓ · 0-9 · Enter)",
             X = 0,
             Y = Pos.Bottom(_boardFrame),
             Width = Dim.Percent(68),
@@ -99,6 +104,7 @@ internal sealed class GameScreen
         };
         _optionsView = new OptionsView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _optionsView.Activated += Choose;
+        _optionsView.SelectionChanged += OnSelectionChanged;
         optionsFrame.Add(_optionsView);
 
         _logFrame = new FrameView
@@ -167,12 +173,13 @@ internal sealed class GameScreen
 
         GameState state = _host.GetState();
         _state = state;
+        _mapHighlight = null;
         _boardFrame.Title = $"Board — {state.Phase}";
-        _board.SetRenderer((w, h) => BoardRenderer.Board(state, w, h));
+        _board.SetRenderer((w, h) => BoardRenderer.Board(state, w, h, _mapHighlight));
 
         bool inCombat = state.Phase is GamePhase.Combat or GamePhase.Choice;
         _sideFrame.Title = inCombat ? "Piles" : "Map";
-        _side.SetRenderer((w, h) => BoardRenderer.SidePanel(state, w, h));
+        _side.SetRenderer((w, h) => BoardRenderer.SidePanel(state, w, h, _mapHighlight));
 
         _options = _host.ListOptions().ToList();
         var entries = new List<OptionsView.Entry>(_options.Count);
@@ -180,13 +187,14 @@ internal sealed class GameScreen
         {
             entries.Add(new OptionsView.Entry(BoardRenderer.OptionLabel(o, state), BoardRenderer.OptionDescSegs(o, state)));
         }
-        _optionsView.SetEntries(entries);
+        int endTurn = _options.FindIndex(o => o.Kind == OptionKind.EndTurn);
+        _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null);
         _optionsView.SetFocus();
         _log.SetNeedsDraw();
 
         _msg.Text = state.IsGameOver
             ? " Run over.  Game ▸ New Run to play again."
-            : " ↑↓ select · 1-9 quick-pick · Enter apply · Alt+G Game · Alt+V View";
+            : " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · Alt+G Game · Alt+V View";
 
         if (state.IsGameOver && !_gameOverShown)
         {
@@ -248,6 +256,24 @@ internal sealed class GameScreen
             _msg.Text = $" Applied: {option.Description}";
             Refresh();
         }));
+    }
+
+    /// <summary>
+    /// When the highlighted option is a map move, mark its destination so the map view highlights that
+    /// node and dims the ones that don't follow on from it. Any other selection clears the highlight.
+    /// </summary>
+    private void OnSelectionChanged(int index)
+    {
+        Coord? highlight = index >= 0 && index < _options.Count && _options[index].Kind == OptionKind.MoveTo
+            ? _options[index].Coord
+            : null;
+        if (Nullable.Equals(highlight, _mapHighlight))
+        {
+            return;
+        }
+        _mapHighlight = highlight;
+        _board.SetNeedsDraw();
+        _side.SetNeedsDraw();
     }
 
     /// <summary>A short, human-readable header for the log describing the option just applied.</summary>

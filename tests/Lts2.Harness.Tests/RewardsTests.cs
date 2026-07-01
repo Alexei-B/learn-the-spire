@@ -119,6 +119,34 @@ public sealed class RewardsTests
         Assert.Equal(deckBefore, onMap.Players[0].Deck.Count); // no card added
     }
 
+    [Fact]
+    public async Task RewardsScreen_OffersPotionUseAndDiscard()
+    {
+        await Task.Run(RunRewardsPotionOptions).WaitAsync(TimeSpan.FromSeconds(90));
+    }
+
+    private void RunRewardsPotionOptions()
+    {
+        GameHost host = TestNav.MoveIntoFirstCombat("TESTSEED");
+        // BloodPotion heals and is usable AnyTime (no combat-only usability gate), so it stays usable
+        // on the (out-of-combat) rewards screen.
+        PotionModel potion = TestNav.GivePotion(host, "BloodPotion");
+        string pid = potion.Id.Entry;
+
+        PlayUntilCombatEnds(host, maxTurns: 50);
+        Assert.Equal(GamePhase.Reward, host.GetState().Phase);
+
+        var options = host.ListOptions();
+        foreach (GameOption o in options)
+        {
+            _out.WriteLine($"{o.Kind}: {o.Description}");
+        }
+        Assert.Contains(options, o => o.Kind == OptionKind.UsePotion && o.PotionId == pid);
+        Assert.Contains(options, o => o.Kind == OptionKind.DiscardPotion && o.PotionId == pid);
+        // The reward flow options are still present alongside the potion actions.
+        Assert.Contains(options, o => o.Kind == OptionKind.ProceedFromRewards);
+    }
+
     private static string DescribeRewards(GameState s) =>
         s.Rewards is null ? "" : string.Join(", ", s.Rewards.Rewards.Select(r => r.Type.ToString()));
 

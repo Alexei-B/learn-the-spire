@@ -62,6 +62,15 @@ public sealed class ChoiceInjectionTests
         Assert.All(options, o => Assert.Equal(OptionKind.SelectCards, o.Kind));
         Assert.Single(options, o => o.SelectedCards!.Count == 0); // the skip option
 
+        // Each single-card option carries its card view so the UI can render the card's name and
+        // description (the skip option carries none).
+        foreach (GameOption o in options.Where(o => o.SelectedCards!.Count == 1))
+        {
+            Assert.NotNull(o.Card);
+            Assert.Equal(o.SelectedCards![0].CardId, o.Card!.CardId);
+        }
+        Assert.Null(options.Single(o => o.SelectedCards!.Count == 0).Card);
+
         // Choose the first offered card and resolve.
         GameOption pick = options.First(o => o.SelectedCards!.Count == 1);
         string chosenId = pick.SelectedCards![0].CardId;

@@ -19,10 +19,15 @@ internal sealed class OptionsView : View
     public sealed record Entry(IReadOnlyList<Seg> Label, IReadOnlyList<Seg> Desc);
 
     private List<Entry> _entries = new();
+    private List<string> _hotkeys = new();
     private int _selected = -1;
     private int _scroll;
+    private int? _endTurn;
 
     public event Action<int>? Activated;
+
+    /// <summary>Raised when the highlighted option changes (arrow keys, number keys, or SetEntries).</summary>
+    public event Action<int>? SelectionChanged;
 
     public OptionsView()
     {
@@ -31,12 +36,40 @@ internal sealed class OptionsView : View
 
     public int Selected => _selected;
 
-    public void SetEntries(List<Entry> entries, int selected = 0)
+    /// <summary>
+    /// Set the options. <paramref name="endTurnIndex"/>, when given, is the option that always binds to
+    /// the <c>0</c> key (End turn); the remaining options take the digits 1–9 in order.
+    /// </summary>
+    public void SetEntries(List<Entry> entries, int? endTurnIndex = null, int selected = 0)
     {
         _entries = entries;
+        _endTurn = endTurnIndex;
+        _hotkeys = AssignHotkeys(entries.Count, endTurnIndex);
         _selected = entries.Count == 0 ? -1 : Math.Clamp(selected, 0, entries.Count - 1);
         _scroll = 0;
         SetNeedsDraw();
+        SelectionChanged?.Invoke(_selected);
+    }
+
+    // Assign each option a digit shortcut: the end-turn option gets "0"; the rest take 1..9 in order
+    // (anything past the ninth non-end-turn option gets no digit).
+    private static List<string> AssignHotkeys(int count, int? endTurnIndex)
+    {
+        var keys = new List<string>(count);
+        int next = 1;
+        for (int i = 0; i < count; i++)
+        {
+            if (i == endTurnIndex)
+            {
+                keys.Add("0");
+            }
+            else
+            {
+                keys.Add(next <= 9 ? next.ToString() : "");
+                next++;
+            }
+        }
+        return keys;
     }
 
     private void Move(int delta)
@@ -47,6 +80,7 @@ internal sealed class OptionsView : View
         }
         _selected = Math.Clamp(_selected + delta, 0, _entries.Count - 1);
         SetNeedsDraw();
+        SelectionChanged?.Invoke(_selected);
     }
 
     protected override bool OnKeyDown(Key key)
@@ -78,13 +112,15 @@ internal sealed class OptionsView : View
         }
 
         int ch = key.AsRune.Value;
-        if (ch >= '1' && ch <= '9')
+        if (ch >= '0' && ch <= '9')
         {
-            int n = ch - '1';
-            if (n < _entries.Count)
+            string want = ((char)ch).ToString();
+            int n = _hotkeys.IndexOf(want);
+            if (n >= 0)
             {
                 _selected = n;
                 SetNeedsDraw();
+                SelectionChanged?.Invoke(n);
                 Activated?.Invoke(n);
             }
             return true;
@@ -102,7 +138,9 @@ internal sealed class OptionsView : View
         {
             starts.Add(rows.Count);
             Entry e = _entries[i];
-            var header = new List<Seg> { new($"[{i + 1}] ", Theme.Gold) };
+            string key = i < _hotkeys.Count ? _hotkeys[i] : "";
+            string tag = key.Length > 0 ? $"[{key}] " : "    ";
+            var header = new List<Seg> { new(tag, Theme.Gold) };
             header.AddRange(e.Label);
             rows.Add((header, i, true));
 
