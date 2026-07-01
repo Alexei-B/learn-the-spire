@@ -35,7 +35,7 @@ The game is Godot + C# (.NET 9), but the *logic* (`RunState`, `CombatManager`,
 is **plain C#, decoupled from Godot**. UI lives in `Nodes.*` (Godot subclasses) reached
 via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 
-## Architecture (3 projects, net9.0, SDK pinned by `global.json`)
+## Architecture (5 projects, net9.0, SDK pinned by `global.json`)
 
 - **`src/Sts2.GodotShim`** → builds `GodotSharp.dll` (same assembly name; GodotSharp is
   unsigned so it binds by name). Replaces the real GodotSharp. Two kinds of content:
@@ -51,6 +51,27 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   faithful end-to-end flows from a seed; an assembly-wide `BeforeAfterTest` banner
   (`TestLogSeparator`) tags the game's stdout logging with the running test's name. Shared
   navigation (resolve the opening Neow event, move into the first combat) lives in `TestNav`.
+- **`src/Sts2.Tui`** → a **full-screen** terminal client (Terminal.Gui **v2** — owns the screen like
+  ncurses, soft true-colour theme) that plays full single-player runs purely through the public
+  `GetState`/`ListOptions`/`Apply` trio — a manual-testing front end (character/ascension/seed select, then a board canvas +
+  an option list). It is the only consumer of the `StartNewRun(seed, IReadOnlyList<CharacterModel>,
+  ascension)` overload (added for character selection; the `playerCount` overloads still assign
+  characters automatically). Because a screen-owning driver and the game both write to the console,
+  the shim's `GD.Out`/`GD.Err` are **redirectable** (default to the live console, so tests are
+  unaffected); the TUI points them at a log file. See `src/Sts2.Tui/README.md`.
+- **`src/Sts2.Localization`** → an **opt-in** library that gives real names/descriptions for content
+  (cards/relics/potions/powers/events) by reusing the game's own loc pipeline. The game loads its loc
+  tables from `res://localization/<lang>/*.json` (plain JSON key→SmartFormat-text dicts) via
+  `FileAccess`/`LocManager` — which the shim already backs with real file IO over its globalized
+  `res://` root (`<output>/res`), and which `GameRuntime` already initializes. So the library just
+  **packages the extracted English tables** as content placed at `res/localization/` (any consumer
+  that references it gets them there), and `LocManager.Initialize()` loads them; the Harmony loc
+  *finalizers* (which only fire on a missing key) then step aside and real text flows through
+  `card.Title` / `card.GetDescriptionForPile()` / etc. `Localizer` exposes id-keyed helpers (the
+  read model uses ids) with BBCode stripped, falling back to the id when the tables are absent — so
+  the harness/tests, which don't reference this library, stay loc-free (keys), honoring "the headless
+  library never requires pak loading". The tables are gitignored game content extracted by
+  `scripts/extract-localization.ps1` (GDRE Tools over the `.pck`). See `src/Sts2.Localization`.
 - `refsrc/`, `lib/` are gitignored (decompile + copied game DLLs; GodotSharp excluded).
 
 ## Key mechanisms

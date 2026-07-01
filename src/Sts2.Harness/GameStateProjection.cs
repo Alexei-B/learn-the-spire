@@ -127,6 +127,17 @@ internal static class GameStateProjection
             DiscardPile = pcs.DiscardPile.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
             ExhaustPile = pcs.ExhaustPile.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
             Powers = player.Creature.Powers.Select(ProjectPower).ToList(),
+            Osty = player.Osty is { } osty ? ProjectOsty(osty) : null,
+        };
+
+    private static OstyView ProjectOsty(Creature osty) =>
+        new()
+        {
+            CurrentHp = osty.CurrentHp,
+            MaxHp = osty.MaxHp,
+            Block = osty.Block,
+            IsAlive = osty.IsAlive,
+            Powers = osty.Powers.Select(ProjectPower).ToList(),
         };
 
     internal static CardView ProjectCard(CardModel card, bool canPlay)
@@ -404,7 +415,9 @@ internal static class GameStateProjection
                 try
                 {
                     damage = attack.GetSingleDamage(combat.Allies, enemy);
-                    hits = attack.Repeats + 1;
+                    // Repeats is the total number of hits (SingleAttackIntent => 1,
+                    // MultiAttackIntent => its repeat count; GetTotalDamage = single × Repeats).
+                    hits = attack.Repeats;
                 }
                 catch
                 {

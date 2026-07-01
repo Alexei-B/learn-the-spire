@@ -406,6 +406,23 @@ public sealed record PlayerCombatView
     public required IReadOnlyList<CardView> DiscardPile { get; init; }
     public required IReadOnlyList<CardView> ExhaustPile { get; init; }
     public required IReadOnlyList<PowerView> Powers { get; init; }
+
+    /// <summary>
+    /// The Necrobinder's Osty pet, when it is present in this combat (null for other characters, or
+    /// before Osty is summoned). Stays non-null but <see cref="OstyView.IsAlive"/>=false once Osty
+    /// has died this combat.
+    /// </summary>
+    public OstyView? Osty { get; init; }
+}
+
+/// <summary>The Necrobinder's Osty pet creature (a combat-only ally with its own HP/block).</summary>
+public sealed record OstyView
+{
+    public required int CurrentHp { get; init; }
+    public required int MaxHp { get; init; }
+    public required int Block { get; init; }
+    public required bool IsAlive { get; init; }
+    public required IReadOnlyList<PowerView> Powers { get; init; }
 }
 
 /// <summary>A single card. <see cref="CardId"/> identifies the model (e.g. "StrikeIronclad").</summary>

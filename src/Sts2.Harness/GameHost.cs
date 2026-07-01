@@ -152,6 +152,32 @@ public sealed class GameHost
                 nameof(playerCount), playerCount, "A run needs at least one player.");
         }
 
+        // Default characters: successive entries of ModelDb.AllCharacters (wrapping if more
+        // players than characters), preserving the original assignment.
+        List<CharacterModel> all = ModelDb.AllCharacters.ToList();
+        var characters = new List<CharacterModel>(playerCount);
+        for (int i = 0; i < playerCount; i++)
+        {
+            characters.Add(all[i % all.Count]);
+        }
+        return StartNewRun(seed, characters, ascension);
+    }
+
+    /// <summary>
+    /// Create and start a fresh run with an explicit character per player. The first character is
+    /// the local player (NetId 1); each subsequent one is another local ("fake multiplayer") player.
+    /// Use this to pick the character(s) for the run (e.g. a front-end's character-select screen);
+    /// the <c>playerCount</c> overloads assign characters automatically. Pick the models from
+    /// <c>ModelDb.AllCharacters</c> (call <see cref="GameRuntime.EnsureInitialized"/> first so the
+    /// model database is populated).
+    /// </summary>
+    public static GameHost StartNewRun(string seed, IReadOnlyList<CharacterModel> characters, int ascension = 0)
+    {
+        if (characters is null || characters.Count < 1)
+        {
+            throw new System.ArgumentException("A run needs at least one character.", nameof(characters));
+        }
+
         GameRuntime.EnsureInitialized();
 
         // The game keeps run/combat state in process-wide singletons, so only one run
@@ -166,12 +192,10 @@ public sealed class GameHost
         // (StartedWithNeow is derived from the run's unlock state — see RunManager).
         UnlockState unlock = UnlockState.all;
 
-        List<CharacterModel> characters = ModelDb.AllCharacters.ToList();
-        var players = new List<Player>(playerCount);
-        for (int i = 0; i < playerCount; i++)
+        var players = new List<Player>(characters.Count);
+        for (int i = 0; i < characters.Count; i++)
         {
-            CharacterModel character = characters[i % characters.Count];
-            players.Add(Player.CreateForNewRun(character, unlock, (ulong)(i + 1)));
+            players.Add(Player.CreateForNewRun(characters[i], unlock, (ulong)(i + 1)));
         }
 
         List<ActModel> acts = ActModel.GetDefaultList().Select(a => a.ToMutable()).ToList();

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 
 namespace Godot;
 
@@ -10,25 +11,47 @@ namespace Godot;
 /// </summary>
 public static class GD
 {
-    public static void Print(string what) => Console.Out.WriteLine(what);
+    // The game's logging (Log → ConsoleLogPrinter → GD.Print/PrintErr) is essentially the only
+    // thing that writes to the terminal headless. By default it goes to the live console streams —
+    // exactly the original behaviour, so tests still see the game's stdout/stderr. A host that owns
+    // the terminal (e.g. a full-screen TUI) can redirect this chatter elsewhere (a log file) by
+    // setting Out/Err, without globally redirecting Console (which a screen driver also uses).
+    private static TextWriter? _out;
+    private static TextWriter? _err;
 
-    public static void Print(params object[] what) => Console.Out.WriteLine(Join(what));
+    /// <summary>Where <c>Print</c>/<c>PrintRich</c> go. Defaults to the live <see cref="Console.Out"/>.</summary>
+    public static TextWriter Out
+    {
+        get => _out ?? Console.Out;
+        set => _out = value;
+    }
 
-    public static void PrintRich(string what) => Console.Out.WriteLine(what);
+    /// <summary>Where <c>PrintErr</c>/<c>PushError</c>/<c>PushWarning</c> go. Defaults to <see cref="Console.Error"/>.</summary>
+    public static TextWriter Err
+    {
+        get => _err ?? Console.Error;
+        set => _err = value;
+    }
 
-    public static void PrintRich(params object[] what) => Console.Out.WriteLine(Join(what));
+    public static void Print(string what) => Out.WriteLine(what);
 
-    public static void PrintErr(string what) => Console.Error.WriteLine(what);
+    public static void Print(params object[] what) => Out.WriteLine(Join(what));
 
-    public static void PrintErr(params object[] what) => Console.Error.WriteLine(Join(what));
+    public static void PrintRich(string what) => Out.WriteLine(what);
 
-    public static void PushError(string message) => Console.Error.WriteLine(message);
+    public static void PrintRich(params object[] what) => Out.WriteLine(Join(what));
 
-    public static void PushError(params object[] what) => Console.Error.WriteLine(Join(what));
+    public static void PrintErr(string what) => Err.WriteLine(what);
 
-    public static void PushWarning(string message) => Console.Error.WriteLine(message);
+    public static void PrintErr(params object[] what) => Err.WriteLine(Join(what));
 
-    public static void PushWarning(params object[] what) => Console.Error.WriteLine(Join(what));
+    public static void PushError(string message) => Err.WriteLine(message);
+
+    public static void PushError(params object[] what) => Err.WriteLine(Join(what));
+
+    public static void PushWarning(string message) => Err.WriteLine(message);
+
+    public static void PushWarning(params object[] what) => Err.WriteLine(Join(what));
 
     private static string Join(object[] what) => what is null ? string.Empty : string.Concat(what);
 }
