@@ -612,7 +612,9 @@ internal static class BoardRenderer
                 bool cur = map.CurrentCoord is { } cc && cc.Equals(pt.Coord);
                 bool go = reachable.Contains(pt.Coord);
                 bool isHi = highlight is { } hh && hh.Equals(pt.Coord);
-                bool dark = lit is not null && !lit.Contains(pt.Coord);
+                // Darken nodes the highlighted move can't lead to, but keep the "you are here" node lit
+                // as an anchor.
+                bool dark = lit is not null && !lit.Contains(pt.Coord) && !cur;
                 char lb, rb, icon = Icon(pt.PointType)[0];
                 Color marker, iconColor;
                 if (dark)

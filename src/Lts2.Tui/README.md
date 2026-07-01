@@ -51,7 +51,7 @@ exists). Then the main screen:
 │ └───────────────────┘  └───────────────────────┘ ││                    │
 │ …                                                 ││                    │
 └───────────────────────────────────────────────────┘└────────────────────┘
-┌ Decisions  (↑↓ · 1-9 · Enter) ─────────────┐┌ Log ────────────────────┐
+┌ Decisions  (↑↓ · 0-9 · Enter) ─────────────┐┌ Log ────────────────────┐
 │ [1] ● Strike → #1                          ││ ▸ End turn              │
 │       Deal 6 damage.                       ││  · IRONCLAD took 7 dmg  │
 │ [2] ● Defend                               ││  · gained Vulnerable 2  │
@@ -64,12 +64,16 @@ exists). Then the main screen:
   dark lost HP, green = HP poison will remove this turn, purple = doom threshold; the border turns
   green/purple if they'd die to poison/doom this turn, grey if they have block), an info line
   (energy as teal ●/○ circles + hand / enemy intent), and its powers. On the **map** screen: the act
-  map with connections drawn between rooms. In an **event**: the flavour body text plus each option's
-  outcome text, with the real per-run numbers (energy shown as teal circles, colours applied).
+  map with connections drawn between rooms — the header names the act's **boss** and the boss room
+  shows as a `B` node at the top. In an **event**: the flavour body text plus each option's outcome
+  text, with the real per-run numbers (energy shown as teal circles, colours applied).
 - **Side panel** (top-right) — the act **map** (with connections) on every screen, except in combat
   where it shows your **draw / discard / exhaust piles**.
 - **Decisions** (bottom-left) — the legal options with their localized descriptions inline. Move with
-  **↑/↓**, **1–9** to quick-pick, **Enter** to apply; scrolls when there are more than fit.
+  **↑/↓**, **0–9** to quick-pick (**0** is always *End turn* in combat), **Enter** to apply; scrolls
+  when there are more than fit. Potions can also be used/discarded on the **rewards** screen. While a
+  **map move** is highlighted, the map lights up that room and everything it can still reach, and
+  dims the rooms that move can't lead to (`{x}` marks the selected room).
 - **Log** (bottom-right) — a scrolling record of what changed on each decision (damage taken, cards
   gained or moved between piles, relics/potions/gold/powers, enemy defeats, phase changes), derived
   by diffing the state before/after each apply.
