@@ -13,7 +13,7 @@ Right now, the project consists of a few .NET libraries and applications:
 4. `Lts2.Tui` - A terminal UI for testing the headless STS 2 harness
 
 Basically right now the project enables you to run STS 2 games without booting the real game. You still of course need
-to own a legal copy of the game and have all the game files downloaded. This repo does not contain
+to own a copy of the game and have all the game files downloaded.
 
 ## Getting started (Windows)
 
@@ -26,10 +26,9 @@ game's own DLLs into a local, gitignored `lib/` folder. From scratch:
 - **[.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)** — version `9.0.315` or newer
   (`global.json` pins it, rolling forward to the latest 9.0.3xx you have installed). Check with `dotnet --version`.
 - **Git**, and **PowerShell 7** (`pwsh`) if you want localized text (step 4).
-- A legal **Slay the Spire 2** install. The files this project needs live in the game's
+- A legitimate **Slay the Spire 2** install. The files this project needs live in the game's
   `data_sts2_windows_x86_64` folder — typically
   `C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64\`
-  (mine is on `D:\Steam\...`; adjust the paths below to wherever your Steam library is).
 
 ### 2. Clone
 
