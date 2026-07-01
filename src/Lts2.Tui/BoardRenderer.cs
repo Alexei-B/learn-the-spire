@@ -560,7 +560,16 @@ internal static class BoardRenderer
             lines.Add(new Line().Dim("(no map)"));
             return;
         }
-        lines.Add(new Line().Add($"Act {map.ActIndex + 1}", Theme.Gold));
+        var header = new Line().Add($"Act {map.ActIndex + 1}", Theme.Gold);
+        if (map.BossEncounterId is { } bossId)
+        {
+            header.Dim("  ").Add("Boss: ", Theme.Red).Add(Localizer.EncounterName(bossId), Theme.Fg);
+            if (map.SecondBossEncounterId is { } secondBossId)
+            {
+                header.Dim(" + ").Add(Localizer.EncounterName(secondBossId), Theme.Fg);
+            }
+        }
+        lines.Add(header);
 
         int maxCol = map.Points.Max(p => p.Coord.Col);
         int maxRow = map.Points.Max(p => p.Coord.Row);

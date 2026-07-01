@@ -108,6 +108,11 @@ public static class Localizer
     public static string MonsterName(string id) =>
         Monsters.TryGetValue(id, out MonsterModel? m) ? Name(m.Title, id) : id;
 
+    // ---- Encounters (boss / combat names) --------------------------------------
+
+    public static string EncounterName(string id) =>
+        Encounters.TryGetValue(id, out EncounterModel? e) ? Name(e.Title, id) : id;
+
     // ---- Events ----------------------------------------------------------------
 
     public static string EventName(string id) =>
@@ -225,12 +230,14 @@ public static class Localizer
     private static Dictionary<string, EventModel>? _events;
 
     private static Dictionary<string, MonsterModel>? _monsters;
+    private static Dictionary<string, EncounterModel>? _encounters;
 
     private static Dictionary<string, CardModel> Cards => _cards ??= Index(ModelDb.AllCards);
     private static Dictionary<string, RelicModel> Relics => _relics ??= Index(ModelDb.AllRelics);
     private static Dictionary<string, PotionModel> Potions => _potions ??= Index(ModelDb.AllPotions);
     private static Dictionary<string, PowerModel> Powers => _powers ??= Index(ModelDb.AllPowers);
     private static Dictionary<string, MonsterModel> Monsters => _monsters ??= Index(ModelDb.Monsters);
+    private static Dictionary<string, EncounterModel> Encounters => _encounters ??= Index(ModelDb.AllEncounters);
 
     private static Dictionary<string, EventModel> Events =>
         _events ??= Index(ModelDb.AllEvents.Concat(ModelDb.AllAncients.Cast<EventModel>()));

@@ -510,6 +510,12 @@ public sealed record MapView
 
     /// <summary>The coordinates the player may move to next (room choices).</summary>
     public required IReadOnlyList<Coord> Reachable { get; init; }
+
+    /// <summary>The id of the act's boss encounter (names the boss node); null if unknown.</summary>
+    public string? BossEncounterId { get; init; }
+
+    /// <summary>The id of the act's second boss encounter in double-boss mode; null otherwise.</summary>
+    public string? SecondBossEncounterId { get; init; }
 }
 
 /// <summary>One point (room) on the map graph.</summary>

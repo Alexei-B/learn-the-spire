@@ -500,7 +500,17 @@ internal static class GameStateProjection
             return null;
         }
 
-        var points = map.GetAllMapPoints()
+        // The boss node(s) live outside the Grid (they are separate ActMap properties), so
+        // GetAllMapPoints() omits them. Append them so the map shows the boss room at the top,
+        // wired up by the existing connectors (the top grid row already lists the boss as a child).
+        var mapPoints = map.GetAllMapPoints().ToList();
+        mapPoints.Add(map.BossMapPoint);
+        if (map.SecondBossMapPoint is { } secondBoss)
+        {
+            mapPoints.Add(secondBoss);
+        }
+
+        var points = mapPoints
             .Select(p => new MapPointView
             {
                 Coord = Coord.From(p.coord),
@@ -509,12 +519,15 @@ internal static class GameStateProjection
             })
             .ToList();
 
+        ActModel act = run.Act;
         return new MapView
         {
             ActIndex = run.CurrentActIndex,
             CurrentCoord = run.CurrentMapCoord is { } cc ? Coord.From(cc) : null,
             Points = points,
             Reachable = ReachablePoints(run).Select(p => Coord.From(p.coord)).ToList(),
+            BossEncounterId = act.BossEncounter?.Id.Entry,
+            SecondBossEncounterId = act.SecondBossEncounter?.Id.Entry,
         };
     }
 
