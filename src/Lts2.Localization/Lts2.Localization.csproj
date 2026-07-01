@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- TargetFramework (net9.0) / Nullable / LangVersion from Directory.Build.props. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Needs the GodotSharp shim (game types reference it transitively). -->
+  <ItemGroup>
+    <ProjectReference Include="..\Lts2.GodotShim\Lts2.GodotShim.csproj" />
+  </ItemGroup>
+
+  <!-- The game assemblies (LocManager / ModelDb / CardModel / …). -->
+  <ItemGroup>
+    <Reference Include="$(GameLibDir)\*.dll">
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Package the extracted localization tables so any consumer gets them placed at the shim's
+       res:// root (<output>/res/localization/...), where the game's LocManager loads them. The
+       files are gitignored game content (run scripts/extract-localization.ps1); if absent this
+       glob matches nothing and the library degrades to returning model ids. -->
+  <ItemGroup>
+    <Content Include="$(GameLibDir)\localization\**\*">
+      <Link>res\localization\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

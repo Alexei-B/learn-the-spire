@@ -76,14 +76,14 @@ to the graphical engine.
 
 ```
 src/
-  Sts2.GodotShim/         # managed replacement for GodotSharp (Godot namespace)
-  Sts2.Harness/           # the emulator library (public API) — the deliverable
+  Lts2.GodotShim/         # managed replacement for GodotSharp (Godot namespace)
+  Lts2.Harness/           # the emulator library (public API) — the deliverable
 tests/
-  Sts2.Harness.Tests/     # xUnit: unit + seeded end-to-end property-style tests
+  Lts2.Harness.Tests/     # xUnit: unit + seeded end-to-end property-style tests
 refsrc/  lib/             # gitignored
 ```
 
-`Sts2.Harness` references `lib/sts2.dll` + game deps + `Sts2.GodotShim` (assembly name
+`Lts2.Harness` references `lib/sts2.dll` + game deps + `Lts2.GodotShim` (assembly name
 `GodotSharp`, exposing the `Godot` namespace) so sts2's `Godot` references bind to the shim.
 Target **net9.0** (sts2 targets net9.0 / references .NET 9 corelib).
 
@@ -94,7 +94,7 @@ Target **net9.0** (sts2 targets net9.0 / references .NET 9 corelib).
 Boot headless → play one full combat → take a card reward → move on the map, all through
 the public API, deterministically, with getters and a seeded E2E test.
 
-### 1. `Sts2.GodotShim` — minimal `GodotSharp` replacement
+### 1. `Lts2.GodotShim` — minimal `GodotSharp` replacement
 - Build the shim **surface-driven by `refsrc/GodotSharp` + load/runtime errors**, not by
   guessing. Implement just what sts2 binds against:
   - `Godot.GodotObject`, `Node`, `Control`, `RefCounted`, `Resource`, `SceneTree`,
@@ -108,7 +108,7 @@ the public API, deterministically, with getters and a seeded E2E test.
 - Acceptance: `sts2.dll` loads against the shim and core logic types (`RunState`,
   `CombatManager`, `CardModel`, …) construct and static-init without throwing.
 
-### 2. `Sts2.Harness` — headless bootstrap (`GameHost`)
+### 2. `Lts2.Harness` — headless bootstrap (`GameHost`)
 - Activate automation flags: `NonInteractiveMode` on, `AutoSlayer.IsActive`/FastMode
   equivalents, `SaveManager.MockInstanceForTesting(...)`, disable FTUE/saving.
 - Apply **Harmony patches** to no-op the small set of hard UI/transition/animation
@@ -127,7 +127,7 @@ the public API, deterministically, with getters and a seeded E2E test.
   choice, or combat/room resolved) before returning. This is the central engine-control
   primitive.
 
-### 3. Public API (`Sts2.Harness` — the three deliverables)
+### 3. Public API (`Lts2.Harness` — the three deliverables)
 - `GameState` getters (read-only projection over live logic objects; no mutation):
   phase (Map/Combat/Event/Shop/Reward/Rest/GameOver), players (status/deck/relics/potions/
   money), combat (hand/draw/discard/exhaust/play, enemies + intents, block/HP/powers,
@@ -149,7 +149,7 @@ the public API, deterministically, with getters and a seeded E2E test.
   when the engine requests a decision, surfaces it through `ListOptions` and waits for the
   next `Apply`. This unifies mid-combat discover/select choices with top-level room choices.
 
-### 4. Tests (`Sts2.Harness.Tests`, xUnit)
+### 4. Tests (`Lts2.Harness.Tests`, xUnit)
 - Unit: shim sanity (sts2 loads/constructs), `GameState` getters on a known seeded state,
   `ListOptions` correctness for a constructed combat, RNG determinism (same seed →
   identical derived streams / identical `ToSerializable()`).

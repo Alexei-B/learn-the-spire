@@ -11,8 +11,8 @@ fast and deterministically from a seed. Intended foundation for future AI-agent 
 of scope here). Target: `net9.0`, SDK pinned by `global.json`.
 
 The authoritative design/plan docs live in `docs/`:
-- `docs/design/Sts2.Harness.md` — architecture map (read this first).
-- `docs/plans/Sts2.Harness — Roadmap.md` — milestones M0–M8 with per-item status.
+- `docs/design/Lts2.Harness.md` — architecture map (read this first).
+- `docs/plans/Lts2.Harness — Roadmap.md` — milestones M0–M8 with per-item status.
 - `docs/plans/STS 2 Headless Emulator.md` — the original plan and research findings.
 
 When picking up work, the "next task" is the next unchecked item in the roadmap.
@@ -21,8 +21,8 @@ When picking up work, the "next task" is the next unchecked item in the roadmap.
 
 Follow this loop for each task (it is how the existing milestones were built):
 
-1. **Read the docs first.** Start from `docs/plans/Sts2.Harness — Roadmap.md` to pick the next
-   task and `docs/design/Sts2.Harness.md` for the architecture. Before writing harness code
+1. **Read the docs first.** Start from `docs/plans/Lts2.Harness — Roadmap.md` to pick the next
+   task and `docs/design/Lts2.Harness.md` for the architecture. Before writing harness code
    against game internals, **grep `refsrc/`** (and `sts2.xml`) to confirm the exact
    types/members/call sites — never guess the game's API.
 2. **Implement one coherent, shippable slice** of the next milestone item. Grow the GodotSharp
@@ -41,10 +41,10 @@ Follow this loop for each task (it is how the existing milestones were built):
 Two directories are **gitignored and must exist locally** (they hold copyrighted game content
 and a large decompile — never commit them):
 
-- `lib/` — copies of the game's binaries that `Sts2.Harness` references: `sts2.dll`,
+- `lib/` — copies of the game's binaries that `Lts2.Harness` references: `sts2.dll`,
   `0Harmony.dll`, and the non-Godot deps sts2 needs (`MonoMod.*`, `SmartFormat*`,
   `System.IO.Hashing`, `JetBrains.Annotations`, …). **`GodotSharp.dll` is intentionally NOT
-  here** — the shim replaces it. `Sts2.Harness.csproj` references `lib/*.dll`.
+  here** — the shim replaces it. `Lts2.Harness.csproj` references `lib/*.dll`.
 - `refsrc/` — full ILSpy decompile of `sts2.dll` and the real `GodotSharp.dll`, for reference
   only (not compiled). **This is the primary tool for understanding game internals** — grep it
   to find types/members/call sites before writing harness code. The game also ships `sts2.xml`
@@ -72,7 +72,7 @@ to tear down any prior run first.
 
 ## Architecture (3 projects)
 
-- **`src/Sts2.GodotShim`** builds an assembly literally named **`GodotSharp`** (v4.5.1.0,
+- **`src/Lts2.GodotShim`** builds an assembly literally named **`GodotSharp`** (v4.5.1.0,
   unsigned, so sts2 binds to it by simple name) — a managed **replacement** for the real
   GodotSharp. Two kinds of content: pure value types copied verbatim from `refsrc/GodotSharp`
   (their native `NativeFuncs.godotsharp_*` calls route to a **throwing** `NativeFuncs` stub —
@@ -81,7 +81,7 @@ to tear down any prior run first.
   real JIT/load errors** — never instantiate a real game Node, so the source-generator
   marshalling contract is intentionally absent. Workflow to extend it: run a test, read the
   `TypeLoad`/`MissingMethod`, add just that member, repeat.
-- **`src/Sts2.Harness`** — the deliverable library. Key files:
+- **`src/Lts2.Harness`** — the deliverable library. Key files:
   - `GameRuntime.cs` — one-time, process-wide headless boot. Mirrors the *logic* half of the
     game's `OneTimeInitialization` (TestMode, NonInteractiveMode, mock saves, `ModelDb.Init`,
     …), skipping all atlas/UI/ResourceLoader steps. See the ordered sequence in the file.
@@ -94,7 +94,7 @@ to tear down any prior run first.
   - `GameOption.cs` — the uniform option type (`PlayCard`/`EndTurn`/`MoveTo`/`SelectCards`);
     carries a serializable description plus internal live refs used by `Apply`.
   - `HarnessCardSelector.cs` — choice-context injection (see below).
-- **`tests/Sts2.Harness.Tests`** — xUnit. Tests drive faithful end-to-end flows from a seed.
+- **`tests/Lts2.Harness.Tests`** — xUnit. Tests drive faithful end-to-end flows from a seed.
 
 ## Key mechanisms (the parts that need multiple files to understand)
 

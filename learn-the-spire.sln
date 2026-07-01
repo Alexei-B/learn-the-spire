@@ -5,15 +5,15 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2.GodotShim", "src\Sts2.GodotShim\Sts2.GodotShim.csproj", "{A9F61784-63C9-4133-9EB4-0E56B8D196E5}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lts2.GodotShim", "src\Lts2.GodotShim\Lts2.GodotShim.csproj", "{A9F61784-63C9-4133-9EB4-0E56B8D196E5}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2.Harness", "src\Sts2.Harness\Sts2.Harness.csproj", "{C5007794-161C-4CEF-A6D5-8C6F1782945A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lts2.Harness", "src\Lts2.Harness\Lts2.Harness.csproj", "{C5007794-161C-4CEF-A6D5-8C6F1782945A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2.Harness.Tests", "tests\Sts2.Harness.Tests\Sts2.Harness.Tests.csproj", "{B923718D-905C-43A9-8582-D05DC2F20005}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lts2.Harness.Tests", "tests\Lts2.Harness.Tests\Lts2.Harness.Tests.csproj", "{B923718D-905C-43A9-8582-D05DC2F20005}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2.Tui", "src\Sts2.Tui\Sts2.Tui.csproj", "{9870C681-6BC6-4AFA-BA52-224DEAEC56BD}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lts2.Tui", "src\Lts2.Tui\Lts2.Tui.csproj", "{9870C681-6BC6-4AFA-BA52-224DEAEC56BD}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2.Localization", "src\Sts2.Localization\Sts2.Localization.csproj", "{15D4595E-D214-44F0-95FF-85BBA015C155}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lts2.Localization", "src\Lts2.Localization\Lts2.Localization.csproj", "{15D4595E-D214-44F0-95FF-85BBA015C155}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

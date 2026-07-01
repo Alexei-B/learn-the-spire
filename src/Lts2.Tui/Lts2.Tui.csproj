@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- TargetFramework (net9.0) / Nullable / LangVersion come from Directory.Build.props.
+         Terminal.Gui v2 (2.0.0) targets net8.0, which net9 consumes — no net10 needed. -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RollForward>LatestMinor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Terminal.Gui" Version="2.0.0" />
+  </ItemGroup>
+
+  <!-- The harness library (which transitively brings in the GodotSharp shim), and the opt-in
+       localization library (packages the extracted loc tables + name/description helpers). -->
+  <ItemGroup>
+    <ProjectReference Include="..\Lts2.Harness\Lts2.Harness.csproj" />
+    <ProjectReference Include="..\Lts2.Localization\Lts2.Localization.csproj" />
+  </ItemGroup>
+
+  <!-- The TUI calls game-logic types directly (ModelDb/CharacterModel for character select),
+       and the game assemblies must land next to our output so sts2 loads at runtime. Plain
+       <Reference> items are not transitive, so reference lib/ here as the tests do. -->
+  <ItemGroup>
+    <Reference Include="$(GameLibDir)\*.dll">
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

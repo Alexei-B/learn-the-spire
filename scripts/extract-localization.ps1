@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Extract the English localization tables from Slay the Spire 2's .pck into lib/localization/,
-  so the Sts2.Localization library can feed real names/descriptions to the game's loc system.
+  so the Lts2.Localization library can feed real names/descriptions to the game's loc system.
 
 .DESCRIPTION
   The loc tables (res://localization/eng/*.json — plain JSON key→text dicts) live only inside the
