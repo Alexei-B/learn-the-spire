@@ -506,14 +506,24 @@ internal static class GameStateProjection
             return null;
         }
 
-        // The boss node(s) live outside the Grid (they are separate ActMap properties), so
-        // GetAllMapPoints() omits them. Append them so the map shows the boss room at the top,
-        // wired up by the existing connectors (the top grid row already lists the boss as a child).
+        // The starting node and the boss node(s) live outside the Grid (they are separate ActMap
+        // properties), so GetAllMapPoints() omits them. Append them — deduping by coord — so the map
+        // shows the act's opening Ancient at the bottom and the boss room at the top, wired up by the
+        // existing connectors (the starting node lists row 1 as children; the top grid row lists the boss).
         var mapPoints = map.GetAllMapPoints().ToList();
-        mapPoints.Add(map.BossMapPoint);
+        var seen = mapPoints.Select(p => p.coord).ToHashSet();
+        void AddPoint(MapPoint p)
+        {
+            if (seen.Add(p.coord))
+            {
+                mapPoints.Add(p);
+            }
+        }
+        AddPoint(map.StartingMapPoint);
+        AddPoint(map.BossMapPoint);
         if (map.SecondBossMapPoint is { } secondBoss)
         {
-            mapPoints.Add(secondBoss);
+            AddPoint(secondBoss);
         }
 
         var points = mapPoints
@@ -538,8 +548,12 @@ internal static class GameStateProjection
     }
 
     /// <summary>
-    /// The map points the player may move to next: children of the current point, or the
-    /// act's starting points when no point has been entered yet. Mirrors the in-game rule.
+    /// The map points the player may move to next: the children of the current point, or — at the
+    /// very start of an act, before any room has been entered — the act's starting node itself.
+    /// Mirrors <c>NMapScreen.RecalculateTravelability</c>: with nothing visited yet, only the starting
+    /// node (which is each act's opening Ancient — Neow in Act 1) is travelable, so the act's ancient
+    /// reward is always the first stop. <see cref="RunState.CurrentMapPoint"/> is null exactly when
+    /// nothing has been visited this act (it derives from the visited coords).
     /// </summary>
     internal static IEnumerable<MapPoint> ReachablePoints(RunState run)
     {
@@ -550,7 +564,7 @@ internal static class GameStateProjection
         MapPoint? current = run.CurrentMapPoint;
         IEnumerable<MapPoint> next = current is not null
             ? current.Children
-            : run.Map.StartingMapPoint.Children;
+            : new[] { run.Map.StartingMapPoint };
         return next.OrderBy(p => p.coord.col);
     }
 }
