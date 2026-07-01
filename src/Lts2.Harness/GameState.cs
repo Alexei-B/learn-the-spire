@@ -433,11 +433,31 @@ public sealed record PlayerCombatView
     public required IReadOnlyList<PowerView> Powers { get; init; }
 
     /// <summary>
+    /// The Defect's channeled orbs, oldest first (the Regent/others gain these only via cross-character
+    /// cards). Empty when the player has no orb slots. <see cref="OrbSlots"/> is the total capacity, so
+    /// the UI can draw the empty slots too.
+    /// </summary>
+    public IReadOnlyList<OrbView> Orbs { get; init; } = System.Array.Empty<OrbView>();
+    public int OrbSlots { get; init; }
+
+    /// <summary>
     /// The Necrobinder's Osty pet, when it is present in this combat (null for other characters, or
     /// before Osty is summoned). Stays non-null but <see cref="OstyView.IsAlive"/>=false once Osty
     /// has died this combat.
     /// </summary>
     public OstyView? Osty { get; init; }
+}
+
+/// <summary>One channeled orb in the Defect's orb queue.</summary>
+public sealed record OrbView
+{
+    public required string OrbId { get; init; }
+
+    /// <summary>The orb's passive (per-turn) value — e.g. Lightning damage, Frost block, Plasma energy.</summary>
+    public required int PassiveValue { get; init; }
+
+    /// <summary>The orb's evoke value — for a Dark orb this is its accumulated charge.</summary>
+    public required int EvokeValue { get; init; }
 }
 
 /// <summary>The Necrobinder's Osty pet creature (a combat-only ally with its own HP/block).</summary>
@@ -479,6 +499,10 @@ public sealed record CardView
     /// </summary>
     public int? Block { get; init; }
     public int? BaseBlock { get; init; }
+
+    /// <summary>The card's star cost (the Regent's second resource), or 0/negative for cards that
+    /// don't cost stars. The UI shows a ★ badge only when this is positive.</summary>
+    public int StarCost { get; init; }
 }
 
 /// <summary>A power (buff/debuff) on a creature, with its current stack amount.</summary>

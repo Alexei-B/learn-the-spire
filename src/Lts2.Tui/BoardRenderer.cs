@@ -146,8 +146,15 @@ internal static class BoardRenderer
             }
             var info = new List<Seg> { new(" Energy ", Theme.Dim) };
             info.AddRange(Markup.EnergyCircles(cs.Energy, cs.MaxEnergy));
+            // The Regent's star power sits between energy and hand size; hidden at 0.
+            if (cs.Stars > 0)
+            {
+                info.Add(new Seg($"  ★{cs.Stars}", Theme.Gold));
+            }
             info.Add(new Seg($"  Hand {cs.Hand.Count}", Theme.Dim));
-            left.AddRange(CreatureBox(p.Character, p.CurrentHp, p.MaxHp, p.Block, cs.Powers, info, colW));
+            // The Defect's orb slots (if any) render as their own line below energy/hand, before powers.
+            IReadOnlyList<Seg>? orbInfo = cs.OrbSlots > 0 ? OrbSegs(cs) : null;
+            left.AddRange(CreatureBox(p.Character, p.CurrentHp, p.MaxHp, p.Block, cs.Powers, info, colW, orbInfo));
             left.Add(new Line());
             if (cs.Osty is { IsAlive: true } osty)
             {
@@ -201,7 +208,8 @@ internal static class BoardRenderer
     /// is red normally, green if it would die to poison this turn, purple if to doom, grey if it has block.
     /// </summary>
     private static List<Line> CreatureBox(
-        string name, int cur, int max, int block, IReadOnlyList<PowerView> powers, IReadOnlyList<Seg>? info, int w)
+        string name, int cur, int max, int block, IReadOnlyList<PowerView> powers, IReadOnlyList<Seg>? info, int w,
+        IReadOnlyList<Seg>? orbInfo = null)
     {
         int poison = PowerAmount(powers, "POISON_POWER");
         int doom = PowerAmount(powers, "DOOM_POWER");
@@ -228,6 +236,10 @@ internal static class BoardRenderer
         {
             lines.Add(BoxLine(new List<Seg>(info), inner, border));
         }
+        if (orbInfo is { Count: > 0 })
+        {
+            lines.Add(BoxLine(new List<Seg>(orbInfo), inner, border));
+        }
         if (powers.Count > 0)
         {
             lines.Add(BoxLine(new List<Seg> { new(" " + PowerText(powers), Theme.Dim) }, inner, border));
@@ -235,6 +247,45 @@ internal static class BoardRenderer
         lines.Add(new Line().Add("└" + new string('─', inner) + "┘", border));
         return lines;
     }
+
+    // The orb queue as a single info line: each filled slot shows the orb's name and its key number
+    // (Lightning/Frost/Plasma/Glass show the per-turn passive value; a Dark orb shows its accumulated
+    // charge), empty slots show a dot. Coloured per orb type.
+    private static List<Seg> OrbSegs(PlayerCombatView cs)
+    {
+        var segs = new List<Seg> { new(" Orbs ", Theme.Dim) };
+        for (int i = 0; i < cs.OrbSlots; i++)
+        {
+            segs.Add(new Seg(i == 0 ? "" : " ", Theme.Fg));
+            if (i < cs.Orbs.Count)
+            {
+                OrbView o = cs.Orbs[i];
+                int n = o.OrbId == "DARK_ORB" ? o.EvokeValue : o.PassiveValue;
+                segs.Add(new Seg($"{OrbName(o.OrbId)} {n}", OrbColor(o.OrbId)));
+            }
+            else
+            {
+                segs.Add(new Seg("·", Theme.Dim));
+            }
+        }
+        return segs;
+    }
+
+    private static string OrbName(string id)
+    {
+        string s = id.EndsWith("_ORB", StringComparison.Ordinal) ? id[..^4] : id;
+        return System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(s.Replace('_', ' ').ToLowerInvariant());
+    }
+
+    private static Color OrbColor(string id) => id switch
+    {
+        "LIGHTNING_ORB" => Theme.Gold,
+        "FROST_ORB" => Theme.Blue,
+        "DARK_ORB" => Theme.Magenta,
+        "PLASMA_ORB" => Theme.Teal,
+        "GLASS_ORB" => Theme.LightGrey,
+        _ => Theme.Fg,
+    };
 
     // A health bar: red current HP, purple the doom threshold, green the HP poison will remove this
     // turn, and dark for already-lost HP.
@@ -335,9 +386,14 @@ internal static class BoardRenderer
     /// </summary>
     private static void AppendEffectSegs(List<Seg> segs, CardView c)
     {
+        // The Regent's star cost (a second resource paid alongside energy); shown only when positive.
+        if (c.StarCost > 0)
+        {
+            segs.Add(new Seg($"  ★{c.StarCost}", Theme.Gold));
+        }
         if (c.Damage is { } dmg && c.BaseDamage is { } bd)
         {
-            segs.Add(new Seg("  ⚔", Theme.Dim));
+            segs.Add(new Seg(" dmg", Theme.Dim));
             segs.Add(new Seg(dmg.ToString(), DeltaColor(dmg, bd)));
         }
         if (c.Block is { } blk && c.BaseBlock is { } bb)

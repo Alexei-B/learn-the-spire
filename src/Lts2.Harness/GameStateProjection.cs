@@ -127,7 +127,17 @@ internal static class GameStateProjection
             DiscardPile = pcs.DiscardPile.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
             ExhaustPile = pcs.ExhaustPile.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
             Powers = player.Creature.Powers.Select(ProjectPower).ToList(),
+            Orbs = pcs.OrbQueue.Orbs.Select(ProjectOrb).ToList(),
+            OrbSlots = pcs.OrbQueue.Capacity,
             Osty = player.Osty is { } osty ? ProjectOsty(osty) : null,
+        };
+
+    private static OrbView ProjectOrb(MegaCrit.Sts2.Core.Models.OrbModel orb) =>
+        new()
+        {
+            OrbId = orb.Id.Entry,
+            PassiveValue = (int)orb.PassiveVal,
+            EvokeValue = (int)orb.EvokeVal,
         };
 
     private static OstyView ProjectOsty(Creature osty) =>
@@ -161,7 +171,22 @@ internal static class GameStateProjection
             BaseDamage = baseDmg,
             Block = block,
             BaseBlock = baseBlock,
+            StarCost = StarCostOf(card),
         };
+    }
+
+    /// <summary>The card's star cost (Regent's second resource), or -1 for cards that don't use stars.
+    /// Guarded because the X-star path dereferences the owner's combat state.</summary>
+    private static int StarCostOf(CardModel card)
+    {
+        try
+        {
+            return card.GetStarCostWithModifiers();
+        }
+        catch
+        {
+            return card.CanonicalStarCost;
+        }
     }
 
     /// <summary>
