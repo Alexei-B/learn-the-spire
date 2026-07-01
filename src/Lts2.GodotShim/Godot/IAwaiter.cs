@@ -4,13 +4,14 @@ namespace Godot;
 
 public interface IAwaiter : INotifyCompletion
 {
-	bool IsCompleted { get; }
+    bool IsCompleted { get; }
 
-	void GetResult();
+    void GetResult();
 }
+
 public interface IAwaiter<out TResult> : INotifyCompletion
 {
-	bool IsCompleted { get; }
+    bool IsCompleted { get; }
 
-	TResult GetResult();
+    TResult GetResult();
 }

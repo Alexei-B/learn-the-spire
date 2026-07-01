@@ -105,9 +105,9 @@ None of the game code or assets are distributed within this repository.
 This project isn't affiliated with Mega Crit Games in any way.
 
 [Godot](https://godotengine.org/) is supported by the [Godot Foundation](https://godot.foundation/).
-This repo contains a shim based on decompiled godot code, which for technical reasons shares the same binary name as
-the library `GodotSharp` - this is purely functional, it is not intended to be used in place of the real library, nor
-should it be confused for that real library.
+This repo contains a shim with an API written to match the API discovered by decompiling Godot code. for technical
+reasons shares the same binary name as the library `GodotSharp` - this is purely functional, it is not intended to be
+used in place of the real library, nor should it be confused for that real library.
 For more information, see the [Godot License](https://github.com/godotengine/godot/blob/master/LICENSE.txt).
 
 This is distributed under the unlicense. See [LICENSE](./LICENSE) for details, but basically just do whatever you want.

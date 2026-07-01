@@ -74,13 +74,18 @@ to tear down any prior run first.
 
 - **`src/Lts2.GodotShim`** builds an assembly literally named **`GodotSharp`** (v4.5.1.0,
   unsigned, so sts2 binds to it by simple name) — a managed **replacement** for the real
-  GodotSharp. Two kinds of content: pure value types copied verbatim from `refsrc/GodotSharp`
-  (their native `NativeFuncs.godotsharp_*` calls route to a **throwing** `NativeFuncs` stub —
-  a clean exception instead of an uncatchable AccessViolation), and inert hand-written facades
-  for engine services (`GD`, `OS`, `FileAccess`, node hierarchy, …). **Grown empirically from
-  real JIT/load errors** — never instantiate a real game Node, so the source-generator
-  marshalling contract is intentionally absent. Workflow to extend it: run a test, read the
-  `TypeLoad`/`MissingMethod`, add just that member, repeat.
+  GodotSharp. Two kinds of content: pure value types (`Vector2/3`, `Vector2I`, `Rect2/I`,
+  `Color`, `Colors`, `Mathf`, …) that are **clean-room reimplementations** written from a
+  functional spec — they mirror GodotSharp's public API (so sts2's compiled call sites bind)
+  but contain none of its code; they are owned by this repo under its own license. (Their
+  native `NativeFuncs.godotsharp_*` calls route to a **throwing** `NativeFuncs` stub — a clean
+  exception instead of an uncatchable AccessViolation.) The second kind is inert hand-written
+  facades for engine services (`GD`, `OS`, `FileAccess`, node hierarchy, …). **Grown
+  empirically from real JIT/load errors** — never instantiate a real game Node, so the
+  source-generator marshalling contract is intentionally absent. Workflow to extend it: run a
+  test, read the `TypeLoad`/`MissingMethod`, add just that member, repeat. When a value type
+  needs a new member, add it as your own clean implementation of the documented API — never
+  paste decompiled Godot code.
 - **`src/Lts2.Harness`** — the deliverable library. Key files:
   - `GameRuntime.cs` — one-time, process-wide headless boot. Mirrors the *logic* half of the
     game's `OneTimeInitialization` (TestMode, NonInteractiveMode, mock saves, `ModelDb.Init`,
@@ -125,7 +130,9 @@ to tear down any prior run first.
 - Match surrounding style. `ImplicitUsings` is **disabled** — add explicit `using`s. Files use
   file-scoped namespaces and target the latest C# language version.
 - Grow the GodotSharp shim only as real load/JIT errors demand it; keep its behavior
-  inert/managed-only and copy value types faithfully from `refsrc`.
+  inert/managed-only. For value types, reimplement the documented API in your own code — you
+  may read `refsrc` to learn the required *surface/semantics*, but never paste its code into
+  the shim (the shim must stay free of copied Godot source).
 - Keep tests seeded and deterministic; assert invariants (HP/energy/pile sanity).
 - Git commit messages end with the trailer `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
   Never commit anything under `lib/` or `refsrc/`.

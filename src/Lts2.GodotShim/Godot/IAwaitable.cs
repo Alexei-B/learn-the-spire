@@ -2,9 +2,10 @@ namespace Godot;
 
 public interface IAwaitable
 {
-	IAwaiter GetAwaiter();
+    IAwaiter GetAwaiter();
 }
+
 public interface IAwaitable<out TResult>
 {
-	IAwaiter<TResult> GetAwaiter();
+    IAwaiter<TResult> GetAwaiter();
 }
