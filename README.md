@@ -34,7 +34,7 @@ game's own DLLs into a local, gitignored `lib/` folder. From scratch:
 ### 2. Clone
 
 ```powershell
-git clone <this-repo-url> learn-the-spire
+git clone https://github.com/Alexei-B/learn-the-spire
 cd learn-the-spire
 ```
 
@@ -65,8 +65,8 @@ descriptions. To get the real text, extract the English localization tables from
 [GDRE Tools](https://github.com/GDRETools/gdsdecomp):
 
 ```powershell
-winget install GDRETools.gdsdecomp          # one-time install of the extractor
-pwsh scripts/extract-localization.ps1        # writes lib/localization/ (gitignored)
+winget install GDRETools.gdsdecomp    # one-time install of the extractor
+pwsh scripts/extract-localization.ps1 # writes lib/localization/
 ```
 
 The script auto-detects the Steam `.pck` and the winget-installed `gdre_tools.exe`; if yours are elsewhere,
