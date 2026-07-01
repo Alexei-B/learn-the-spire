@@ -902,19 +902,22 @@ public sealed class GameHost
                 {
                     continue;
                 }
-                CardView view = GameStateProjection.ProjectCard(card, canPlay: true);
                 if (card.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
                 {
                     foreach (MegaCrit.Sts2.Core.Entities.Creatures.Creature enemy in combat.HittableEnemies)
                     {
                         if (card.IsValidTarget(enemy))
                         {
-                            options.Add(GameOption.PlayCardOption(player, card, view, enemy));
+                            // Project per target so the option shows the actual damage to that enemy
+                            // (its Vulnerable/Intangible/etc. folded in).
+                            CardView targetedView = GameStateProjection.ProjectCard(card, canPlay: true, target: enemy);
+                            options.Add(GameOption.PlayCardOption(player, card, targetedView, enemy));
                         }
                     }
                 }
                 else
                 {
+                    CardView view = GameStateProjection.ProjectCard(card, canPlay: true);
                     options.Add(GameOption.PlayCardOption(player, card, view, target: null));
                 }
             }

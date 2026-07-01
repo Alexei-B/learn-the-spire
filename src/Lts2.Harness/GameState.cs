@@ -463,6 +463,22 @@ public sealed record CardView
 
     /// <summary>True only in combat, when the card is currently legal to play.</summary>
     public required bool CanPlay { get; init; }
+
+    /// <summary>
+    /// In combat, the card's actual per-hit attack damage after all modifiers (self powers like
+    /// Strength/Weak/Vigor and, when projected against a specific target, that target's
+    /// Vulnerable/Intangible/etc.), with <see cref="BaseDamage"/> the unmodified printed value.
+    /// Null for non-attacks or outside combat. Compare the two to colour it (more = buffed, less = weakened).
+    /// </summary>
+    public int? Damage { get; init; }
+    public int? BaseDamage { get; init; }
+
+    /// <summary>
+    /// In combat, the card's actual Block after modifiers (Frail/Dexterity/…), with
+    /// <see cref="BaseBlock"/> the unmodified printed value. Null for cards that grant no block.
+    /// </summary>
+    public int? Block { get; init; }
+    public int? BaseBlock { get; init; }
 }
 
 /// <summary>A power (buff/debuff) on a creature, with its current stack amount.</summary>
@@ -498,8 +514,13 @@ public sealed record IntentView
 {
     public required IntentType Type { get; init; }
 
-    /// <summary>Damage per hit for attack intents; null otherwise.</summary>
+    /// <summary>Damage per hit for attack intents, after modifiers (enemy Strength/Weak and the
+    /// defending player's Vulnerable/etc.); null otherwise.</summary>
     public int? Damage { get; init; }
+
+    /// <summary>The unmodified per-hit damage, so the UI can colour <see cref="Damage"/> when it
+    /// differs (more than base = amplified, less = reduced); null otherwise.</summary>
+    public int? BaseDamage { get; init; }
 
     /// <summary>Number of hits for attack intents; null otherwise.</summary>
     public int? Hits { get; init; }

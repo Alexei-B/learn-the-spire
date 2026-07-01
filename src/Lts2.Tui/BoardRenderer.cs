@@ -160,7 +160,8 @@ internal static class BoardRenderer
         foreach (EnemyView e in combat.Enemies)
         {
             string name = $"#{e.CombatId} {Localizer.MonsterName(e.MonsterId)}";
-            var info = new List<Seg> { new(" Intent: ", Theme.Dim), new(IntentText(e), Theme.Red) };
+            var info = new List<Seg> { new(" Intent: ", Theme.Dim) };
+            info.AddRange(IntentSegs(e));
             right.AddRange(CreatureBox(name, e.CurrentHp, e.MaxHp, e.Block, e.Powers, info, colW));
             right.Add(new Line());
         }
@@ -324,6 +325,29 @@ internal static class BoardRenderer
 
     private static string CardName(CardView c) => Localizer.CardName(c.CardId) + (c.Upgraded ? "+" : "");
 
+    /// <summary>Green when buffed above the printed value, red when weakened below it, neutral when equal.</summary>
+    private static Color DeltaColor(int actual, int baseline) =>
+        actual > baseline ? Theme.Green : actual < baseline ? Theme.Red : Theme.Fg;
+
+    /// <summary>
+    /// The card's live attack/block preview (in combat): the actual number after all powers, coloured
+    /// green if it's more than the printed value, red if less. Appended to card labels and the hand.
+    /// </summary>
+    private static void AppendEffectSegs(List<Seg> segs, CardView c)
+    {
+        if (c.Damage is { } dmg && c.BaseDamage is { } bd)
+        {
+            segs.Add(new Seg("  ⚔", Theme.Dim));
+            segs.Add(new Seg(dmg.ToString(), DeltaColor(dmg, bd)));
+        }
+        if (c.Block is { } blk && c.BaseBlock is { } bb)
+        {
+            segs.Add(new Seg("  +", Theme.Dim));
+            segs.Add(new Seg(blk.ToString(), DeltaColor(blk, bb)));
+            segs.Add(new Seg(" blk", Theme.Dim));
+        }
+    }
+
     private static Line CardLine(CardView c)
     {
         var l = new Line();
@@ -332,6 +356,7 @@ internal static class BoardRenderer
         l.Add(cost.Text, cost.Fg);
         l.T(" ");
         l.Add(CardName(c), c.CanPlay ? Theme.Fg : Theme.Dim);
+        AppendEffectSegs(l, c);
         l.Dim($"  {c.Type}/{c.Rarity}");
         return l;
     }
@@ -349,22 +374,40 @@ internal static class BoardRenderer
         }
     }
 
-    private static string IntentText(EnemyView e)
+    // The enemy's telegraphed intent as coloured segments: attack damage is the actual incoming
+    // damage after modifiers (enemy Strength/Weak, the player's Vulnerable/…), coloured green when it's
+    // more than the base and red when less — same convention as the player's own attack previews.
+    private static List<Seg> IntentSegs(EnemyView e)
     {
-        var parts = new List<string>();
-        foreach (IntentView i in e.Intents)
+        var segs = new List<Seg>();
+        if (e.Intents.Count == 0)
         {
+            segs.Add(new Seg("?", Theme.Red));
+            return segs;
+        }
+        for (int idx = 0; idx < e.Intents.Count; idx++)
+        {
+            IntentView i = e.Intents[idx];
+            if (idx > 0)
+            {
+                segs.Add(new Seg(", ", Theme.Dim));
+            }
             if (i.Damage is { } dmg)
             {
-                int hits = i.Hits ?? 1;
-                parts.Add(hits > 1 ? $"{i.Type} {dmg}x{hits}" : $"{i.Type} {dmg}");
+                Color dc = i.BaseDamage is { } bd ? DeltaColor(dmg, bd) : Theme.Red;
+                segs.Add(new Seg($"{i.Type} ", Theme.Red));
+                segs.Add(new Seg(dmg.ToString(), dc));
+                if ((i.Hits ?? 1) > 1)
+                {
+                    segs.Add(new Seg($"x{i.Hits}", Theme.Red));
+                }
             }
             else
             {
-                parts.Add(i.Type.ToString());
+                segs.Add(new Seg(i.Type.ToString(), Theme.Red));
             }
         }
-        return parts.Count == 0 ? "?" : string.Join(", ", parts);
+        return segs;
     }
 
     private static string PowerText(IReadOnlyList<PowerView> powers) =>
@@ -846,6 +889,7 @@ internal static class BoardRenderer
         {
             segs.Add(new Seg($"  → #{id}", Theme.Dim));
         }
+        AppendEffectSegs(segs, c);
         return segs;
     }
 

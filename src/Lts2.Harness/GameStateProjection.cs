@@ -140,9 +140,11 @@ internal static class GameStateProjection
             Powers = osty.Powers.Select(ProjectPower).ToList(),
         };
 
-    internal static CardView ProjectCard(CardModel card, bool canPlay, bool? upgradedOverride = null)
+    internal static CardView ProjectCard(
+        CardModel card, bool canPlay, bool? upgradedOverride = null, Creature? target = null)
     {
         CostModifiers modifiers = card.IsInCombat ? CostModifiers.All : CostModifiers.None;
+        (int? dmg, int? baseDmg, int? block, int? baseBlock) = CardEffectPreview(card, target);
         return new CardView
         {
             CardId = card.Id.Entry,
@@ -155,7 +157,51 @@ internal static class GameStateProjection
             // the UI renders it with a "+" and the upgraded description.
             Upgraded = upgradedOverride ?? card.IsUpgraded,
             CanPlay = canPlay,
+            Damage = dmg,
+            BaseDamage = baseDmg,
+            Block = block,
+            BaseBlock = baseBlock,
         };
+    }
+
+    /// <summary>
+    /// The actual damage/block a card would produce right now, plus the unmodified base values (so the
+    /// UI can colour buffs green and debuffs red). Uses the game's own preview path
+    /// (<c>UpdateDynamicVarPreview</c> → <c>Hook.ModifyDamage/ModifyBlock</c>), which folds in the
+    /// attacker's powers (Strength/Weak/Vigor/Sovereign Blade/…) and, when a <paramref name="target"/>
+    /// is given, that defender's powers (Vulnerable/Intangible/…). Only meaningful for a hand card in
+    /// combat; returns nulls otherwise (or if the preview throws, as some cards compute lazily).
+    /// </summary>
+    private static (int? dmg, int? baseDmg, int? block, int? baseBlock) CardEffectPreview(
+        CardModel card, Creature? target)
+    {
+        if (!card.IsInCombat)
+        {
+            return (null, null, null, null);
+        }
+        try
+        {
+            card.UpdateDynamicVarPreview(
+                MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, target, card.DynamicVars);
+            int? dmg = null, baseDmg = null, block = null, baseBlock = null;
+            if (card.DynamicVars.ContainsKey("Damage"))
+            {
+                var d = card.DynamicVars.Damage;
+                dmg = Math.Max(0, (int)d.PreviewValue);
+                baseDmg = Math.Max(0, (int)d.BaseValue);
+            }
+            if (card.DynamicVars.ContainsKey("Block"))
+            {
+                var b = card.DynamicVars.Block;
+                block = Math.Max(0, (int)b.PreviewValue);
+                baseBlock = Math.Max(0, (int)b.BaseValue);
+            }
+            return (dmg, baseDmg, block, baseBlock);
+        }
+        catch
+        {
+            return (null, null, null, null);
+        }
     }
 
     private static PendingChoiceView ProjectPendingChoice(PendingChoice pending)
@@ -477,6 +523,7 @@ internal static class GameStateProjection
         foreach (AbstractIntent intent in enemy.Monster.NextMove.Intents)
         {
             int? damage = null;
+            int? baseDamage = null;
             int? hits = null;
             if (intent is AttackIntent attack)
             {
@@ -484,6 +531,12 @@ internal static class GameStateProjection
                 try
                 {
                     damage = attack.GetSingleDamage(combat.Allies, enemy);
+                    // The unmodified base (before the enemy's Strength/Weak and the player's
+                    // Vulnerable/etc.) so the UI can colour the difference.
+                    if (attack.DamageCalc is { } calc)
+                    {
+                        baseDamage = Math.Max(0, (int)calc());
+                    }
                     // Repeats is the total number of hits (SingleAttackIntent => 1,
                     // MultiAttackIntent => its repeat count; GetTotalDamage = single × Repeats).
                     hits = attack.Repeats;
@@ -493,7 +546,7 @@ internal static class GameStateProjection
                     // Some intents resolve damage lazily and may not be computable here.
                 }
             }
-            result.Add(new IntentView { Type = intent.IntentType, Damage = damage, Hits = hits });
+            result.Add(new IntentView { Type = intent.IntentType, Damage = damage, BaseDamage = baseDamage, Hits = hits });
         }
         return result;
     }
