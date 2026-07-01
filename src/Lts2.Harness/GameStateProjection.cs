@@ -172,7 +172,56 @@ internal static class GameStateProjection
             Block = block,
             BaseBlock = baseBlock,
             StarCost = StarCostOf(card),
+            EnchantmentId = card.Enchantment?.Id.Entry,
+            AfflictionId = card.Affliction?.Id.Entry,
+            ReplayCount = ReplayCountOf(card),
+            AddedKeywords = AddedKeywordsOf(card),
         };
+    }
+
+    /// <summary>The extra replay count granted by an enchantment/effect (0 for a plain card).</summary>
+    private static int ReplayCountOf(CardModel card)
+    {
+        try
+        {
+            return Math.Max(0, card.GetEnchantedReplayCount());
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Keywords on the card that aren't part of its printed form — i.e. granted by another card, relic,
+    /// or power (Transfigure's Retain, Hex's Ethereal, …). Its canonical keywords are excluded so only
+    /// the added modification shows. Single-turn Retain (e.g. Well-Laid Plans) is included too.
+    /// </summary>
+    private static IReadOnlyList<string> AddedKeywordsOf(CardModel card)
+    {
+        try
+        {
+            var canonical = card.CanonicalKeywords.ToHashSet();
+            var added = new List<string>();
+            foreach (MegaCrit.Sts2.Core.Entities.Cards.CardKeyword k in card.Keywords)
+            {
+                if (k != MegaCrit.Sts2.Core.Entities.Cards.CardKeyword.None && !canonical.Contains(k))
+                {
+                    added.Add(k.ToString());
+                }
+            }
+            if (card.ShouldRetainThisTurn
+                && !canonical.Contains(MegaCrit.Sts2.Core.Entities.Cards.CardKeyword.Retain)
+                && !added.Contains("Retain"))
+            {
+                added.Add("Retain");
+            }
+            return added;
+        }
+        catch
+        {
+            return System.Array.Empty<string>();
+        }
     }
 
     /// <summary>The card's star cost (Regent's second resource), or -1 for cards that don't use stars.

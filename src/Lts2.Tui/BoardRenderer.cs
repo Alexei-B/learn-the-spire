@@ -99,9 +99,15 @@ internal static class BoardRenderer
     private static void PileList(List<Line> lines, string title, IReadOnlyList<CardView> pile, Color color)
     {
         lines.Add(new Line().Add($"{title} ({pile.Count})", color));
-        foreach (var grp in pile.GroupBy(CardName).OrderBy(g => g.Key))
+        foreach (var grp in pile.GroupBy(c => (CardName(c), ModifierKey(c))).OrderBy(g => g.Key.Item1))
         {
-            lines.Add(new Line().Dim("  ").T(grp.Key).Dim(grp.Count() > 1 ? $" x{grp.Count()}" : ""));
+            var l = new Line().Dim("  ").T(grp.Key.Item1);
+            AppendModifierSegs(l, grp.First());
+            if (grp.Count() > 1)
+            {
+                l.Dim($" x{grp.Count()}");
+            }
+            lines.Add(l);
         }
         if (pile.Count == 0)
         {
@@ -405,6 +411,36 @@ internal static class BoardRenderer
         }
     }
 
+    /// <summary>
+    /// Modifiers applied to the card beyond its printed form — an enchantment (purple), an affliction
+    /// like Bound (red), a granted Replay count, and granted keywords (Retain from Transfigure, …) —
+    /// so they're visible on the card wherever it's listed. Nothing is appended for a plain card.
+    /// </summary>
+    private static void AppendModifierSegs(List<Seg> segs, CardView c)
+    {
+        if (c.EnchantmentId is { } e)
+        {
+            segs.Add(new Seg($"  [{Localizer.EnchantmentName(e)}]", Theme.Magenta));
+        }
+        if (c.AfflictionId is { } a)
+        {
+            segs.Add(new Seg($"  [{Localizer.AfflictionName(a)}]", Theme.Red));
+        }
+        if (c.ReplayCount > 0)
+        {
+            segs.Add(new Seg($"  Replay {c.ReplayCount}", Theme.Teal));
+        }
+        foreach (string kw in c.AddedKeywords)
+        {
+            segs.Add(new Seg($"  {kw}", Theme.Teal));
+        }
+    }
+
+    // A stable signature of a card's modifiers, so pile/deck grouping keeps differently-modified copies
+    // of the same card on separate lines.
+    private static string ModifierKey(CardView c) =>
+        $"{c.EnchantmentId}|{c.AfflictionId}|{c.ReplayCount}|{string.Join(",", c.AddedKeywords)}";
+
     private static Line CardLine(CardView c)
     {
         var l = new Line();
@@ -414,6 +450,7 @@ internal static class BoardRenderer
         l.T(" ");
         l.Add(CardName(c), c.CanPlay ? Theme.Fg : Theme.Dim);
         AppendEffectSegs(l, c);
+        AppendModifierSegs(l, c);
         l.Dim($"  {c.Type}/{c.Rarity}");
         return l;
     }
@@ -892,9 +929,12 @@ internal static class BoardRenderer
             new Line(),
             new Line().Add($"DECK ({p.Deck.Count})", Theme.Gold),
         };
-        foreach (var grp in p.Deck.GroupBy(CardName).OrderBy(g => g.Key))
+        foreach (var grp in p.Deck.GroupBy(c => (CardName(c), ModifierKey(c))).OrderBy(g => g.Key.Item1))
         {
-            lines.Add(new Line().T($"  {grp.Key} ").Dim($"x{grp.Count()}"));
+            var l = new Line().T($"  {grp.Key.Item1} ");
+            AppendModifierSegs(l, grp.First());
+            l.Dim($" x{grp.Count()}");
+            lines.Add(l);
         }
         lines.Add(new Line());
         lines.Add(new Line().Add($"RELICS ({p.Relics.Count})", Theme.Teal));
@@ -939,6 +979,16 @@ internal static class BoardRenderer
         return segs;
     }
 
+    /// <summary>A card rendered as coloured segments (cost circle, name, damage/block preview,
+    /// modifiers) — used by the interactive card-selection picker.</summary>
+    public static List<Seg> CardSegs(CardView c) => CardLabelSegs(c, null);
+
+    /// <summary>The card's display name (with a trailing "+" when upgraded).</summary>
+    public static string CardDisplayName(CardView c) => CardName(c);
+
+    /// <summary>The card's localized rules text.</summary>
+    public static string CardDescription(CardView c) => Localizer.CardDescription(c.CardId, c.Upgraded);
+
     private static List<Seg> CardLabelSegs(CardView c, uint? target)
     {
         var segs = new List<Seg> { Markup.Cost(c.CostsX, c.EnergyCost), new(" ", Theme.Fg), new(CardName(c), Theme.Fg) };
@@ -947,6 +997,7 @@ internal static class BoardRenderer
             segs.Add(new Seg($"  → #{id}", Theme.Dim));
         }
         AppendEffectSegs(segs, c);
+        AppendModifierSegs(segs, c);
         return segs;
     }
 

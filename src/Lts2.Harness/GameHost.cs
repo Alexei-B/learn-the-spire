@@ -1225,6 +1225,55 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Resolve the pending mid-effect card choice (<see cref="GamePhase.Choice"/>) by selecting the
+    /// cards at the given indices into <see cref="PendingChoiceView.Options"/> (equivalently
+    /// <see cref="PendingChoice.Options"/>). This is the general multi-select entry point: the
+    /// <see cref="OptionKind.SelectCards"/> options from <see cref="ListOptions()"/> only enumerate
+    /// single picks (plus a fixed exact-minimum multi-pick), so a caller that wants any other valid
+    /// subset — the usual case for a "choose N of M" choice like the Regent's CHARGE!! or a Neow
+    /// reward that picks several deck cards — resolves it here. The indices must be distinct, in
+    /// range, and number within the choice's [<see cref="PendingChoice.MinSelect"/>,
+    /// <see cref="PendingChoice.MaxSelect"/>]. Pumps to quiescence like <see cref="Apply"/>.
+    /// </summary>
+    public void ApplyCardChoice(IReadOnlyList<int> selectedIndices)
+    {
+        if (selectedIndices is null)
+        {
+            throw new ArgumentNullException(nameof(selectedIndices));
+        }
+        PendingChoice pending = Selector.Pending
+            ?? throw new InvalidOperationException("No card choice is pending to resolve.");
+
+        var seen = new HashSet<int>();
+        foreach (int i in selectedIndices)
+        {
+            if (i < 0 || i >= pending.Options.Count)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(selectedIndices), i,
+                    $"Card index out of range (expected 0..{pending.Options.Count - 1}).");
+            }
+            if (!seen.Add(i))
+            {
+                throw new ArgumentException($"Duplicate card index {i} in the selection.", nameof(selectedIndices));
+            }
+        }
+        if (selectedIndices.Count < pending.MinSelect || selectedIndices.Count > pending.MaxSelect)
+        {
+            throw new ArgumentException(
+                $"Selected {selectedIndices.Count} card(s); this choice requires {pending.MinSelect}-{pending.MaxSelect}.",
+                nameof(selectedIndices));
+        }
+
+        bool? upgradePreview = pending.IsUpgradeSelection ? true : (bool?)null;
+        var models = selectedIndices.Select(i => pending.Options[i]).ToList();
+        var views = models
+            .Select(c => GameStateProjection.ProjectCard(c, canPlay: false, upgradePreview))
+            .ToList();
+        Apply(GameOption.SelectCardsOption(Run.Players[0], models, views));
+    }
+
+    /// <summary>
     /// Resolve a chosen option against the live game and pump to quiescence. The option
     /// must have come from <see cref="ListOptions(ulong)"/> for the current state.
     /// </summary>

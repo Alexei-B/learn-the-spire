@@ -503,6 +503,20 @@ public sealed record CardView
     /// <summary>The card's star cost (the Regent's second resource), or 0/negative for cards that
     /// don't cost stars. The UI shows a ★ badge only when this is positive.</summary>
     public int StarCost { get; init; }
+
+    /// <summary>The id of an enchantment applied to this card (e.g. Corrupted), or null.</summary>
+    public string? EnchantmentId { get; init; }
+
+    /// <summary>The id of an affliction applied to this card (e.g. Bound), or null.</summary>
+    public string? AfflictionId { get; init; }
+
+    /// <summary>How many extra times this card replays when played (0 = none), from an enchantment or
+    /// a granted effect.</summary>
+    public int ReplayCount { get; init; }
+
+    /// <summary>Keywords granted to this card by some effect beyond its printed ones (e.g. Retain from
+    /// Transfigure, Ethereal from Hex) — the card's own innate keywords are excluded.</summary>
+    public IReadOnlyList<string> AddedKeywords { get; init; } = System.Array.Empty<string>();
 }
 
 /// <summary>A power (buff/debuff) on a creature, with its current stack amount.</summary>

@@ -36,6 +36,11 @@ internal sealed class GameScreen
     private bool _busy;
     private bool _gameOverShown;
 
+    // Set when the current state is a multi-select card choice (choose N of M): such a choice can't be
+    // resolved by a single flat option, so the decision list shows one "open the picker" entry and
+    // activating it opens the interactive selector (see OpenCardPicker). Null otherwise.
+    private PendingChoiceView? _multiChoice;
+
     // The map node the currently-highlighted move option leads to (null when the selection is not a
     // move). Read by the board/side renderers each draw so the map highlights where a move would take
     // you and dims the nodes that don't follow on from it.
@@ -182,13 +187,28 @@ internal sealed class GameScreen
         _side.SetRenderer((w, h) => BoardRenderer.SidePanel(state, w, h, _mapHighlight));
 
         _options = _host.ListOptions().ToList();
-        var entries = new List<OptionsView.Entry>(_options.Count);
-        foreach (GameOption o in _options)
+
+        // A multi-select card choice (choose N of M) surfaces as a single "open the picker" entry —
+        // its cards are toggled and confirmed in the interactive selector, not applied one at a time.
+        _multiChoice = state.Phase == GamePhase.Choice && state.PendingChoice is { MaxSelect: > 1 } mc ? mc : null;
+        if (_multiChoice is { } choice)
         {
-            entries.Add(new OptionsView.Entry(BoardRenderer.OptionLabel(o, state), BoardRenderer.OptionDescSegs(o, state)));
+            string range = choice.MinSelect == choice.MaxSelect ? $"{choice.MaxSelect}" : $"{choice.MinSelect}-{choice.MaxSelect}";
+            string verb = choice.IsUpgradeSelection ? "forge" : "select";
+            var label = new List<Seg> { new($"Choose {range} card(s) to {verb}…", Theme.Teal) };
+            var desc = new List<Seg> { new("Open the picker — Space toggles each card, Enter confirms.", Theme.Dim) };
+            _optionsView.SetEntries(new List<OptionsView.Entry> { new(label, desc) });
         }
-        int endTurn = _options.FindIndex(o => o.Kind == OptionKind.EndTurn);
-        _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null);
+        else
+        {
+            var entries = new List<OptionsView.Entry>(_options.Count);
+            foreach (GameOption o in _options)
+            {
+                entries.Add(new OptionsView.Entry(BoardRenderer.OptionLabel(o, state), BoardRenderer.OptionDescSegs(o, state)));
+            }
+            int endTurn = _options.FindIndex(o => o.Kind == OptionKind.EndTurn);
+            _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null);
+        }
         _optionsView.SetFocus();
         _log.SetNeedsDraw();
 
@@ -208,27 +228,60 @@ internal sealed class GameScreen
 
     private void Choose(int index)
     {
-        if (_busy || _host is null || index < 0 || index >= _options.Count)
+        if (_busy || _host is null)
         {
             return;
         }
-        GameHost host = _host;
+        // A multi-select card choice opens the interactive picker instead of applying a flat option.
+        if (_multiChoice is { } choice)
+        {
+            OpenCardPicker(choice);
+            return;
+        }
+        if (index < 0 || index >= _options.Count)
+        {
+            return;
+        }
         GameOption option = _options[index];
         GameState? before = _state;
         string header = OptionHeader(option, before);
+        Resolve(header, $" Applied: {option.Description}", before, host => host.Apply(option));
+    }
+
+    /// <summary>
+    /// Open the modal card picker for a multi-select choice; on confirm, resolve it with the chosen
+    /// cards. Cancelling leaves the choice pending (the "open the picker" option stays available).
+    /// </summary>
+    private void OpenCardPicker(PendingChoiceView choice)
+    {
+        IReadOnlyList<int>? picked = CardSelectDialog.Show(choice);
+        if (picked is null || _host is null)
+        {
+            return;
+        }
+        GameState? before = _state;
+        string names = string.Join(", ", picked.Select(i => BoardRenderer.CardDisplayName(choice.Options[i])));
+        string header = picked.Count == 0 ? "Skip selection" : $"Select {names}";
+        Resolve(header, $" Applied: {header}", before, host => host.ApplyCardChoice(picked));
+    }
+
+    /// <summary>
+    /// Pump a game action off the UI thread, then repaint. Applying an option (or resolving a choice)
+    /// runs the game's async continuations, which must not run on the Terminal.Gui UI thread (see the
+    /// class remark — its MainLoopSyncContext would be captured and deadlock). A thread-pool thread has
+    /// no SynchronizationContext; clear it explicitly too. The result is marshalled back to repaint.
+    /// </summary>
+    private void Resolve(string header, string appliedMsg, GameState? before, Action<GameHost> apply)
+    {
+        GameHost host = _host!;
         _busy = true;
         _msg.Text = " Resolving…";
-
-        // Pump the game off the UI thread (see the class remark on the deadlock — Terminal.Gui installs
-        // a MainLoopSyncContext the game's async continuations would otherwise capture). A thread-pool
-        // thread has no SynchronizationContext; clear it explicitly too, so continuations never post
-        // back to the (blocked) UI thread. Marshal the result back to the UI thread to repaint.
         Task.Run(() =>
         {
             SynchronizationContext.SetSynchronizationContext(null);
             try
             {
-                host.Apply(option);
+                apply(host);
                 return (string?)null;
             }
             catch (Exception ex)
@@ -253,7 +306,7 @@ internal sealed class GameScreen
             {
                 SaveStore.Autosave(host, after);
             }
-            _msg.Text = $" Applied: {option.Description}";
+            _msg.Text = appliedMsg;
             Refresh();
         }));
     }

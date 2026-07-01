@@ -151,6 +151,35 @@ public static class Localizer
     public static string EncounterName(string id) =>
         Encounters.TryGetValue(id, out EncounterModel? e) ? Name(e.Title, id) : id;
 
+    // ---- Card modifiers (enchantments / afflictions) ---------------------------
+
+    public static string EnchantmentName(string id) => TableTitle("enchantments", id);
+
+    public static string AfflictionName(string id) => TableTitle("afflictions", id);
+
+    /// <summary>Render a "&lt;table&gt;/&lt;ID&gt;.title" LocString, falling back to a prettified id.</summary>
+    private static string TableTitle(string table, string id)
+    {
+        try
+        {
+            LocString? ls = LocString.GetIfExists(table, id + ".title");
+            if (ls is null || !ls.Exists())
+            {
+                return Prettify(id);
+            }
+            string s = Clean(ls.GetFormattedText());
+            return string.IsNullOrWhiteSpace(s) ? Prettify(id) : s;
+        }
+        catch
+        {
+            return Prettify(id);
+        }
+    }
+
+    /// <summary>Turn a SCREAMING_SNAKE id into Title Case as a readable fallback name.</summary>
+    private static string Prettify(string id) =>
+        System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(id.Replace('_', ' ').ToLowerInvariant());
+
     // ---- Events ----------------------------------------------------------------
 
     public static string EventName(string id) =>

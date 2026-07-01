@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using Lts2.Harness;
 using Xunit;
@@ -115,6 +116,67 @@ public sealed class ChoiceInjectionTests
         // No discovered card added; Discovery itself left the hand (exhausted), so the hand is
         // smaller than it was with the unplayed Discovery in it.
         Assert.True(after.Players[0].CombatState!.Hand.Count < handCountBeforePlay);
+    }
+
+    [Fact]
+    public async Task Charge_MultiSelectChoice_ResolvesAnySubsetViaApplyCardChoice()
+    {
+        await Task.Run(RunChargeMultiSelect).WaitAsync(TimeSpan.FromSeconds(60));
+    }
+
+    private void RunChargeMultiSelect()
+    {
+        GameHost host = MoveIntoFirstCombat("TESTSEED");
+        CombatState combat = host.Combat!;
+        Player player = combat.Players.Single();
+        PlayerCombatState pcs = player.PlayerCombatState!;
+
+        // CHARGE!! (the Regent's card) transforms 2 cards *chosen from the draw pile* — a genuine
+        // multi-select (min=max=2). Need >2 draw-pile cards or the game auto-resolves without a choice.
+        Charge charge = combat.CreateCard<Charge>(player);
+        pcs.Hand.AddInternal(charge);
+        var drawBefore = pcs.DrawPile.Cards.ToList();
+        _out.WriteLine($"draw pile has {drawBefore.Count}: {string.Join(", ", drawBefore.Select(c => c.Id.Entry))}");
+        Assert.True(drawBefore.Count > 2, "need >2 draw-pile cards for a real 2-of-N choice");
+        Assert.True(charge.CanPlay(), "the injected Charge should be playable");
+
+        Assert.True(host.PlayCard(charge, target: null));
+
+        GameState atChoice = host.GetState();
+        Assert.Equal(GamePhase.Choice, atChoice.Phase);
+        Assert.NotNull(atChoice.PendingChoice);
+        Assert.Equal(2, atChoice.PendingChoice!.MinSelect);
+        Assert.Equal(2, atChoice.PendingChoice.MaxSelect);
+        int n = atChoice.PendingChoice.Options.Count;
+        Assert.Equal(drawBefore.Count, n); // one option per draw-pile card, in pile order
+
+        // Validation: the count must be exactly 2, indices distinct and in range. None of these
+        // resolve the choice — it stays pending until a valid selection is applied.
+        Assert.Throws<ArgumentException>(() => host.ApplyCardChoice(new[] { 0 }));            // too few
+        Assert.Throws<ArgumentException>(() => host.ApplyCardChoice(new[] { 0, 1, 2 }));      // too many
+        Assert.Throws<ArgumentException>(() => host.ApplyCardChoice(new[] { 1, 1 }));         // duplicate
+        Assert.Throws<ArgumentOutOfRangeException>(() => host.ApplyCardChoice(new[] { 0, n })); // out of range
+        Assert.Equal(GamePhase.Choice, host.GetState().Phase);
+
+        // Pick the *last two* cards — not the first two the fixed option path would have taken —
+        // to prove any valid subset resolves. The choice order matches the draw pile order.
+        var chosen = new[] { n - 2, n - 1 };
+        CardModel keep = drawBefore[0];
+        CardModel gone0 = drawBefore[chosen[0]];
+        CardModel gone1 = drawBefore[chosen[1]];
+
+        host.ApplyCardChoice(chosen);
+
+        GameState after = host.GetState();
+        Assert.Null(after.PendingChoice);
+        Assert.NotEqual(GamePhase.Choice, after.Phase);
+
+        // The two chosen cards were transformed in place (so left the draw pile); the untouched first
+        // card is still there. This is the whole point: exactly the cards we picked were consumed.
+        var drawAfter = pcs.DrawPile.Cards.ToList();
+        Assert.DoesNotContain(gone0, drawAfter);
+        Assert.DoesNotContain(gone1, drawAfter);
+        Assert.Contains(keep, drawAfter);
     }
 
     private static GameHost MoveIntoFirstCombat(string seed) => TestNav.MoveIntoFirstCombat(seed);
