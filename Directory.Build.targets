@@ -1,0 +1,38 @@
+<Project>
+
+  <!-- Shared reference to the game assembly + the (non-Godot) third-party deps it needs, from
+       the gitignored lib/. Projects opt in by setting <ReferencesGameLib>true</ReferencesGameLib>.
+
+       We reference an *explicit* list rather than a `lib\*.dll` wildcard on purpose: lib/ is a
+       copy of the game's runtime folder, which also contains the full .NET shared framework
+       (System.*, Microsoft.*, mscorlib, netstandard, …), native DLLs (coreclr, steam_api64, …),
+       and possibly GodotSharp.dll. Referencing the framework copies duplicates the assemblies
+       net9.0 already provides (CS0433/CS0518 — "type exists in both" / "System.Object not
+       defined"); referencing GodotSharp.dll would defeat our shim. So we list only the managed
+       assemblies that are genuinely NOT part of the net9.0 shared framework. This makes the
+       build robust whether lib/ is a curated subset or a full copy of the game folder.
+
+       Determined via: diff `lib\*.dll` against the net9.0 shared framework and drop native DLLs.
+       Private=true copies them next to our output so the runtime can load sts2. -->
+  <ItemGroup Condition="'$(ReferencesGameLib)' == 'true'">
+    <Reference Include="$(GameLibDir)\sts2.dll" />
+    <Reference Include="$(GameLibDir)\0Harmony.dll" />
+    <Reference Include="$(GameLibDir)\JetBrains.Annotations.dll" />
+    <Reference Include="$(GameLibDir)\MonoMod.Backports.dll" />
+    <Reference Include="$(GameLibDir)\MonoMod.ILHelpers.dll" />
+    <Reference Include="$(GameLibDir)\Sentry.dll" />
+    <Reference Include="$(GameLibDir)\SharpGen.Runtime.dll" />
+    <Reference Include="$(GameLibDir)\SharpGen.Runtime.COM.dll" />
+    <Reference Include="$(GameLibDir)\SmartFormat.dll" />
+    <Reference Include="$(GameLibDir)\SmartFormat.ZString.dll" />
+    <Reference Include="$(GameLibDir)\Steamworks.NET.dll" />
+    <Reference Include="$(GameLibDir)\System.IO.Hashing.dll" />
+    <Reference Include="$(GameLibDir)\Vortice.DXGI.dll" />
+    <Reference Include="$(GameLibDir)\Vortice.DirectX.dll" />
+    <Reference Include="$(GameLibDir)\Vortice.Mathematics.dll" />
+    <Reference Update="$(GameLibDir)\*.dll">
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

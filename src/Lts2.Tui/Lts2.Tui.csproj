@@ -6,6 +6,9 @@
          Terminal.Gui v2 (2.0.0) targets net8.0, which net9 consumes — no net10 needed. -->
     <ImplicitUsings>enable</ImplicitUsings>
     <RollForward>LatestMinor</RollForward>
+    <!-- The game assemblies must land next to our output so sts2 loads at runtime, and the TUI
+         calls game-logic types directly. See Directory.Build.targets. -->
+    <ReferencesGameLib>true</ReferencesGameLib>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,15 +20,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Lts2.Harness\Lts2.Harness.csproj" />
     <ProjectReference Include="..\Lts2.Localization\Lts2.Localization.csproj" />
-  </ItemGroup>
-
-  <!-- The TUI calls game-logic types directly (ModelDb/CharacterModel for character select),
-       and the game assemblies must land next to our output so sts2 loads at runtime. Plain
-       <Reference> items are not transitive, so reference lib/ here as the tests do. -->
-  <ItemGroup>
-    <Reference Include="$(GameLibDir)\*.dll">
-      <Private>true</Private>
-    </Reference>
   </ItemGroup>
 
 </Project>

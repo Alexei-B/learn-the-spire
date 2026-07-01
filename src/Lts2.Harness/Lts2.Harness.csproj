@@ -2,20 +2,13 @@
 
   <PropertyGroup>
     <ImplicitUsings>disable</ImplicitUsings>
+    <!-- Reference sts2.dll + its non-Godot deps from lib/ (see Directory.Build.targets). -->
+    <ReferencesGameLib>true</ReferencesGameLib>
   </PropertyGroup>
 
   <!-- The GodotSharp shim must win over any other GodotSharp resolution. -->
   <ItemGroup>
     <ProjectReference Include="..\Lts2.GodotShim\Lts2.GodotShim.csproj" />
-  </ItemGroup>
-
-  <!-- The game assembly + the (non-Godot) third-party deps it needs, from the
-       gitignored lib/. GodotSharp.dll is intentionally absent there. Private=true
-       copies them next to our output so the runtime can load sts2. -->
-  <ItemGroup>
-    <Reference Include="$(GameLibDir)\*.dll">
-      <Private>true</Private>
-    </Reference>
   </ItemGroup>
 
 </Project>

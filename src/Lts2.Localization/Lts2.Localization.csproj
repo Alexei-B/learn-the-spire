@@ -3,18 +3,13 @@
   <PropertyGroup>
     <!-- TargetFramework (net9.0) / Nullable / LangVersion from Directory.Build.props. -->
     <ImplicitUsings>disable</ImplicitUsings>
+    <!-- The game assemblies (LocManager / ModelDb / CardModel / …); see Directory.Build.targets. -->
+    <ReferencesGameLib>true</ReferencesGameLib>
   </PropertyGroup>
 
   <!-- Needs the GodotSharp shim (game types reference it transitively). -->
   <ItemGroup>
     <ProjectReference Include="..\Lts2.GodotShim\Lts2.GodotShim.csproj" />
-  </ItemGroup>
-
-  <!-- The game assemblies (LocManager / ModelDb / CardModel / …). -->
-  <ItemGroup>
-    <Reference Include="$(GameLibDir)\*.dll">
-      <Private>true</Private>
-    </Reference>
   </ItemGroup>
 
   <!-- Package the extracted localization tables so any consumer gets them placed at the shim's
