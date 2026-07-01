@@ -393,8 +393,9 @@ internal static class BoardRenderer
         }
         if (c.Damage is { } dmg && c.BaseDamage is { } bd)
         {
-            segs.Add(new Seg(" dmg", Theme.Dim));
+            segs.Add(new Seg("   ", Theme.Dim));
             segs.Add(new Seg(dmg.ToString(), DeltaColor(dmg, bd)));
+            segs.Add(new Seg(" dmg", Theme.Dim));
         }
         if (c.Block is { } blk && c.BaseBlock is { } bb)
         {
