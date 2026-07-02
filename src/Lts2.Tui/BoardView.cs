@@ -8,8 +8,11 @@ using Color = Terminal.Gui.Color;
 
 namespace Lts2.Tui;
 
-/// <summary>One coloured run of text within a board line.</summary>
-internal readonly record struct Seg(string Text, Color Fg);
+/// <summary>
+/// One coloured run of text within a board line. <see cref="Bg"/> is an optional background colour
+/// (used e.g. for the card-name band); when null the view's default background is used.
+/// </summary>
+internal readonly record struct Seg(string Text, Color Fg, Color? Bg = null);
 
 /// <summary>A single board line: an ordered list of coloured segments. Fluent to build.</summary>
 internal sealed class Line : List<Seg>
@@ -36,6 +39,25 @@ internal sealed class BoardView : View
     public BoardView()
     {
         CanFocus = false;
+    }
+
+    /// <summary>
+    /// Raised on a left or right click within the view, with the clicked content cell (column, row) — the
+    /// same coordinates the renderer draws into — and whether it was the right button. Used for click-to-
+    /// target on the combat board (the view itself stays non-focusable).
+    /// </summary>
+    public event Action<int, int, bool>? Clicked;
+
+    protected override bool OnMouseEvent(MouseEventArgs mouseEvent)
+    {
+        bool left = mouseEvent.Flags.HasFlag(MouseFlags.Button1Clicked);
+        bool right = mouseEvent.Flags.HasFlag(MouseFlags.Button3Clicked);
+        if ((left || right) && Clicked is not null)
+        {
+            Clicked(mouseEvent.Position.X, mouseEvent.Position.Y, right);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Set static lines (used by popups). Clears any width-aware renderer.</summary>
@@ -68,7 +90,7 @@ internal sealed class BoardView : View
             int col = 0;
             foreach (Seg seg in lines[row])
             {
-                SetAttribute(new Attribute(seg.Fg, Theme.Bg));
+                SetAttribute(new Attribute(seg.Fg, seg.Bg ?? Theme.Bg));
                 foreach (char ch in seg.Text)
                 {
                     if (col >= vp.Width)

@@ -48,7 +48,11 @@ internal static class CombatStrategy
         // "Defensive value" is printed block plus character block-substitutes (the Necrobinder's Osty
         // summon soaks hits like block — see EffectiveBlock). Rank by value-per-energy; on a tie, favour
         // the summon (Osty persists across turns, so it's the better spend for equal value).
-        int unblocked = IncomingDamage(combat) - me.Block;
+        // A live Osty already soaks incoming attacks: an enemy's (powered) attack that gets past our block
+        // is redirected onto Osty and only its overkill — damage beyond Osty's current HP — spills onto us
+        // (Osty's own block is bypassed on the redirect). So Osty's HP is a buffer on top of our block.
+        int ostyBuffer = me.CombatState?.Osty is { IsAlive: true } osty ? osty.CurrentHp : 0;
+        int unblocked = IncomingDamage(combat) - me.Block - ostyBuffer;
         if (unblocked > 0)
         {
             IEnumerable<GameOption> blockCards = playable

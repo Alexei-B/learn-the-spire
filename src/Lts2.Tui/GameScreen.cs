@@ -23,10 +23,20 @@ internal sealed class GameScreen
     private readonly BoardView _board;
     private readonly FrameView _sideFrame;
     private readonly BoardView _side;
+    private readonly FrameView _optionsFrame;
     private readonly OptionsView _optionsView;
+    private readonly CombatDecisionView _combatView;
     private readonly FrameView _logFrame;
     private readonly BoardView _log;
     private readonly Label _msg;
+
+    // During card targeting in combat, the hotkey badges to overlay on the enemies (combat id → badge),
+    // or null when not targeting. Threaded into the board renderer so the enemies show which key hits them.
+    private IReadOnlyDictionary<uint, TargetBadge>? _targetOverlay;
+
+    // Filled by the board renderer each draw with each targetable enemy's clickable rectangle (in board
+    // coordinates), so a click on the combat board can be resolved to the enemy under it while aiming.
+    private readonly Dictionary<uint, System.Drawing.Rectangle> _targetHitRegions = new();
 
     private readonly GameLog _gameLog = new();
 
@@ -92,6 +102,7 @@ internal sealed class GameScreen
             TabStop = TabBehavior.NoStop,
         };
         _board = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
+        _board.Clicked += OnBoardClick;
         _boardFrame.Add(_board);
 
         _sideFrame = new FrameView
@@ -109,7 +120,7 @@ internal sealed class GameScreen
         _side = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _sideFrame.Add(_side);
 
-        var optionsFrame = new FrameView
+        _optionsFrame = new FrameView
         {
             Title = "Decisions  (↑↓ · 0-9 · Enter)",
             X = 0,
@@ -122,12 +133,16 @@ internal sealed class GameScreen
         _optionsView = new OptionsView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _optionsView.Activated += Choose;
         _optionsView.SelectionChanged += OnSelectionChanged;
-        optionsFrame.Add(_optionsView);
+        // The combat hand/decision view, shown only in combat (see Refresh) where it replaces the list.
+        _combatView = new CombatDecisionView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill(), Visible = false };
+        _combatView.Chosen += OnCombatChoice;
+        _combatView.TargetingChanged += OnTargetingChanged;
+        _optionsFrame.Add(_optionsView, _combatView);
 
         _logFrame = new FrameView
         {
             Title = "Log",
-            X = Pos.Right(optionsFrame),
+            X = Pos.Right(_optionsFrame),
             Y = Pos.Bottom(_boardFrame),
             Width = Dim.Fill(),
             Height = Dim.Fill(1),
@@ -142,7 +157,7 @@ internal sealed class GameScreen
 
         _msg = new Label { X = 1, Y = Pos.AnchorEnd(1), Width = Dim.Fill(1), Text = "" };
 
-        _root.Add(menu, _boardFrame, _sideFrame, optionsFrame, _logFrame, _msg);
+        _root.Add(menu, _boardFrame, _sideFrame, _optionsFrame, _logFrame, _msg);
         Refresh();
     }
 
@@ -216,7 +231,9 @@ internal sealed class GameScreen
         _state = state;
         _mapHighlight = null;
         _boardFrame.Title = $"Board — {state.Phase}";
-        _board.SetRenderer((w, h) => BoardRenderer.Board(state, w, h, _mapHighlight));
+        // The board shows the enemies' target badges while the combat view is aiming a targeted card, and
+        // records their clickable rectangles into _targetHitRegions so a board click resolves the target.
+        _board.SetRenderer((w, h) => BoardRenderer.Board(state, w, h, _mapHighlight, _targetOverlay, _targetHitRegions));
 
         bool inCombat = state.Phase is GamePhase.Combat or GamePhase.Choice;
         _sideFrame.Title = inCombat ? "Piles" : "Map";
@@ -224,44 +241,50 @@ internal sealed class GameScreen
 
         _options = _host.ListOptions().ToList();
 
-        // A multi-select card choice (choose N of M) surfaces as a single "open the picker" entry —
-        // its cards are toggled and confirmed in the interactive selector, not applied one at a time.
-        _multiChoice = state.Phase == GamePhase.Choice && state.PendingChoice is { MaxSelect: > 1 } mc ? mc : null;
-        if (_multiChoice is { } choice)
+        // In active combat the decision area draws the hand as interactive card art (its own layout); every
+        // other phase (including a mid-combat card Choice) uses the scrolling options list. Any aiming
+        // overlay is cleared on refresh — the state has moved on.
+        bool combatDecision = state.Phase == GamePhase.Combat && !state.IsGameOver;
+        _targetOverlay = null;
+        ApplyCombatLayout(state, combatDecision);
+
+        if (combatDecision)
         {
-            string range = choice.MinSelect == choice.MaxSelect ? $"{choice.MaxSelect}" : $"{choice.MinSelect}-{choice.MaxSelect}";
-            string verb = choice.IsUpgradeSelection ? "forge" : "select";
-            var label = new List<Seg> { new($"Choose {range} card(s) to {verb}…", Theme.Teal) };
-            var desc = new List<Seg> { new("Open the picker — Space toggles each card, Enter confirms.", Theme.Dim) };
-            _optionsView.SetEntries(new List<OptionsView.Entry> { new(label, desc) });
+            _multiChoice = null;
+            _combatView.SetState(state, _options);
+            _combatView.SetFocus();
         }
         else
         {
-            var entries = new List<OptionsView.Entry>(_options.Count);
-            foreach (GameOption o in _options)
+            // A multi-select card choice (choose N of M) surfaces as a single "open the picker" entry —
+            // its cards are toggled and confirmed in the interactive selector, not applied one at a time.
+            _multiChoice = state.Phase == GamePhase.Choice && state.PendingChoice is { MaxSelect: > 1 } mc ? mc : null;
+            if (_multiChoice is { } choice)
             {
-                entries.Add(new OptionsView.Entry(BoardRenderer.OptionLabel(o, state), BoardRenderer.OptionDescSegs(o, state)));
+                string range = choice.MinSelect == choice.MaxSelect ? $"{choice.MaxSelect}" : $"{choice.MinSelect}-{choice.MaxSelect}";
+                string verb = choice.IsUpgradeSelection ? "forge" : "select";
+                var label = new List<Seg> { new($"Choose {range} card(s) to {verb}…", Theme.Teal) };
+                var desc = new List<Seg> { new("Open the picker — Space toggles each card, Enter confirms.", Theme.Dim) };
+                _optionsView.SetEntries(new List<OptionsView.Entry> { new(label, desc) });
             }
-            int endTurn = _options.FindIndex(o => o.Kind == OptionKind.EndTurn);
-            // In combat, Tab applies the default-strategy pick; surface which option that is so the list
-            // can mark it "(tab)" and Tab can activate it (see OptionsView).
-            int? autoIndex = null;
-            if (state.Phase == GamePhase.Combat
-                && CombatStrategy.ChooseDefaultMove(state, _options) is { } autoPick)
+            else
             {
-                int i = _options.IndexOf(autoPick);
-                autoIndex = i >= 0 ? i : null;
+                var entries = new List<OptionsView.Entry>(_options.Count);
+                foreach (GameOption o in _options)
+                {
+                    entries.Add(new OptionsView.Entry(BoardRenderer.OptionLabel(o, state), BoardRenderer.OptionDescSegs(o, state)));
+                }
+                int endTurn = _options.FindIndex(o => o.Kind == OptionKind.EndTurn);
+                _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null);
             }
-            _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null, autoIndex: autoIndex);
+            _optionsView.SetFocus();
         }
-        _optionsView.SetFocus();
         _log.SetNeedsDraw();
 
-        bool combatPhase = state.Phase is GamePhase.Combat;
         _msg.Text = state.IsGameOver
             ? " Run over.  Game ▸ New Run to play again."
-            : combatPhase
-                ? " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · Tab auto-play · Alt+G Game · Alt+V View"
+            : combatDecision
+                ? " 1-9 play card · 0 end turn · Tab auto-play · targeted card → pick target 1-9 (Esc cancels) · Alt+G Game"
                 : " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · Alt+G Game · Alt+V View";
 
         if (state.IsGameOver && !_gameOverShown)
@@ -272,6 +295,88 @@ internal sealed class GameScreen
                 $"\nReached Act {state.ActIndex + 1}, floor {state.Floor}.\nFinal score: {state.Score}\n",
                 "OK");
         }
+    }
+
+    /// <summary>
+    /// Size and swap the decision area for the current phase. In combat the hand card view takes over the
+    /// full width and a fixed height sized to the number of card rows the hand needs (see
+    /// <see cref="CombatDecisionView.ContentHeight"/>); the board/piles shrink to whatever is left. Every
+    /// other phase restores the normal split (list on the left, log on the right).
+    /// </summary>
+    private void ApplyCombatLayout(GameState state, bool combatDecision)
+    {
+        _combatView.Visible = combatDecision;
+        _optionsView.Visible = !combatDecision;
+        _logFrame.Visible = !combatDecision;
+
+        if (combatDecision)
+        {
+            _optionsFrame.Title = "Hand";
+            _optionsFrame.Width = Dim.Fill();
+            int innerWidth = Math.Max(20, _root.Frame.Width - 2);
+            PlayerCombatView? cs = state.Players.Count > 0 ? state.Players[0].CombatState : null;
+            int handCount = cs?.Hand.Count ?? 0;
+            int potionCount = state.Players.Count > 0 ? state.Players[0].Potions.Count(p => p is not null) : 0;
+            int decisionsHeight = CombatDecisionView.ContentHeight(handCount, potionCount, innerWidth) + 2; // + frame borders
+            _boardFrame.Height = Dim.Fill(decisionsHeight + 1);
+            _sideFrame.Height = Dim.Fill(decisionsHeight + 1);
+        }
+        else
+        {
+            _optionsFrame.Title = "Decisions  (↑↓ · 0-9 · Enter)";
+            _optionsFrame.Width = Dim.Percent(68);
+            _boardFrame.Height = Dim.Percent(72);
+            _sideFrame.Height = Dim.Percent(72);
+        }
+        _root.SetNeedsLayout();
+    }
+
+    /// <summary>Apply a card/target/end-turn option chosen in the combat hand view (pumps the game).</summary>
+    private void OnCombatChoice(GameOption option)
+    {
+        if (_busy || _host is null)
+        {
+            return;
+        }
+        _targetOverlay = null;
+        GameState? before = _state;
+        string header = OptionHeader(option, before);
+        Resolve(header, $" Applied: {option.Description}", before, host => host.Apply(option));
+    }
+
+    /// <summary>
+    /// A click on the combat board. While aiming a targeted card, a left-click on a viable enemy plays the
+    /// card at it and a right-click cancels aiming; otherwise clicks on the board are ignored.
+    /// </summary>
+    private void OnBoardClick(int col, int row, bool right)
+    {
+        if (_busy || !_combatView.IsTargeting)
+        {
+            return;
+        }
+        if (right)
+        {
+            _combatView.StopTargeting();
+            return;
+        }
+        foreach (KeyValuePair<uint, System.Drawing.Rectangle> region in _targetHitRegions)
+        {
+            if (region.Value.Contains(col, row))
+            {
+                _combatView.SelectTargetByCombatId(region.Key);
+                return;
+            }
+        }
+    }
+
+    /// <summary>The combat view started/stopped aiming a card: repaint the board with the target badges.</summary>
+    private void OnTargetingChanged()
+    {
+        _targetOverlay = _combatView.TargetOverlay;
+        _board.SetNeedsDraw();
+        _msg.Text = _combatView.Prompt is { } p
+            ? " " + p
+            : " 1-9 play card · 0 end turn · Tab auto-play · targeted card → pick target 1-9 (Esc cancels) · Alt+G Game";
     }
 
     private void Choose(int index)

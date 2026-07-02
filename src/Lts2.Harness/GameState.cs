@@ -502,6 +502,15 @@ public sealed record CardView
     public required TargetType TargetType { get; init; }
     public required bool Upgraded { get; init; }
 
+    /// <summary>
+    /// The id of the card pool the card <em>naturally</em> belongs to (its <c>VisualCardPool</c>) — e.g.
+    /// <c>IRONCLAD_CARD_POOL</c>, <c>DEFECT_CARD_POOL</c>, <c>COLORLESS_CARD_POOL</c>, <c>STATUS_CARD_POOL</c>,
+    /// <c>CURSE_CARD_POOL</c>. This is the card's own colour identity, independent of which character is
+    /// currently holding it (a card gained cross-character, e.g. via Kaleidoscope, keeps its origin pool),
+    /// so the UI can colour-code a card by the class that naturally rewards it. Empty if it can't be read.
+    /// </summary>
+    public string PoolId { get; init; } = "";
+
     /// <summary>True only in combat, when the card is currently legal to play.</summary>
     public required bool CanPlay { get; init; }
 

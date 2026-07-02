@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Rewards;
 using Lts2.Harness;
@@ -9,24 +10,34 @@ using Terminal.Gui;
 
 namespace Lts2.Tui;
 
+/// <summary>
+/// During card targeting, the hotkey label and projected damage to overlay on a targetable enemy.
+/// <see cref="Selected"/> marks the target the arrow-key selection is currently on.
+/// </summary>
+internal readonly record struct TargetBadge(string Hotkey, int? Damage, bool Selected = false);
+
 /// <summary>Builds the coloured board lines and the plain option labels from the read-model.</summary>
 internal static class BoardRenderer
 {
     // ---- Board (left/centre canvas) --------------------------------------------
 
-    public static List<Line> Board(GameState state, int width, int height = 1000, Coord? mapHighlight = null)
+    public static List<Line> Board(
+        GameState state, int width, int height = 1000, Coord? mapHighlight = null,
+        IReadOnlyDictionary<uint, TargetBadge>? targets = null,
+        IDictionary<uint, System.Drawing.Rectangle>? hitRegions = null)
     {
         if (width <= 0)
         {
             width = 100;
         }
+        hitRegions?.Clear();
         var lines = new List<Line> { StatusLine(state), new Line() };
 
         switch (state.Phase)
         {
             case GamePhase.Combat:
             case GamePhase.Choice:
-                CombatBoard(state, width, lines);
+                CombatBoard(state, width, lines, targets, hitRegions);
                 if (state.Phase == GamePhase.Choice && state.PendingChoice is { } pc)
                 {
                     ChoiceLines(pc, lines);
@@ -137,7 +148,9 @@ internal static class BoardRenderer
 
     // Combat: allies (players + Osty) drawn as boxes on the left, enemies as boxes on the right, each
     // with a coloured health bar, an info line (intent / energy+hand) and its powers. Then the hand.
-    private static void CombatBoard(GameState state, int width, List<Line> lines)
+    private static void CombatBoard(
+        GameState state, int width, List<Line> lines, IReadOnlyDictionary<uint, TargetBadge>? targets = null,
+        IDictionary<uint, System.Drawing.Rectangle>? hitRegions = null)
     {
         if (state.Combat is not { } combat)
         {
@@ -145,6 +158,11 @@ internal static class BoardRenderer
         }
         int gap = 2;
         int colW = Math.Clamp((width - gap) / 2, 16, 44);
+        // The number of header lines already in `lines` before the merged creature rows begin (status +
+        // blank). A creature drawn at right-column row r therefore lands on board row headerRows + r —
+        // used to record each targetable enemy's clickable rectangle for mouse targeting.
+        int headerRows = lines.Count;
+        int rightCol = colW + gap;
 
         var left = new List<Line>();
         foreach (PlayerState p in state.Players)
@@ -178,7 +196,15 @@ internal static class BoardRenderer
             string name = $"#{e.CombatId} {Localizer.MonsterName(e.MonsterId)}";
             var info = new List<Seg> { new(" Intent: ", Theme.Dim) };
             info.AddRange(IntentSegs(e));
-            right.AddRange(CreatureBox(name, e.CurrentHp, e.MaxHp, e.Block, e.Powers, info, colW));
+            TargetBadge? badge = targets is not null && targets.TryGetValue(e.CombatId, out TargetBadge b) ? b : null;
+            int startR = right.Count;
+            List<Line> box = CreatureBox(name, e.CurrentHp, e.MaxHp, e.Block, e.Powers, info, colW, badge: badge);
+            right.AddRange(box);
+            // Record the enemy's clickable rectangle (in board coordinates) when it is a live target.
+            if (badge is not null && hitRegions is not null)
+            {
+                hitRegions[e.CombatId] = new System.Drawing.Rectangle(rightCol, headerRows + startR, colW, box.Count);
+            }
             right.Add(new Line());
         }
 
@@ -191,22 +217,185 @@ internal static class BoardRenderer
             AppendPadded(l, r < right.Count ? right[r] : null, colW);
             lines.Add(l);
         }
+        // The hand is no longer drawn here — it lives in the decision area as interactive card art.
+    }
 
-        // The full hand below (the decisions panel only lists playable cards).
-        PlayerCombatView? me = state.Players[0].CombatState;
-        if (me is not null)
+    // ---- Hand card art ---------------------------------------------------------
+
+    // Each card is drawn as a little card: energy cost top-left, star cost top-right, then the rarity-
+    // coloured name band (the card name sits on a background whose colour encodes rarity), the word-
+    // wrapped rules text, and a footer showing the projected damage / block (or the card type). The
+    // border is colour-coded to the card's natural class/colour. Cards are a uniform fixed size.
+    private const int CardInner = 15;                     // interior width (columns between the borders)
+    private const int CardDescRows = 6;                   // word-wrapped rules-text rows (fixed, for uniformity)
+    public const int CardArtWidth = CardInner + 2;        // total drawn width including both borders
+    public const int CardArtHeight = 5 + CardDescRows;    // top, cost, name-band, desc…, footer, bottom
+
+    /// <summary>
+    /// Render one card as <see cref="CardArtHeight"/> lines, each exactly <see cref="CardArtWidth"/> wide.
+    /// When <paramref name="dim"/> is set (an unplayable card) it is drawn muted.
+    /// </summary>
+    public static List<Line> CardArt(CardView c, bool dim = false)
+    {
+        Color border = dim ? Theme.Dim : CardBorderColor(c);
+        Color textFg = dim ? Theme.Dim : Theme.Fg;
+        var art = new List<Line>
         {
-            lines.Add(new Line());
-            lines.Add(new Line().Add("HAND", Theme.Gold));
-            if (me.Hand.Count == 0)
+            new Line().Add("┌" + new string('─', CardInner) + "┐", border),
+            BoxLine(CostRow(c, dim), CardInner, border),
+            BoxLine(BandNameRow(c, dim), CardInner, border),
+        };
+
+        // Rules text: the localized description, word-wrapped to a fixed number of rows (padded with blanks,
+        // truncated with an ellipsis) so every card is the same height.
+        List<List<Seg>> wrapped = Markup.Wrap(Markup.Parse(Localizer.CardDescription(c.CardId, c.Upgraded), textFg), CardInner - 1);
+        for (int r = 0; r < CardDescRows; r++)
+        {
+            var content = new List<Seg> { new(" ", textFg) };
+            if (r < wrapped.Count)
             {
-                lines.Add(new Line().Dim("  (empty)"));
+                // Last visible row overflowing: mark it with an ellipsis so nothing looks silently cut off.
+                if (r == CardDescRows - 1 && wrapped.Count > CardDescRows)
+                {
+                    content.AddRange(ClampSegs(wrapped[r], CardInner - 2));
+                    content.Add(new Seg("…", Theme.Dim));
+                }
+                else
+                {
+                    content.AddRange(dim ? wrapped[r].Select(s => s with { Fg = Theme.Dim }) : wrapped[r]);
+                }
             }
-            foreach (CardView c in me.Hand)
-            {
-                lines.Add(CardLine(c));
-            }
+            art.Add(BoxLine(content, CardInner, border));
         }
+
+        (string footer, Color footerColor) = CardFooter(c);
+        art.Add(BoxLine(Centered(footer, CardInner, dim ? Theme.Dim : footerColor), CardInner, border));
+        art.Add(new Line().Add("└" + new string('─', CardInner) + "┘", border));
+        return art;
+    }
+
+    // Top row: energy cost at the left (teal energy pips), star cost at the right (gold). Status/curse
+    // cards have no energy/star cost, so their top row is left blank.
+    private static List<Seg> CostRow(CardView c, bool dim)
+    {
+        if (c.Type is CardType.Status or CardType.Curse)
+        {
+            return new List<Seg>();
+        }
+        Seg cost = Markup.Cost(c.CostsX, c.EnergyCost);
+        if (dim)
+        {
+            cost = cost with { Fg = Theme.Dim };
+        }
+        string star = c.StarCost > 0 ? $"★{c.StarCost}" : "";
+        int mid = Math.Max(1, CardInner - 1 - cost.Text.Length - star.Length - 1);
+        var segs = new List<Seg> { new(" ", Theme.Fg), cost, new(new string(' ', mid), Theme.Fg) };
+        if (star.Length > 0)
+        {
+            segs.Add(new Seg(star, dim ? Theme.Dim : Theme.Gold));
+        }
+        segs.Add(new Seg(" ", Theme.Fg));
+        return segs;
+    }
+
+    // The name band: the card name centred over a rarity-coloured background (grey common, blue uncommon,
+    // gold rare). The name text is white normally, green when upgraded.
+    private static List<Seg> BandNameRow(CardView c, bool dim)
+    {
+        Color bg = dim ? Theme.HpLost : CardBandBg(c.Rarity);
+        Color nameFg = dim ? Theme.LightGrey : c.Upgraded ? Theme.Green : Theme.White;
+        string name = CardName(c);
+        if (name.Length > CardInner)
+        {
+            name = name.Substring(0, CardInner);
+        }
+        int pad = (CardInner - name.Length) / 2;
+        return new List<Seg>
+        {
+            new(new string(' ', pad), nameFg, bg),
+            new(name, nameFg, bg),
+            new(new string(' ', CardInner - pad - name.Length), nameFg, bg),
+        };
+    }
+
+    // The footer: an attack shows its player-side projected damage ("6 Damage"), a card that grants block
+    // shows the block it gives ("5 Block"); everything else shows its card type.
+    private static (string text, Color color) CardFooter(CardView c)
+    {
+        if (c.Type == CardType.Attack && c.Damage is int d && d > 0)
+        {
+            return ($"{d} Damage", Theme.Red);
+        }
+        if (c.Block is int b && b > 0)
+        {
+            return ($"{b} Block", Theme.Blue);
+        }
+        return (CardTypeLabel(c.Type), Theme.Dim);
+    }
+
+    // The card's border colour: its natural class colour, with status and curses taking their own hues.
+    private static Color CardBorderColor(CardView c) => c.Type switch
+    {
+        CardType.Curse => Theme.Curse,
+        CardType.Status => Theme.StatusTan,
+        _ => c.PoolId switch
+        {
+            "IRONCLAD_CARD_POOL" => Theme.Red,
+            "DEFECT_CARD_POOL" => Theme.Blue,
+            "SILENT_CARD_POOL" => Theme.Green,
+            "NECROBINDER_CARD_POOL" => Theme.Magenta,
+            "REGENT_CARD_POOL" => Theme.Orange,
+            "CURSE_CARD_POOL" => Theme.Curse,
+            "STATUS_CARD_POOL" => Theme.StatusTan,
+            _ => Theme.Colorless,   // colourless/event/token/quest/etc.
+        },
+    };
+
+    private static Color CardBandBg(CardRarity r) => r switch
+    {
+        CardRarity.Uncommon => Theme.BandUncommon,
+        CardRarity.Rare => Theme.BandRare,
+        _ => Theme.BandCommon,   // basic/common/other
+    };
+
+    private static string CardTypeLabel(CardType t) => t switch
+    {
+        CardType.Attack => "Attack",
+        CardType.Skill => "Skill",
+        CardType.Power => "Power",
+        CardType.Status => "Status",
+        CardType.Curse => "Curse",
+        CardType.Quest => "Quest",
+        _ => "",
+    };
+
+    // Centre text within an inner-width field (truncating if too long), as a single coloured segment.
+    private static List<Seg> Centered(string text, int inner, Color color)
+    {
+        if (text.Length > inner)
+        {
+            text = text.Substring(0, inner);
+        }
+        int pad = (inner - text.Length) / 2;
+        return new List<Seg> { new(new string(' ', pad) + text, color) };
+    }
+
+    // Truncate a run of coloured segments to a maximum column width (keeping colours).
+    private static List<Seg> ClampSegs(IReadOnlyList<Seg> segs, int max)
+    {
+        var outp = new List<Seg>();
+        int used = 0;
+        foreach (Seg s in segs)
+        {
+            if (used >= max)
+            {
+                break;
+            }
+            string t = s.Text.Length > max - used ? s.Text.Substring(0, max - used) : s.Text;
+            outp.Add(new Seg(t, s.Fg));
+            used += t.Length;
+        }
+        return outp;
     }
 
     private static int PowerAmount(IReadOnlyList<PowerView> powers, string id) =>
@@ -218,21 +407,37 @@ internal static class BoardRenderer
     /// </summary>
     private static List<Line> CreatureBox(
         string name, int cur, int max, int block, IReadOnlyList<PowerView> powers, IReadOnlyList<Seg>? info, int w,
-        IReadOnlyList<Seg>? orbInfo = null)
+        IReadOnlyList<Seg>? orbInfo = null, TargetBadge? badge = null)
     {
         int poison = PowerAmount(powers, "POISON_POWER");
         int doom = PowerAmount(powers, "DOOM_POWER");
         int inner = w - 2;
         Color border =
+            badge is { Selected: true } ? Theme.Teal :  // the target the selection is on — brightest
+            badge is not null ? Theme.Gold :            // a live targeting candidate — highlight it
             poison > 0 && poison >= cur ? Theme.Green :
             doom > 0 && doom >= cur ? Theme.Magenta :
             block > 0 ? Theme.LightGrey :
             Theme.Red;
 
+        // The name row, with a targeting badge ("▸[1] 12") prepended during card targeting.
+        var nameRow = new List<Seg>();
+        if (badge is { } bd)
+        {
+            Color badgeFg = bd.Selected ? Theme.Teal : Theme.Gold;
+            nameRow.Add(new Seg(bd.Selected ? " ▸[" + bd.Hotkey + "]" : " [" + bd.Hotkey + "]", badgeFg));
+            nameRow.Add(bd.Damage is int dv ? new Seg($" {dv} ", Theme.Red) : new Seg(" ", Theme.Fg));
+            nameRow.Add(new Seg(name, Theme.Fg));
+        }
+        else
+        {
+            nameRow.Add(new Seg(" " + name, Theme.Fg));
+        }
+
         var lines = new List<Line>
         {
             new Line().Add("┌" + new string('─', inner) + "┐", border),
-            BoxLine(new List<Seg> { new(" " + name, Theme.Fg) }, inner, border),
+            BoxLine(nameRow, inner, border),
         };
 
         string hpText = block > 0 ? $" {cur}/{max} +{block}" : $" {cur}/{max}";

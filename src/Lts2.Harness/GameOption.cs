@@ -87,6 +87,13 @@ public sealed class GameOption
     /// <summary>The target enemy's combat id for a targeted card play; null otherwise.</summary>
     public uint? TargetCombatId { get; }
 
+    /// <summary>
+    /// The index of the card in the player's hand for <see cref="OptionKind.PlayCard"/>; null otherwise.
+    /// A targeted card expands to one option per legal target, all sharing this index — so a UI can group
+    /// a card's per-target options together and correlate them with the hand (even with duplicate cards).
+    /// </summary>
+    public int? HandIndex { get; }
+
     /// <summary>The destination for <see cref="OptionKind.MoveTo"/>; null otherwise.</summary>
     public Coord? Coord { get; }
 
@@ -169,6 +176,7 @@ public sealed class GameOption
         string description,
         CardView? card = null,
         uint? targetCombatId = null,
+        int? handIndex = null,
         Coord? coord = null,
         IReadOnlyList<CardView>? selectedCards = null,
         int? eventOptionIndex = null,
@@ -203,6 +211,7 @@ public sealed class GameOption
         Description = description;
         Card = card;
         TargetCombatId = targetCombatId;
+        HandIndex = handIndex;
         Coord = coord;
         SelectedCards = selectedCards;
         EventOptionIndex = eventOptionIndex;
@@ -233,14 +242,15 @@ public sealed class GameOption
         CrystalSphereToolValue = crystalSphereToolValue;
     }
 
-    internal static GameOption PlayCardOption(Player player, CardModel cardModel, CardView card, Creature? target)
+    internal static GameOption PlayCardOption(
+        Player player, CardModel cardModel, CardView card, Creature? target, int handIndex)
     {
         string desc = target?.Monster is not null
             ? $"Play {card.CardId} -> {target.Monster.Id.Entry}"
             : $"Play {card.CardId}";
         return new GameOption(
             OptionKind.PlayCard, player.NetId, desc,
-            card: card, targetCombatId: target?.CombatId,
+            card: card, targetCombatId: target?.CombatId, handIndex: handIndex,
             cardModel: cardModel, target: target, player: player);
     }
 

@@ -25,6 +25,17 @@ internal static class Theme
     public static readonly Color LightGrey = new(176, 180, 192);
     public static readonly Color Orange = new(209, 154, 102);
     public static readonly Color Pink = new(224, 148, 208);
+    public static readonly Color White = new(236, 238, 244);           // upgraded-card names read as brighter white/green
+
+    // Card colour-identity borders for non-character cards (character cards reuse Red/Blue/Green/Magenta/Orange).
+    public static readonly Color Colorless = new(130, 150, 175);       // colourless pool — a cool grey-blue
+    public static readonly Color StatusTan = new(176, 160, 128);       // status cards — a muted grey-tan
+    public static readonly Color Curse = new(140, 104, 168);           // curses — a dark purple
+
+    // Rarity name-band backgrounds (the card name sits on this): dark enough for white/green text to pop.
+    public static readonly Color BandCommon = new(58, 62, 72);
+    public static readonly Color BandUncommon = new(38, 66, 100);
+    public static readonly Color BandRare = new(102, 78, 40);
 
     /// <summary>HP colour: green when healthy, yellow when hurt, red when low.</summary>
     public static Color Hp(int cur, int max)

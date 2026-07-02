@@ -202,7 +202,7 @@ internal sealed class OptionsView : View
             int col = 0;
             foreach (Seg seg in segs)
             {
-                SetAttribute(sel && header ? highlight : new Attribute(seg.Fg, Theme.Bg));
+                SetAttribute(sel && header ? highlight : new Attribute(seg.Fg, seg.Bg ?? Theme.Bg));
                 foreach (char c in seg.Text)
                 {
                     if (col >= vp.Width)

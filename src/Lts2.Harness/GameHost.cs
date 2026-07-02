@@ -1037,8 +1037,9 @@ public sealed class GameHost
             }
 
             MegaCrit.Sts2.Core.Combat.CombatState combat = Combat!;
-            foreach (MegaCrit.Sts2.Core.Models.CardModel card in pcs.Hand.Cards)
+            for (int handIndex = 0; handIndex < pcs.Hand.Cards.Count; handIndex++)
             {
+                MegaCrit.Sts2.Core.Models.CardModel card = pcs.Hand.Cards[handIndex];
                 // A single misbehaving card (a status/curse whose CanPlay or preview throws, an Osty
                 // card evaluated with no Osty summoned, …) must never suppress the rest of the turn's
                 // options — most importantly End Turn. Guard per card: skip the offender, log it, and
@@ -1058,14 +1059,14 @@ public sealed class GameHost
                                 // Project per target so the option shows the actual damage to that enemy
                                 // (its Vulnerable/Intangible/etc. folded in).
                                 CardView targetedView = GameStateProjection.ProjectCard(card, canPlay: true, target: enemy);
-                                options.Add(GameOption.PlayCardOption(player, card, targetedView, enemy));
+                                options.Add(GameOption.PlayCardOption(player, card, targetedView, enemy, handIndex));
                             }
                         }
                     }
                     else
                     {
                         CardView view = GameStateProjection.ProjectCard(card, canPlay: true);
-                        options.Add(GameOption.PlayCardOption(player, card, view, target: null));
+                        options.Add(GameOption.PlayCardOption(player, card, view, target: null, handIndex));
                     }
                 }
                 catch (System.Exception ex)

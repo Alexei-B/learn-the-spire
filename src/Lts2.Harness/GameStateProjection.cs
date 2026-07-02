@@ -168,6 +168,7 @@ internal static class GameStateProjection
             Type = card.Type,
             Rarity = card.Rarity,
             TargetType = card.TargetType,
+            PoolId = PoolIdOf(card),
             // The forge shows each candidate as the upgraded card it would become; override the flag so
             // the UI renders it with a "+" and the upgraded description.
             Upgraded = upgradedOverride ?? card.IsUpgraded,
@@ -183,6 +184,22 @@ internal static class GameStateProjection
             ReplayCount = ReplayCountOf(card),
             AddedKeywords = AddedKeywordsOf(card),
         };
+    }
+
+    /// <summary>
+    /// The id of the card's natural (visual) pool — the class/colour that rewards it, independent of the
+    /// current holder. Guarded: some generated/token cards can throw resolving their pool.
+    /// </summary>
+    private static string PoolIdOf(CardModel card)
+    {
+        try
+        {
+            return card.VisualCardPool?.Id.Entry ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     /// <summary>The extra replay count granted by an enchantment/effect (0 for a plain card).</summary>
@@ -270,11 +287,21 @@ internal static class GameStateProjection
                 dmg = Math.Max(0, (int)d.PreviewValue);
                 baseDmg = Math.Max(0, (int)d.BaseValue);
             }
+            else if (card.DynamicVars.ContainsKey("CalculatedDamage"))
+            {
+                // Calculated-damage attacks (CalculationBase + ExtraDamage → CalculatedDamage) don't use
+                // the plain Damage var; their final hit lives in CalculatedDamage. This covers Necrobinder
+                // cards that attack *through Osty* (CardTag.OstyAttack, e.g. Unleash, whose damage scales
+                // with Osty's current HP) as well as cards like PerfectedStrike/BodySlam. Read it so their
+                // hit shows after the card name and the strategy can see it.
+                var d = card.DynamicVars.CalculatedDamage;
+                dmg = Math.Max(0, (int)d.PreviewValue);
+                baseDmg = Math.Max(0, (int)d.BaseValue);
+            }
             else if (card.DynamicVars.ContainsKey("OstyDamage"))
             {
-                // Necrobinder cards that attack *through Osty* (CardTag.OstyAttack, e.g. Unleash) carry
-                // their damage in a separate OstyDamage var — computed from Osty's stats — rather than
-                // the usual Damage var. Read it so their hit still shows and the strategy can see it.
+                // A few Necrobinder cards carry a fixed Osty-sourced hit in a dedicated OstyDamage var
+                // rather than the calculated path. Read it so their hit still shows too.
                 var d = card.DynamicVars.OstyDamage;
                 dmg = Math.Max(0, (int)d.PreviewValue);
                 baseDmg = Math.Max(0, (int)d.BaseValue);
