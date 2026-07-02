@@ -33,9 +33,13 @@ Turn the imperative `GameHost` primitives into the intended clean interface.
   (`GamePhase.Choice`) / `ListOptions` (`SelectCards` options), and resolve via `Apply`. The
   combat pump waits on queue-drain-or-choice so a blocked effect returns control instead of
   deadlocking. Post-combat card-reward selection now lands with M2's battle rewards (the
-  `GetSelectedCardReward` seam returns the harness-staged pick). Remaining: enemy-turn-triggered
-  player choices, and full multi-select subset enumeration (min &gt; 1 currently offers one
-  exact-minimum selection).
+  `GetSelectedCardReward` seam returns the harness-staged pick). Multi-select choices
+  (`MaxSelect > 1`, e.g. the Regent's CHARGE!!) resolve with any valid subset via
+  `ApplyCardChoice(indices)` (the `SelectCards` options still only enumerate single/exact-minimum
+  picks). ScrollBoxes' "choose a bundle" selection — a separate seam
+  (`CardSelectCmd.FromChooseABundleScreen`) the game auto-resolves under TestMode — is intercepted by a
+  Harmony prefix and surfaced as `GamePhase.BundleChoice` / `ChooseBundle` options. Remaining: full
+  multi-select subset *enumeration* as discrete options.
 
 ## M2 — Combat completeness
 - **Battle rewards** — _done_: winning a combat surfaces `GamePhase.Reward` with the room's

@@ -38,6 +38,9 @@ internal static class BoardRenderer
             case GamePhase.Event:
                 Event(state, lines, width);
                 break;
+            case GamePhase.BundleChoice:
+                BundleChoice(state, lines);
+                break;
             case GamePhase.Treasure:
                 Treasure(state, lines);
                 break;
@@ -465,6 +468,24 @@ internal static class BoardRenderer
         foreach (CardView c in pc.Options)
         {
             lines.Add(CardLine(c));
+        }
+    }
+
+    private static void BundleChoice(GameState state, List<Line> lines)
+    {
+        if (state.BundleChoice is not { } bc)
+        {
+            return;
+        }
+        lines.Add(new Line().Add("CHOOSE A BUNDLE — its cards are all added to your deck", Theme.Gold));
+        for (int i = 0; i < bc.Bundles.Count; i++)
+        {
+            lines.Add(new Line());
+            lines.Add(new Line().Add($"Bundle {i + 1}", Theme.Teal));
+            foreach (CardView c in bc.Bundles[i])
+            {
+                lines.Add(CardLine(c));
+            }
         }
     }
 
@@ -958,6 +979,7 @@ internal static class BoardRenderer
         OptionKind.ProceedFromRewards => Text("Proceed (leave screen)"),
         OptionKind.SkipTreasure => Text("Skip — take no relic", Theme.Dim),
         OptionKind.ChooseEventOption => EventLabelSegs(o, state),
+        OptionKind.ChooseBundle when o.BundleCards is { } cards => BundleLabelSegs(o.BundleIndex ?? 0, cards),
         OptionKind.TakeReward when o.Card is { } rc => Prepend("Take ", CardLabelSegs(rc, null)),
         OptionKind.TakeTreasureRelic when o.TreasureRelicId is { } rid => Text($"Take {Localizer.RelicName(rid)}"),
         OptionKind.BuyShopItem => ShopLabelSegs(o),
@@ -1022,6 +1044,20 @@ internal static class BoardRenderer
             segs.Add(new Seg(name, Theme.Fg));
         }
         segs.Add(new Seg($"  {o.ShopItemCost}g", Theme.Gold));
+        return segs;
+    }
+
+    private static List<Seg> BundleLabelSegs(int index, IReadOnlyList<CardView> cards)
+    {
+        var segs = new List<Seg> { new($"Take bundle {index + 1}: ", Theme.Fg) };
+        for (int i = 0; i < cards.Count; i++)
+        {
+            if (i > 0)
+            {
+                segs.Add(new Seg(", ", Theme.Dim));
+            }
+            segs.Add(new Seg(CardName(cards[i]), Theme.Fg));
+        }
         return segs;
     }
 

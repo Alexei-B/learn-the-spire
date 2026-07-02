@@ -5,7 +5,10 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Events;
@@ -87,6 +90,13 @@ internal static class HarmonyPatches
                     nameof(MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere.NCrystalSphereScreen.ShowScreen)),
                 prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(ShowCrystalSphereScreenPrefix)));
 
+            // CardSelectCmd.FromChooseABundleScreen (ScrollBoxes' "pick one of two card bundles") shows a
+            // UI screen that is null headless and, worse, silently auto-takes bundles[0] under TestMode.
+            // Route it to the active harness so the bundles surface as GamePhase.BundleChoice options.
+            harmony.Patch(
+                AccessTools.Method(typeof(CardSelectCmd), nameof(CardSelectCmd.FromChooseABundleScreen)),
+                prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(FromChooseABundleScreenPrefix)));
+
             // Several event options call NGame.Instance.ScreenShakeTrauma — a callvirt on the null
             // headless UI singleton that NREs *before* the option's actual effect (relic reward,
             // SetEventFinished, …), so the event can't resolve. Making NGame.Instance non-null would
@@ -108,6 +118,18 @@ internal static class HarmonyPatches
                 AccessTools.Method(
                     typeof(MegaCrit.Sts2.Core.Models.Monsters.SoulNexus), "AfterDeath",
                     new[] { typeof(MegaCrit.Sts2.Core.Entities.Creatures.Creature) }),
+                prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
+
+            // The Decimillipede elite's segments revive each other until all are dead at once; when the
+            // last one dies, ReattachPower.DoFadeOutOnAllSegments fades out every segment's *UI node*.
+            // Headless it builds a node list off the (present-but-inert) combat room and calls Godot
+            // Node methods the shim doesn't implement (Node.GetIndex(bool)), throwing mid-kill and
+            // aborting the win-condition check — so the fully-dead Decimillipede never dies. The method
+            // is purely visual (the segments are already logically dead, so IsEnding is already true);
+            // no-op it and the kill completes, ending the fight.
+            harmony.Patch(
+                AccessTools.Method(
+                    typeof(MegaCrit.Sts2.Core.Models.Powers.ReattachPower), "DoFadeOutOnAllSegments"),
                 prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipVoidPrefix)));
 
             ApplyTrialEventPatches(harmony);
@@ -409,6 +431,24 @@ internal static class HarmonyPatches
     {
         GameHost.CrystalSphereScreenHook?.Invoke(grid);
         __result = null!;
+        return false;
+    }
+
+    // Route the "choose a bundle" selection (ScrollBoxes) to the active harness instead of the null UI
+    // screen / TestMode's silent bundles[0] auto-pick. The prefix replaces the async method's result
+    // with the harness's task, which completes with the chosen bundle once the agent picks one. With no
+    // harness installed, fall through to the original so nothing else that reaches this method breaks.
+    private static bool FromChooseABundleScreenPrefix(
+        Player player,
+        IReadOnlyList<IReadOnlyList<CardModel>> bundles,
+        ref Task<IEnumerable<CardModel>> __result)
+    {
+        var hook = GameHost.BundleChoiceHook;
+        if (hook is null)
+        {
+            return true;
+        }
+        __result = hook(player, bundles);
         return false;
     }
 

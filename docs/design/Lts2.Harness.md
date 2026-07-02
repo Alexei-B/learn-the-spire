@@ -107,9 +107,13 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   projected by `GameStateProjection`); `ListOptions(playerId)` → `IReadOnlyList<GameOption>`,
   keyed off the current phase: combat card-plays × legal targets + end-turn (`PlayCard`/`EndTurn`),
   map moves (`MoveTo`), event choices (`ChooseEventOption`), reward screens
-  (`TakeReward`/`ProceedFromRewards`), or — when a card choice is pending — `SelectCards`;
+  (`TakeReward`/`ProceedFromRewards`), a "choose a bundle" selection (`ChooseBundle`), or — when a card
+  choice is pending — `SelectCards`;
   `Apply(GameOption)` → resolves the option and pumps to quiescence. `GameOption` carries a
-  serializable description plus internal live references for `Apply`.
+  serializable description plus internal live references for `Apply`. For a multi-select card choice
+  (`MaxSelect > 1`) the `SelectCards` options only enumerate single picks (plus a fixed exact-minimum
+  pick), so `ApplyCardChoice(indices)` is the general entry point that resolves the pending choice with
+  any valid subset of `PendingChoice.Options`.
 - **Choice-context injection** (`HarnessCardSelector`): the game's `CardSelectCmd.Selector`
   seam is replaced with a harness selector. When an effect requests a mid-effect card
   selection (discover/scry/exhaust/search) it calls `GetSelectedCards`, which records a
@@ -123,6 +127,14 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   player's `PlayerTurnPhase` (`None` during the enemy turn vs `Play` for a player-effect choice).
   Post-combat card-reward selection (`GetSelectedCardReward`) returns whichever card the harness staged
   when applying the card reward's `TakeReward` option (see Battle rewards below).
+- **Bundle choice** (`GamePhase.BundleChoice`): ScrollBoxes (a Neow relic) offers a choice of two
+  3-card bundles for the deck via `CardSelectCmd.FromChooseABundleScreen` — a *different* seam from the
+  card selector, with no injectable hook and a `TestMode.IsOn` branch that silently auto-takes
+  `bundles[0]`. A Harmony prefix (`FromChooseABundleScreenPrefix`) redirects it to the harness
+  (`OnBundleChoiceOffered`), which suspends the offering effect (mirroring the custom-reward gate) until
+  `Apply(ChooseBundle)` picks one; the pumps wake on a `BundleSignal` alongside the card-choice/custom-
+  reward/Crystal-Sphere signals. Patching that method requires the GodotShim to resolve every member its
+  IL touches, which is why `Godot.Node.GetIndex(bool)` was added to the shim.
 - **Battle rewards**: the faithful victory→rewards flow is driven by `NCombatUi.OnCombatWon`,
   which is null headless, so the harness reproduces its logic half. After a won combat fully
   ends (`TryOfferCombatRewards`, run once per `CombatRoom`), it calls
@@ -355,8 +367,11 @@ surface, in-combat *and enemy-turn* card-choice injection, the post-combat battl
 (including card-reward alternatives/reroll and the run score), event rooms (opening ancient +
 regular-event path), custom relic/event reward sets (`OfferCustom`), treasure rooms, rest sites, shops,
 potion use/discard, the act 1→2→3 transition, and the Architect victory.
-Still missing: multi-page events and the event `WillKillPlayer` hint; full multi-select subset
-enumeration (min &gt; 1 currently offers a single exact-minimum selection). The exotic `OfferCustom`
+A multi-select card choice (`MaxSelect > 1`, e.g. the Regent's CHARGE!!) is fully resolvable: the
+`SelectCards` *options* only enumerate single picks + a fixed exact-minimum pick, but
+`ApplyCardChoice(indices)` resolves the pending choice with any valid subset (the TUI drives this with
+an interactive picker). Still missing: multi-page events and the event `WillKillPlayer` hint; full
+multi-select subset *enumeration* as discrete options. The exotic `OfferCustom`
 reward sets and the full relic roster are now covered (see "Relic & reward-set coverage" below).
 
 **Full content sweep (every act variant).** `Act{1,2,3}FightsTests` / `Act{1,2,3}EventsTests`

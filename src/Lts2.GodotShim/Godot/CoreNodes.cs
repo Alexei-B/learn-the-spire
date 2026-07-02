@@ -121,6 +121,8 @@ public class Node : GodotObject
 
     public int GetChildCount(bool includeInternal = false) => 0;
 
+    public int GetIndex(bool includeInternal = false) => 0;
+
     public void AddChild(Node node, bool forceReadableName = false, InternalMode @internal = InternalMode.Disabled) { }
 
     public void AddSibling(Node sibling, bool forceReadableName = false) { }

@@ -24,6 +24,10 @@ internal sealed class OptionsView : View
     private int _scroll;
     private int? _endTurn;
 
+    // The option the Tab auto-play shortcut would apply (the default-strategy pick), or null when there
+    // is none. Marked "(tab)" in the list and activated by Tab, just like a number-key shortcut.
+    private int? _auto;
+
     public event Action<int>? Activated;
 
     /// <summary>Raised when the highlighted option changes (arrow keys, number keys, or SetEntries).</summary>
@@ -39,11 +43,13 @@ internal sealed class OptionsView : View
     /// <summary>
     /// Set the options. <paramref name="endTurnIndex"/>, when given, is the option that always binds to
     /// the <c>0</c> key (End turn); the remaining options take the digits 1–9 in order.
+    /// <paramref name="autoIndex"/>, when given, is the option the Tab shortcut applies (marked "(tab)").
     /// </summary>
-    public void SetEntries(List<Entry> entries, int? endTurnIndex = null, int selected = 0)
+    public void SetEntries(List<Entry> entries, int? endTurnIndex = null, int selected = 0, int? autoIndex = null)
     {
         _entries = entries;
         _endTurn = endTurnIndex;
+        _auto = autoIndex is >= 0 && autoIndex < entries.Count ? autoIndex : null;
         _hotkeys = AssignHotkeys(entries.Count, endTurnIndex);
         _selected = entries.Count == 0 ? -1 : Math.Clamp(selected, 0, entries.Count - 1);
         _scroll = 0;
@@ -85,6 +91,20 @@ internal sealed class OptionsView : View
 
     protected override bool OnKeyDown(Key key)
     {
+        // Tab applies the default-strategy pick (marked "(tab)"), exactly like a number-key shortcut but
+        // with a dynamically-chosen target. Handled before the empty-list guard and returned true so it
+        // never falls through to Terminal.Gui's focus-navigation binding.
+        if (key.KeyCode == KeyCode.Tab)
+        {
+            if (_auto is int a)
+            {
+                _selected = a;
+                SetNeedsDraw();
+                SelectionChanged?.Invoke(a);
+                Activated?.Invoke(a);
+            }
+            return true;
+        }
         if (_entries.Count == 0)
         {
             return false;
@@ -141,6 +161,12 @@ internal sealed class OptionsView : View
             string key = i < _hotkeys.Count ? _hotkeys[i] : "";
             string tag = key.Length > 0 ? $"[{key}] " : "    ";
             var header = new List<Seg> { new(tag, Theme.Gold) };
+            // Flag the default-strategy pick with a grey "(tab)" before the option, so the shortcut's
+            // dynamic target is visible in the list.
+            if (i == _auto)
+            {
+                header.Add(new Seg("(tab) ", Theme.Dim));
+            }
             header.AddRange(e.Label);
             rows.Add((header, i, true));
 

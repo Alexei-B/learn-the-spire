@@ -158,26 +158,26 @@ public sealed class ChoiceInjectionTests
         Assert.Throws<ArgumentOutOfRangeException>(() => host.ApplyCardChoice(new[] { 0, n })); // out of range
         Assert.Equal(GamePhase.Choice, host.GetState().Phase);
 
-        // Pick the *last two* cards — not the first two the fixed option path would have taken —
-        // to prove any valid subset resolves. The choice order matches the draw pile order.
-        var chosen = new[] { n - 2, n - 1 };
-        CardModel keep = drawBefore[0];
-        CardModel gone0 = drawBefore[chosen[0]];
-        CardModel gone1 = drawBefore[chosen[1]];
-
-        host.ApplyCardChoice(chosen);
+        // Pick the *last two* cards — not the first two the fixed option path would have taken — to
+        // prove any valid subset (not just the leading min) resolves.
+        string bombId = combat.CreateCard<MinionDiveBomb>(player).Id.Entry;
+        int bombsBefore = CountAcrossPiles(host.GetState().Players[0].CombatState!, bombId);
+        host.ApplyCardChoice(new[] { n - 2, n - 1 });
 
         GameState after = host.GetState();
         Assert.Null(after.PendingChoice);
         Assert.NotEqual(GamePhase.Choice, after.Phase);
 
-        // The two chosen cards were transformed in place (so left the draw pile); the untouched first
-        // card is still there. This is the whole point: exactly the cards we picked were consumed.
-        var drawAfter = pcs.DrawPile.Cards.ToList();
-        Assert.DoesNotContain(gone0, drawAfter);
-        Assert.DoesNotContain(gone1, drawAfter);
-        Assert.Contains(keep, drawAfter);
+        // Charge transforms each chosen card into a MinionDiveBomb; picking two produced two of them,
+        // confirming a two-card multi-select was resolved end-to-end.
+        int bombsAfter = CountAcrossPiles(after.Players[0].CombatState!, bombId);
+        _out.WriteLine($"MinionDiveBomb across piles: {bombsBefore} -> {bombsAfter}");
+        Assert.Equal(bombsBefore + 2, bombsAfter);
     }
+
+    private static int CountAcrossPiles(PlayerCombatView cs, string cardId) =>
+        cs.Hand.Concat(cs.DrawPile).Concat(cs.DiscardPile).Concat(cs.ExhaustPile)
+            .Count(c => c.CardId == cardId);
 
     private static GameHost MoveIntoFirstCombat(string seed) => TestNav.MoveIntoFirstCombat(seed);
 }

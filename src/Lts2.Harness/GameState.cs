@@ -44,6 +44,13 @@ public enum GamePhase
     Event,
 
     /// <summary>
+    /// Blocked on a "choose a bundle" selection (ScrollBoxes: pick one of the offered card bundles for
+    /// your deck). Resolve via the <see cref="OptionKind.ChooseBundle"/> options from
+    /// <see cref="GameHost.ListOptions(ulong)"/>.
+    /// </summary>
+    BundleChoice,
+
+    /// <summary>
     /// In a treasure room with the chest opened and relics still to pick. Resolve via the
     /// <see cref="OptionKind.TakeTreasureRelic"/> / <see cref="OptionKind.SkipTreasure"/> options
     /// from <see cref="GameHost.ListOptions(ulong)"/>.
@@ -129,6 +136,9 @@ public sealed record GameState
 
     /// <summary>A mid-effect card choice the game is blocked on, or null if none.</summary>
     public PendingChoiceView? PendingChoice { get; init; }
+
+    /// <summary>The "choose a bundle" selection (ScrollBoxes) on offer, or null when there is none.</summary>
+    public BundleChoiceView? BundleChoice { get; init; }
 
     /// <summary>The post-combat rewards on offer, or null when not on the rewards screen.</summary>
     public RewardsView? Rewards { get; init; }
@@ -396,6 +406,17 @@ public sealed record PendingChoiceView
     /// <summary>True when this choice picks a card to upgrade (the rest-site forge); its options are
     /// shown as the upgraded card they would become.</summary>
     public bool IsUpgradeSelection { get; init; }
+}
+
+/// <summary>
+/// A "choose a bundle" selection (ScrollBoxes): pick one of several card bundles, whose cards are all
+/// added to the deck. Resolve via the <see cref="OptionKind.ChooseBundle"/> options.
+/// </summary>
+public sealed record BundleChoiceView
+{
+    /// <summary>The bundles on offer, in the same order as the resolving options; each is a group of
+    /// cards taken together.</summary>
+    public required IReadOnlyList<IReadOnlyList<CardView>> Bundles { get; init; }
 }
 
 /// <summary>Run-level state for one player (persists across combats).</summary>

@@ -207,14 +207,26 @@ internal sealed class GameScreen
                 entries.Add(new OptionsView.Entry(BoardRenderer.OptionLabel(o, state), BoardRenderer.OptionDescSegs(o, state)));
             }
             int endTurn = _options.FindIndex(o => o.Kind == OptionKind.EndTurn);
-            _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null);
+            // In combat, Tab applies the default-strategy pick; surface which option that is so the list
+            // can mark it "(tab)" and Tab can activate it (see OptionsView).
+            int? autoIndex = null;
+            if (state.Phase == GamePhase.Combat
+                && CombatStrategy.ChooseDefaultMove(state, _options) is { } autoPick)
+            {
+                int i = _options.IndexOf(autoPick);
+                autoIndex = i >= 0 ? i : null;
+            }
+            _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null, autoIndex: autoIndex);
         }
         _optionsView.SetFocus();
         _log.SetNeedsDraw();
 
+        bool combatPhase = state.Phase is GamePhase.Combat;
         _msg.Text = state.IsGameOver
             ? " Run over.  Game ▸ New Run to play again."
-            : " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · Alt+G Game · Alt+V View";
+            : combatPhase
+                ? " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · Tab auto-play · Alt+G Game · Alt+V View"
+                : " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · Alt+G Game · Alt+V View";
 
         if (state.IsGameOver && !_gameOverShown)
         {

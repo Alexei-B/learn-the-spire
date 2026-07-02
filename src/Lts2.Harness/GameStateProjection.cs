@@ -39,6 +39,7 @@ internal static class GameStateProjection
             Combat = combat is null ? null : ProjectCombat(combat),
             Map = ProjectMap(run),
             PendingChoice = pending is null ? null : ProjectPendingChoice(pending),
+            BundleChoice = host.PendingBundles is { } bundles ? ProjectBundleChoice(bundles) : null,
             Rewards = host.PendingRewards is null ? null : ProjectRewards(host.PendingRewards),
             Event = host.HasActionableEvent ? ProjectEvent(host.CurrentEvent!, run) : null,
             Treasure = host.HasTreasureChoice ? ProjectTreasure(host) : null,
@@ -61,6 +62,10 @@ internal static class GameStateProjection
         if (pending is not null)
         {
             return GamePhase.Choice;
+        }
+        if (host.PendingBundles is not null)
+        {
+            return GamePhase.BundleChoice;
         }
         if (host.PendingCrystalSphere is not null)
         {
@@ -289,6 +294,15 @@ internal static class GameStateProjection
             IsUpgradeSelection = pending.IsUpgradeSelection,
         };
     }
+
+    private static BundleChoiceView ProjectBundleChoice(
+        IReadOnlyList<IReadOnlyList<MegaCrit.Sts2.Core.Models.CardModel>> bundles) =>
+        new()
+        {
+            Bundles = bundles
+                .Select(b => (IReadOnlyList<CardView>)b.Select(c => ProjectCard(c, canPlay: false)).ToList())
+                .ToList(),
+        };
 
     private static EventView ProjectEvent(MegaCrit.Sts2.Core.Models.EventModel ev, RunState run)
     {

@@ -26,6 +26,9 @@ public enum OptionKind
     /// <summary>Choose one option in an event room (e.g. a Neow blessing).</summary>
     ChooseEventOption,
 
+    /// <summary>Pick one of the card bundles offered by a "choose a bundle" selection (ScrollBoxes).</summary>
+    ChooseBundle,
+
     /// <summary>Take one reward from the post-combat rewards screen (gold/potion/relic/card).</summary>
     TakeReward,
 
@@ -92,6 +95,12 @@ public sealed class GameOption
 
     /// <summary>The index into the event's options for <see cref="OptionKind.ChooseEventOption"/>; null otherwise.</summary>
     public int? EventOptionIndex { get; }
+
+    /// <summary>The index of the bundle a <see cref="OptionKind.ChooseBundle"/> option picks; null otherwise.</summary>
+    public int? BundleIndex { get; }
+
+    /// <summary>The cards in the bundle a <see cref="OptionKind.ChooseBundle"/> option picks; null otherwise.</summary>
+    public IReadOnlyList<CardView>? BundleCards { get; }
 
     /// <summary>The relic an event option grants (e.g. a Neow blessing), if any; null otherwise.</summary>
     public string? EventOptionRelicId { get; }
@@ -163,6 +172,8 @@ public sealed class GameOption
         Coord? coord = null,
         IReadOnlyList<CardView>? selectedCards = null,
         int? eventOptionIndex = null,
+        int? bundleIndex = null,
+        IReadOnlyList<CardView>? bundleCards = null,
         string? eventOptionRelicId = null,
         string? cardRewardAlternativeId = null,
         string? treasureRelicId = null,
@@ -195,6 +206,8 @@ public sealed class GameOption
         Coord = coord;
         SelectedCards = selectedCards;
         EventOptionIndex = eventOptionIndex;
+        BundleIndex = bundleIndex;
+        BundleCards = bundleCards;
         EventOptionRelicId = eventOptionRelicId;
         CardRewardAlternativeId = cardRewardAlternativeId;
         TreasureRelicId = treasureRelicId;
@@ -266,6 +279,18 @@ public sealed class GameOption
         return new GameOption(
             OptionKind.ChooseEventOption, player.NetId, desc,
             eventOptionIndex: index, eventOptionRelicId: relicId, player: player);
+    }
+
+    /// <summary>
+    /// Pick the card bundle at <paramref name="index"/> from a "choose a bundle" selection (ScrollBoxes).
+    /// Carries the bundle's cards for display; resolution adds them to the deck.
+    /// </summary>
+    internal static GameOption ChooseBundleOption(Player player, int index, IReadOnlyList<CardView> cards)
+    {
+        string desc = "Take bundle " + string.Join(", ", cards.Select(c => c.CardId));
+        return new GameOption(
+            OptionKind.ChooseBundle, player.NetId, desc,
+            bundleIndex: index, bundleCards: cards, player: player);
     }
 
     /// <summary>

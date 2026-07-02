@@ -22,6 +22,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Lts2.Harness\Lts2.Harness.csproj" />
+    <!-- The TUI's combat-strategy policy (Lts2.Tui) is covered by CombatStrategyTests. -->
+    <ProjectReference Include="..\..\src\Lts2.Tui\Lts2.Tui.csproj" />
   </ItemGroup>
 
 </Project>

@@ -85,6 +85,34 @@ public sealed class GameHost
         get { lock (_rewardGate) { return _customRewardSignal.Task; } }
     }
 
+    // A "choose a bundle" selection offered mid-effect (ScrollBoxes' AfterObtained, a Neow relic that
+    // lets you pick one of two 3-card bundles for your deck). The game drives this through a UI screen
+    // (NChooseABundleSelectionScreen) that is null headless; worse, CardSelectCmd.FromChooseABundleScreen
+    // silently auto-takes bundles[0] under TestMode. A Harmony patch routes it here instead
+    // (OnBundleChoiceOffered), suspending the offering effect on _bundleResolve until the agent picks a
+    // bundle, so the choice actually surfaces. The chosen bundle's cards are the method's result.
+    private readonly object _bundleGate = new();
+    private System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<CardModel>>? _pendingBundles;
+    private System.Threading.Tasks.TaskCompletionSource<System.Collections.Generic.IEnumerable<CardModel>>? _bundleResolve;
+    private System.Threading.Tasks.TaskCompletionSource _bundleSignal = NewSignal();
+
+    private System.Threading.Tasks.Task BundleSignal
+    {
+        get { lock (_bundleGate) { return _bundleSignal.Task; } }
+    }
+
+    /// <summary>The bundles a ScrollBoxes choice is awaiting the agent to pick from, or null. Read by the projection.</summary>
+    internal System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<CardModel>>? PendingBundles
+    {
+        get { lock (_bundleGate) { return _pendingBundles; } }
+    }
+
+    /// <summary>True while a "choose a bundle" selection is awaiting the agent's pick.</summary>
+    private bool BundleChoicePending
+    {
+        get { lock (_bundleGate) { return _pendingBundles is not null; } }
+    }
+
     // The Crystal Sphere event minigame currently awaiting the agent's cell-clicks, or null. The
     // game drives this through a UI screen (NCrystalSphereScreen) that is null headless; a Harmony
     // patch on NCrystalSphereScreen.ShowScreen routes the minigame here instead (see
@@ -98,6 +126,12 @@ public sealed class GameHost
     // Process-wide hook the ShowScreen Harmony patch calls; the latest run owns it (like testSelector).
     internal static System.Action<MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent.CrystalSphereMinigame>?
         CrystalSphereScreenHook;
+
+    // Process-wide hook the FromChooseABundleScreen Harmony patch calls; the latest run owns it.
+    internal static System.Func<
+        Player,
+        System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<CardModel>>,
+        System.Threading.Tasks.Task<System.Collections.Generic.IEnumerable<CardModel>>>? BundleChoiceHook;
 
     private System.Threading.Tasks.Task CrystalSphereSignal
     {
@@ -127,7 +161,8 @@ public sealed class GameHost
     /// a custom rewards set. The combat/event pumps return control (rather than draining) so the
     /// suspended decision surfaces instead of deadlocking.
     /// </summary>
-    private bool EffectSuspended => Selector.Pending is not null || CustomRewardPending || CrystalSpherePending;
+    private bool EffectSuspended =>
+        Selector.Pending is not null || CustomRewardPending || CrystalSpherePending || BundleChoicePending;
 
     /// <summary>
     /// Create and start a fresh single-player run with the given seed.
@@ -236,6 +271,10 @@ public sealed class GameHost
         // Intercept the Crystal Sphere event minigame's UI screen (null headless) so its grid
         // surfaces as agent choices instead. Process-wide; the latest run owns it.
         CrystalSphereScreenHook = host.OnCrystalSphereScreenShown;
+
+        // Intercept the "choose a bundle" screen (ScrollBoxes), which is null headless and otherwise
+        // auto-takes bundles[0] under TestMode. Process-wide; the latest run owns it.
+        BundleChoiceHook = host.OnBundleChoiceOffered;
 
         return host;
     }
@@ -358,6 +397,81 @@ public sealed class GameHost
             _customRewardSignal.TrySetResult();
         }
         return resolve.Task;
+    }
+
+    /// <summary>
+    /// The bundle-choice seam: invoked by the <c>CardSelectCmd.FromChooseABundleScreen</c> Harmony patch
+    /// on the offering effect's task (ScrollBoxes' <c>AfterObtained</c>). Surfaces the bundles as
+    /// <see cref="GamePhase.BundleChoice"/> and blocks that task until the agent picks one via
+    /// <see cref="OptionKind.ChooseBundle"/>, at which point <see cref="ResolveBundleChoice"/> completes
+    /// the returned task with the chosen bundle's cards. Mirrors <see cref="OnCustomRewardsOffered"/>.
+    /// </summary>
+    internal System.Threading.Tasks.Task<System.Collections.Generic.IEnumerable<CardModel>> OnBundleChoiceOffered(
+        Player player,
+        System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<CardModel>> bundles)
+    {
+        var resolve = new System.Threading.Tasks.TaskCompletionSource<System.Collections.Generic.IEnumerable<CardModel>>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_bundleGate)
+        {
+            if (_pendingBundles is not null)
+            {
+                throw new InvalidOperationException("A bundle choice is already pending.");
+            }
+            _pendingBundles = bundles;
+            _bundleResolve = resolve;
+            _bundleSignal.TrySetResult();
+        }
+        return resolve.Task;
+    }
+
+    /// <summary>
+    /// Resolve the pending bundle choice with the bundle at <paramref name="index"/>: unblock the
+    /// offering effect (<c>ScrollBoxes.AfterObtained</c>) with that bundle's cards, then pump it to
+    /// quiescence. Mirrors the custom-reward resume in <see cref="ProceedFromRewards"/>.
+    /// </summary>
+    private void ResolveBundleChoice(int index)
+    {
+        System.Threading.Tasks.TaskCompletionSource<System.Collections.Generic.IEnumerable<CardModel>> resolve;
+        System.Collections.Generic.IReadOnlyList<CardModel> chosen;
+        lock (_bundleGate)
+        {
+            if (_pendingBundles is null || _bundleResolve is null)
+            {
+                throw new InvalidOperationException("No bundle choice is pending to resolve.");
+            }
+            if (index < 0 || index >= _pendingBundles.Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index), index, "Bundle index out of range.");
+            }
+            chosen = _pendingBundles[index];
+            resolve = _bundleResolve;
+            _pendingBundles = null;
+            _bundleResolve = null;
+            _bundleSignal = NewSignal();
+        }
+        resolve.TrySetResult(chosen);
+
+        // Resume the effect that raised the choice. ScrollBoxes' AfterObtained is a relic on-obtain
+        // effect run during the Neow event option task; a mid-combat relic would resume the action
+        // queue instead. Same dispatch as the custom-reward resume.
+        if (_suspendedRoomTask is { IsCompleted: false } roomTask)
+        {
+            PumpRoomTaskUntilIdleOrChoice(roomTask);
+            if (_suspendedRoomTask.IsCompleted)
+            {
+                _suspendedRoomTask = null;
+            }
+        }
+        else if (InCombat)
+        {
+            PumpCombatUntilIdleOrChoice();
+        }
+        else
+        {
+            PumpEventUntilIdleOrChoice();
+        }
+        TryOfferCombatRewards();
     }
 
     /// <summary>
@@ -818,12 +932,27 @@ public sealed class GameHost
         Player player = GetPlayer(playerId);
         var options = new List<GameOption>();
 
+        // Once the run is over (all players dead) nothing is actionable — the only thing left is to
+        // start a new run from the menu. An immediate revive (Lizard Tail / Fairy in a Bottle) fires
+        // during the fatal hit, so a revived player is already alive here and this guard won't trip.
+        if (Run.IsGameOver)
+        {
+            return options;
+        }
+
         // A mid-effect card choice takes precedence over everything else: until it is
         // resolved, the game is blocked and no other action can be taken.
         PendingChoice? pending = Selector.Pending;
         if (pending is not null)
         {
             return BuildChoiceOptions(player, pending);
+        }
+
+        // A "choose a bundle" selection (ScrollBoxes): pick one of the offered card bundles. Also a
+        // suspended mid-effect decision, so it takes precedence over rooms/rewards like the card choice.
+        if (PendingBundles is { } bundles)
+        {
+            return BuildBundleOptions(player, bundles);
         }
 
         // The Crystal Sphere event minigame: spend divinations clearing cells (then the revealed
@@ -1043,6 +1172,22 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Build the options for a "choose a bundle" selection (ScrollBoxes): one option per bundle,
+    /// each carrying the bundle's cards for display. Picking one adds that bundle's cards to the deck.
+    /// </summary>
+    private static IReadOnlyList<GameOption> BuildBundleOptions(
+        Player player, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<CardModel>> bundles)
+    {
+        var options = new List<GameOption>(bundles.Count);
+        for (int i = 0; i < bundles.Count; i++)
+        {
+            var views = bundles[i].Select(c => GameStateProjection.ProjectCard(c, canPlay: false)).ToList();
+            options.Add(GameOption.ChooseBundleOption(player, i, views));
+        }
+        return options;
+    }
+
+    /// <summary>
     /// Build the options for the post-combat rewards screen: one take option per not-yet-taken
     /// reward (card rewards expand to one option per offered card), plus a proceed option that
     /// leaves the screen and skips whatever is left.
@@ -1108,6 +1253,14 @@ public sealed class GameHost
         {
             MegaCrit.Sts2.Core.Events.EventOption opt = current[i];
             if (opt.IsLocked || opt.IsProceed)
+            {
+                continue;
+            }
+            // The game hides an option that would kill you (the button is disabled by
+            // NEventOptionButton, and the AutoSlay AI filters it in EventRoomHandler) via the option's
+            // WillKillPlayer predicate — e.g. a "lose N HP" choice when you have ≤ N HP. That gating is
+            // UI/AI-side, so enforce it here too: a self-inflicted event choice must never kill you.
+            if (opt.WillKillPlayer is { } willKill && willKill(player))
             {
                 continue;
             }
@@ -1352,6 +1505,9 @@ public sealed class GameHost
                 break;
             case OptionKind.ChooseEventOption:
                 ApplyEventOption(option.Player!, option.EventOptionIndex!.Value);
+                break;
+            case OptionKind.ChooseBundle:
+                ResolveBundleChoice(option.BundleIndex!.Value);
                 break;
             case OptionKind.TakeReward:
                 TakeReward(option);
@@ -1788,7 +1944,7 @@ public sealed class GameHost
         System.Threading.Tasks.Task optionTasks =
             RunManager.Instance.EventSynchronizer.AwaitPendingOptionTasks();
         int idx = System.Threading.Tasks.Task.WaitAny(
-            new[] { optionTasks, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal }, timeoutMs);
+            new[] { optionTasks, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal, BundleSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(
@@ -1982,7 +2138,7 @@ public sealed class GameHost
     private void PumpRoomTaskUntilIdleOrChoice(System.Threading.Tasks.Task roomTask, int timeoutMs = 10000)
     {
         int idx = System.Threading.Tasks.Task.WaitAny(
-            new[] { roomTask, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal }, timeoutMs);
+            new[] { roomTask, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal, BundleSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(
@@ -2191,7 +2347,7 @@ public sealed class GameHost
     {
         System.Threading.Tasks.Task drain = RunManager.Instance.ActionExecutor.FinishedExecutingActions();
         int idx = System.Threading.Tasks.Task.WaitAny(
-            new[] { drain, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal }, timeoutMs);
+            new[] { drain, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal, BundleSignal }, timeoutMs);
         if (idx < 0)
         {
             throw new System.TimeoutException(
@@ -2247,7 +2403,7 @@ public sealed class GameHost
         {
             TryComplete(); // in case it is already satisfied
             int idx = System.Threading.Tasks.Task.WaitAny(
-                new[] { tcs.Task, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal },
+                new[] { tcs.Task, Selector.PendingSignal, CustomRewardSignal, CrystalSphereSignal, BundleSignal },
                 timeoutMs);
             if (idx < 0)
             {
