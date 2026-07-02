@@ -521,6 +521,14 @@ public sealed record CardView
     public int? Block { get; init; }
     public int? BaseBlock { get; init; }
 
+    /// <summary>
+    /// In combat, the block-equivalent value a card grants beyond its printed <see cref="Block"/> — a
+    /// character-specific defensive mechanic the default strategy should weigh like block. Currently the
+    /// Necrobinder's Osty summon amount (Osty is a wall that soaks hits). Null when the card summons
+    /// nothing. (Defect orb block and Silent sly are not modelled here yet.)
+    /// </summary>
+    public int? Summon { get; init; }
+
     /// <summary>The card's star cost (the Regent's second resource), or 0/negative for cards that
     /// don't cost stars. The UI shows a ★ badge only when this is positive.</summary>
     public int StarCost { get; init; }

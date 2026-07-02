@@ -24,9 +24,10 @@ internal sealed class GameLog
 
     /// <summary>
     /// Record the consequences of one applied option: a header naming the action, then one line per
-    /// observed change between <paramref name="before"/> and <paramref name="after"/>.
+    /// observed change between <paramref name="before"/> and <paramref name="after"/>. Returns the
+    /// lines appended by this call (header first), so a caller can mirror them to a persistent log.
     /// </summary>
-    public void Record(string header, GameState? before, GameState after)
+    public IReadOnlyList<Line> Record(string header, GameState? before, GameState after)
     {
         var entries = new List<Line>();
         if (before is not null)
@@ -34,14 +35,13 @@ internal sealed class GameLog
             Diff(before, after, entries);
         }
 
+        var added = new List<Line>();
         if (!string.IsNullOrWhiteSpace(header))
         {
-            _lines.Add(new Line().Add("▸ ", Theme.Gold).T(Trim(header)));
+            added.Add(new Line().Add("▸ ", Theme.Gold).T(Trim(header)));
         }
-        foreach (Line e in entries)
-        {
-            _lines.Add(e);
-        }
+        added.AddRange(entries);
+        _lines.AddRange(added);
 
         // Cap the history so it can't grow without bound over a long run.
         const int cap = 500;
@@ -49,6 +49,7 @@ internal sealed class GameLog
         {
             _lines.RemoveRange(0, _lines.Count - cap);
         }
+        return added;
     }
 
     private static string Trim(string s) => s.Length > 60 ? s.Substring(0, 59) + "…" : s;

@@ -285,15 +285,23 @@ public sealed class GameHost
     // the run the way the game's load path does (SetUpSavedSingleplayer → Launch → GenerateMap →
     // LoadIntoLatestMapCoord), minus all UI/asset loading. A snapshot taken on the map passes the
     // just-finished current room as the save's "pre-finished room" so restore re-enters it as already
-    // completed (rather than re-running the combat). Snapshotting mid-combat is not supported yet
-    // (combat state lives in CombatManager, not RunState).
+    // completed (rather than re-running the combat) — but ONLY for combat/event rooms (see Snapshot).
+    // Snapshotting mid-combat is not supported yet (combat state lives in CombatManager, not RunState).
     // ---------------------------------------------------------------------------------
 
     /// <summary>
     /// Capture a serializable snapshot of the run (the game's own <c>SerializableRun</c> save model).
-    /// Intended for use out of combat (on the map / between rooms); the current room is recorded as
-    /// the save's pre-finished room so <see cref="Restore"/> resumes without re-running it.
+    /// Intended for use out of combat (on the map / between rooms).
     /// </summary>
+    /// <remarks>
+    /// The just-finished current room is recorded as the save's pre-finished room so <see cref="Restore"/>
+    /// resumes without re-running it — but only when it is a combat or event room. The game's
+    /// <c>AbstractRoom.FromSerializable</c> (used on restore) only reconstructs Monster/Elite/Boss and
+    /// Event rooms and <c>throw</c>s <see cref="ArgumentOutOfRangeException"/> for anything else, and the
+    /// game itself only ever persists a pre-finished room from those two paths (CombatManager / EventRoom).
+    /// So for a rest site / shop / treasure we record no pre-finished room; restore then re-enters that
+    /// map node fresh (a harmless re-visit) rather than crashing the load.
+    /// </remarks>
     public MegaCrit.Sts2.Core.Saves.SerializableRun Snapshot()
     {
         if (InCombat)
@@ -301,7 +309,11 @@ public sealed class GameHost
             throw new InvalidOperationException(
                 "Snapshotting mid-combat is not supported — snapshot out of combat (on the map).");
         }
-        return RunManager.Instance.ToSave(Run.CurrentRoom);
+        MegaCrit.Sts2.Core.Rooms.AbstractRoom? preFinished =
+            Run.CurrentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom or MegaCrit.Sts2.Core.Rooms.EventRoom
+                ? Run.CurrentRoom
+                : null;
+        return RunManager.Instance.ToSave(preFinished);
     }
 
     /// <summary>
@@ -1027,27 +1039,38 @@ public sealed class GameHost
             MegaCrit.Sts2.Core.Combat.CombatState combat = Combat!;
             foreach (MegaCrit.Sts2.Core.Models.CardModel card in pcs.Hand.Cards)
             {
-                if (!card.CanPlay())
+                // A single misbehaving card (a status/curse whose CanPlay or preview throws, an Osty
+                // card evaluated with no Osty summoned, …) must never suppress the rest of the turn's
+                // options — most importantly End Turn. Guard per card: skip the offender, log it, and
+                // carry on so the turn stays playable.
+                try
                 {
-                    continue;
-                }
-                if (card.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
-                {
-                    foreach (MegaCrit.Sts2.Core.Entities.Creatures.Creature enemy in combat.HittableEnemies)
+                    if (!card.CanPlay())
                     {
-                        if (card.IsValidTarget(enemy))
+                        continue;
+                    }
+                    if (card.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
+                    {
+                        foreach (MegaCrit.Sts2.Core.Entities.Creatures.Creature enemy in combat.HittableEnemies)
                         {
-                            // Project per target so the option shows the actual damage to that enemy
-                            // (its Vulnerable/Intangible/etc. folded in).
-                            CardView targetedView = GameStateProjection.ProjectCard(card, canPlay: true, target: enemy);
-                            options.Add(GameOption.PlayCardOption(player, card, targetedView, enemy));
+                            if (card.IsValidTarget(enemy))
+                            {
+                                // Project per target so the option shows the actual damage to that enemy
+                                // (its Vulnerable/Intangible/etc. folded in).
+                                CardView targetedView = GameStateProjection.ProjectCard(card, canPlay: true, target: enemy);
+                                options.Add(GameOption.PlayCardOption(player, card, targetedView, enemy));
+                            }
                         }
                     }
+                    else
+                    {
+                        CardView view = GameStateProjection.ProjectCard(card, canPlay: true);
+                        options.Add(GameOption.PlayCardOption(player, card, view, target: null));
+                    }
                 }
-                else
+                catch (System.Exception ex)
                 {
-                    CardView view = GameStateProjection.ProjectCard(card, canPlay: true);
-                    options.Add(GameOption.PlayCardOption(player, card, view, target: null));
+                    Godot.GD.PrintErr($"ListOptions: skipping hand card {card.Id.Entry}: {ex}");
                 }
             }
 

@@ -77,15 +77,18 @@ public sealed class CombatStrategyTests
     {
         CombatView combat = state.Combat!;
         PlayerState me = state.Players[0];
-        int energy = me.CombatState?.Energy ?? 0;
         int unblocked = combat.Enemies.Sum(e => e.Intents.Where(i => i.Damage is not null)
             .Sum(i => i.Damage!.Value * (i.Hits ?? 1))) - me.Block;
 
         if (pick.Kind == OptionKind.EndTurn)
         {
-            // Rule 5: only end the turn when out of energy and nothing free to play.
-            Assert.True(energy <= 0, "Ended the turn while still holding energy.");
-            Assert.DoesNotContain(options, o => o.Kind == OptionKind.PlayCard && !o.Card!.CostsX && o.Card!.EnergyCost <= 0);
+            // Rule 5: the turn is only ended when nothing is worth playing — no attack/power/skill
+            // remains (block cards are skills, so this also covers any defensive play). It may end with
+            // energy to spare when the only cards left are unplayable junk (statuses/curses).
+            Assert.DoesNotContain(options, o => o.Kind == OptionKind.PlayCard
+                && o.Card!.Type is MegaCrit.Sts2.Core.Entities.Cards.CardType.Attack
+                    or MegaCrit.Sts2.Core.Entities.Cards.CardType.Power
+                    or MegaCrit.Sts2.Core.Entities.Cards.CardType.Skill);
             return;
         }
 

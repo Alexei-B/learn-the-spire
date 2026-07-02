@@ -159,7 +159,7 @@ internal static class GameStateProjection
         CardModel card, bool canPlay, bool? upgradedOverride = null, Creature? target = null)
     {
         CostModifiers modifiers = card.IsInCombat ? CostModifiers.All : CostModifiers.None;
-        (int? dmg, int? baseDmg, int? block, int? baseBlock) = CardEffectPreview(card, target);
+        (int? dmg, int? baseDmg, int? block, int? baseBlock, int? summon) = CardEffectPreview(card, target);
         return new CardView
         {
             CardId = card.Id.Entry,
@@ -176,6 +176,7 @@ internal static class GameStateProjection
             BaseDamage = baseDmg,
             Block = block,
             BaseBlock = baseBlock,
+            Summon = summon,
             StarCost = StarCostOf(card),
             EnchantmentId = card.Enchantment?.Id.Entry,
             AfflictionId = card.Affliction?.Id.Entry,
@@ -251,21 +252,30 @@ internal static class GameStateProjection
     /// is given, that defender's powers (Vulnerable/Intangible/…). Only meaningful for a hand card in
     /// combat; returns nulls otherwise (or if the preview throws, as some cards compute lazily).
     /// </summary>
-    private static (int? dmg, int? baseDmg, int? block, int? baseBlock) CardEffectPreview(
+    private static (int? dmg, int? baseDmg, int? block, int? baseBlock, int? summon) CardEffectPreview(
         CardModel card, Creature? target)
     {
         if (!card.IsInCombat)
         {
-            return (null, null, null, null);
+            return (null, null, null, null, null);
         }
         try
         {
             card.UpdateDynamicVarPreview(
                 MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, target, card.DynamicVars);
-            int? dmg = null, baseDmg = null, block = null, baseBlock = null;
+            int? dmg = null, baseDmg = null, block = null, baseBlock = null, summon = null;
             if (card.DynamicVars.ContainsKey("Damage"))
             {
                 var d = card.DynamicVars.Damage;
+                dmg = Math.Max(0, (int)d.PreviewValue);
+                baseDmg = Math.Max(0, (int)d.BaseValue);
+            }
+            else if (card.DynamicVars.ContainsKey("OstyDamage"))
+            {
+                // Necrobinder cards that attack *through Osty* (CardTag.OstyAttack, e.g. Unleash) carry
+                // their damage in a separate OstyDamage var — computed from Osty's stats — rather than
+                // the usual Damage var. Read it so their hit still shows and the strategy can see it.
+                var d = card.DynamicVars.OstyDamage;
                 dmg = Math.Max(0, (int)d.PreviewValue);
                 baseDmg = Math.Max(0, (int)d.BaseValue);
             }
@@ -275,11 +285,18 @@ internal static class GameStateProjection
                 block = Math.Max(0, (int)b.PreviewValue);
                 baseBlock = Math.Max(0, (int)b.BaseValue);
             }
-            return (dmg, baseDmg, block, baseBlock);
+            if (card.DynamicVars.ContainsKey("Summon"))
+            {
+                // The Necrobinder's summon amount (Osty's granted block/wall). The default strategy
+                // treats this as block-equivalent, so surface it for the block decision.
+                var s = card.DynamicVars.Summon;
+                summon = Math.Max(0, (int)s.PreviewValue);
+            }
+            return (dmg, baseDmg, block, baseBlock, summon);
         }
         catch
         {
-            return (null, null, null, null);
+            return (null, null, null, null, null);
         }
     }
 

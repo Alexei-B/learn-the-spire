@@ -203,7 +203,7 @@ internal static class Program
             Godot.GD.Err = logWriter;
             GameRuntime.EnsureInitialized();
 
-            var screen = new GameScreen();
+            var screen = new GameScreen(logWriter);
 
             // Open the first new-run dialog once the main loop is running (not before — running a
             // modal as the very first top-level corrupts the run stack). Cancelling it exits.

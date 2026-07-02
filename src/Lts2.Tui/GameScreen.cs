@@ -30,6 +30,11 @@ internal sealed class GameScreen
 
     private readonly GameLog _gameLog = new();
 
+    // The shared session log (the game's GD output sink). Each run tees its own RunLog onto this so
+    // engine-side output lands in both the session log and the per-run log. See StartRunLog.
+    private readonly System.IO.TextWriter _sessionLog;
+    private RunLog? _runLog;
+
     private GameHost? _host;
     private GameState? _state;
     private List<GameOption> _options = new();
@@ -46,8 +51,9 @@ internal sealed class GameScreen
     // you and dims the nodes that don't follow on from it.
     private Coord? _mapHighlight;
 
-    public GameScreen()
+    public GameScreen(System.IO.TextWriter sessionLog)
     {
+        _sessionLog = sessionLog;
         _root = new Toplevel { ColorScheme = Theme.Base };
 
         var menu = new MenuBar
@@ -80,6 +86,10 @@ internal sealed class GameScreen
             Height = Dim.Percent(72),
             ColorScheme = Theme.Frame,
             BorderStyle = LineStyle.Rounded,
+            // Only the decision area takes input; the display panes are non-interactive so Tab can't
+            // move focus onto them (a focused-but-inert pane looks like the game has hung).
+            CanFocus = false,
+            TabStop = TabBehavior.NoStop,
         };
         _board = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _boardFrame.Add(_board);
@@ -93,6 +103,8 @@ internal sealed class GameScreen
             Height = Dim.Percent(72),
             ColorScheme = Theme.Frame,
             BorderStyle = LineStyle.Rounded,
+            CanFocus = false,
+            TabStop = TabBehavior.NoStop,
         };
         _side = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _sideFrame.Add(_side);
@@ -121,6 +133,8 @@ internal sealed class GameScreen
             Height = Dim.Fill(1),
             ColorScheme = Theme.Frame,
             BorderStyle = LineStyle.Rounded,
+            CanFocus = false,
+            TabStop = TabBehavior.NoStop,
         };
         _log = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _log.SetRenderer((w, h) => _gameLog.Render(w, h));
@@ -157,8 +171,30 @@ internal sealed class GameScreen
         _host.EnterFirstRoom();
         _gameLog.Clear();
         _gameLog.Note($"New run — {cfg.Character.Id.Entry}, ascension {cfg.Ascension}, seed {cfg.Seed}.");
+        StartRunLog(cfg.Seed, cfg.Character.Id.Entry, $"NEW RUN — ascension {cfg.Ascension}");
         Refresh();
         return true;
+    }
+
+    /// <summary>
+    /// Begin a fresh per-run log file and route the game's GD output into it (teed with the session
+    /// log). Called when a run starts or is loaded, so each run gets its own analysable log. Best-effort:
+    /// if the log can't be opened, play continues without it.
+    /// </summary>
+    private void StartRunLog(string seed, string character, string how)
+    {
+        _runLog?.Dispose();
+        _runLog = RunLog.Create(seed, character);
+        if (_runLog is null)
+        {
+            Godot.GD.Out = _sessionLog;
+            Godot.GD.Err = _sessionLog;
+            return;
+        }
+        _runLog.Banner($"{how} — {character} · seed {seed}");
+        var tee = new TeeTextWriter(_sessionLog, _runLog.Writer);
+        Godot.GD.Out = tee;
+        Godot.GD.Err = tee;
     }
 
     /// <summary>Re-read the game state and repaint the board, side panel, decisions and log.</summary>
@@ -288,6 +324,9 @@ internal sealed class GameScreen
         GameHost host = _host!;
         _busy = true;
         _msg.Text = " Resolving…";
+        // Record the action *before* it runs and flush it, so if the action hangs (e.g. an enemy turn
+        // that never ends) the run log's last line names the action that got stuck.
+        _runLog?.Action(header);
         Task.Run(() =>
         {
             SynchronizationContext.SetSynchronizationContext(null);
@@ -299,6 +338,7 @@ internal sealed class GameScreen
             catch (Exception ex)
             {
                 Console.Error.WriteLine(ex);
+                _runLog?.Error(ex);
                 return ex.Message;
             }
         }).ContinueWith(t => Application.Invoke(() =>
@@ -312,7 +352,8 @@ internal sealed class GameScreen
             }
 
             GameState after = host.GetState();
-            _gameLog.Record(header, before, after);
+            IReadOnlyList<Line> events = _gameLog.Record(header, before, after);
+            _runLog?.Result(after, events);
             // Checkpoint between rooms (the harness snapshot is only valid out of combat).
             if (after.Phase == GamePhase.Map && !after.IsGameOver)
             {
@@ -449,6 +490,11 @@ internal sealed class GameScreen
             _gameOverShown = false;
             _gameLog.Clear();
             _gameLog.Note("Loaded run.");
+            GameState loaded = host.GetState();
+            StartRunLog(
+                loaded.Seed,
+                loaded.Players.Count > 0 ? loaded.Players[0].Character : "?",
+                $"LOADED — {System.IO.Path.GetFileName(path)} · {loaded.Phase} A{loaded.ActIndex + 1} F{loaded.Floor}");
             Refresh();
             _msg.Text = " Run loaded.";
         }));

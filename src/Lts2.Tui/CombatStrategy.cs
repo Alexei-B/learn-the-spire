@@ -44,16 +44,20 @@ internal static class CombatStrategy
             .Where(o => o.Kind == OptionKind.PlayCard && o.Card is not null)
             .ToList();
 
-        // 1. Defensive: if we'd take damage this turn, play the best-value block card (if any is efficient).
+        // 1. Defensive: if we'd take damage this turn, play the best-value defensive card (if efficient).
+        // "Defensive value" is printed block plus character block-substitutes (the Necrobinder's Osty
+        // summon soaks hits like block — see EffectiveBlock). Rank by value-per-energy; on a tie, favour
+        // the summon (Osty persists across turns, so it's the better spend for equal value).
         int unblocked = IncomingDamage(combat) - me.Block;
         if (unblocked > 0)
         {
             IEnumerable<GameOption> blockCards = playable
-                .Where(o => (o.Card!.Block ?? 0) > 0)
-                .OrderByDescending(o => PerEnergy(o.Card!.Block ?? 0, EffectiveCost(o.Card!, energy)));
+                .Where(o => EffectiveBlock(o.Card!) > 0)
+                .OrderByDescending(o => PerEnergy(EffectiveBlock(o.Card!), EffectiveCost(o.Card!, energy)))
+                .ThenByDescending(o => o.Card!.Summon ?? 0);
             foreach (GameOption o in blockCards)
             {
-                int block = o.Card!.Block ?? 0;
+                int block = EffectiveBlock(o.Card!);
                 // At least 80% of the block absorbs real damage: min(block, unblocked) >= 0.8 * block,
                 // i.e. unblocked >= 0.8 * block. Integer form avoids float rounding.
                 if (unblocked * 5 >= block * 4)
@@ -61,7 +65,7 @@ internal static class CombatStrategy
                     return o;
                 }
             }
-            // No block card is worth playing — fall through and attack instead.
+            // No defensive card is worth playing — fall through and attack instead.
         }
 
         // 2. Offensive: attack cards.
@@ -112,14 +116,18 @@ internal static class CombatStrategy
             return skill;
         }
 
-        // 5. Out of energy with no zero-cost card left to play: end the turn.
-        bool hasZeroCostPlay = playable.Any(o => EffectiveCost(o.Card!, energy) <= 0);
-        if (energy <= 0 && !hasZeroCostPlay)
-        {
-            return options.FirstOrDefault(o => o.Kind == OptionKind.EndTurn);
-        }
-        return null;
+        // 5. Nothing worth playing — end the turn. Reached when there's no attack/power/skill and no
+        // efficient block to play: either you're out of energy, or the only cards left are ones the
+        // policy doesn't act on (clogging statuses/curses) even though you still have energy to spend.
+        return options.FirstOrDefault(o => o.Kind == OptionKind.EndTurn);
     }
+
+    /// <summary>
+    /// A card's block-equivalent defensive value: printed block plus character block-substitutes the
+    /// policy weighs like block — currently the Necrobinder's Osty summon (a wall that soaks hits).
+    /// (Defect orb block and Silent sly-on-discard are not modelled here yet.)
+    /// </summary>
+    private static int EffectiveBlock(CardView card) => (card.Block ?? 0) + (card.Summon ?? 0);
 
     /// <summary>The card's energy cost for ranking: an X-cost card spends all current energy.</summary>
     private static int EffectiveCost(CardView card, int energy) => card.CostsX ? energy : card.EnergyCost;
