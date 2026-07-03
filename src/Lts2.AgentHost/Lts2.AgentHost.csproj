@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RollForward>LatestMinor</RollForward>
+    <!-- The game assemblies must land next to our output so sts2 loads at runtime. -->
+    <ReferencesGameLib>true</ReferencesGameLib>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Lts2.Agent\Lts2.Agent.csproj" />
+  </ItemGroup>
+
+</Project>

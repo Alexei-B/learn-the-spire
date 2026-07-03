@@ -35,7 +35,7 @@ The game is Godot + C# (.NET 9), but the *logic* (`RunState`, `CombatManager`,
 is **plain C#, decoupled from Godot**. UI lives in `Nodes.*` (Godot subclasses) reached
 via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 
-## Architecture (5 projects, net9.0, SDK pinned by `global.json`)
+## Architecture (7 projects, net9.0, SDK pinned by `global.json`)
 
 - **`src/Lts2.GodotShim`** → builds `GodotSharp.dll` (same assembly name; GodotSharp is
   unsigned so it binds by name). Replaces the real GodotSharp. Two kinds of content:
@@ -81,6 +81,14 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   the harness/tests, which don't reference this library, stay loc-free (keys), honoring "the headless
   library never requires pak loading". The tables are gitignored game content extracted by
   `scripts/extract-localization.ps1` (GDRE Tools over the `.pck`). See `src/Lts2.Localization`.
+- **`src/Lts2.Agent`** → the cross-process seam that takes `IDecisionEngine` over a wire (see
+  "Cross-process agent interop"). Wire serialization (`Wire/`), the evaluation client
+  (`ProcessDecisionEngine` + the generic `DecisionEngineServerProcess`), and the training
+  `TrainingEnvironmentServer`. References `Lts2.Harness`; no NuGet packages (`System.Text.Json` is
+  in-framework). The TUI references it to expose an external policy as a Strategy-menu engine.
+- **`src/Lts2.AgentHost`** → a tiny headless exe: boot `GameRuntime`, then serve the
+  `TrainingEnvironmentServer` over stdio. This is what a Python trainer spawns as its environment. No
+  Terminal.Gui dependency, so training boxes stay light and can run many env processes in parallel.
 - `refsrc/`, `lib/` are gitignored (decompile + copied game DLLs; GodotSharp excluded).
 
 ## Key mechanisms
@@ -292,7 +300,37 @@ driver. `RulesDecisionEngine` is faithful under `CombatStrategyTests`/`Necrobind
 drive it via `Recommend`); the interface contract (subset/mask/decline, Best↔top-score) is covered by
 `DecisionEngineTests`. The TUI's **Tab "auto-play"** now applies whichever engine is selected in its
 **Strategy** menu — in *every* phase, not just combat (the rules engine simply has no pick off the
-battlefield). The learned engines and multi-process training loop remain out of scope (see Roadmap).
+battlefield). The learned engines themselves remain out of scope (see Roadmap); the seam to plug them
+in across a process boundary is built (next).
+
+## Cross-process agent interop (`Lts2.Agent`)
+
+The `IDecisionEngine` seam is carried **across a process boundary** so an agent trained in another
+language (e.g. Python) can both train against the harness and run inside the TUI, over **one shared
+wire schema**. Full spec: `docs/design/Lts2.Agent — Protocol.md`. The core idea: both directions
+serialize the **same observation** (the immutable `GameState` as-is + the legal options) and identify
+an action by its **index into the option list**, so a policy trained one way plugs into the other
+unchanged. Transport is newline-delimited JSON over an `ILineChannel` (stdio today; TCP later without a
+schema change), with one shared `JsonSerializerOptions` (`AgentJson`, string enums) so both sides agree
+byte-for-byte.
+
+Two environments, differing only in who drives (spawn direction):
+- **Training** (harness as a gym; Python drives): `TrainingEnvironmentServer` drives one `GameHost`
+  from `reset`/`step`/`close` commands and replies with observations; the headless `Lts2.AgentHost` exe
+  hosts it over stdio, and Python's `Lts2Env` spawns that. **Reward is deliberately not computed in
+  C#** — the observation carries the score + raw scalars in an `info` block and the training loop
+  derives whatever signal it wants. One run per process (process-wide singletons); scale out with N
+  processes.
+- **Evaluation** (TUI drives; external policy decides): `DecisionEngineServerProcess` (a generic
+  child-process manager) + `ProcessDecisionEngine : IDecisionEngine` let the TUI delegate its auto-play
+  recommendation to an external policy server, selected from the Strategy menu when configured via
+  `LTS2_AGENT_CMD`. Every failure mode (dead/timed-out process, malformed reply, out-of-range index)
+  degrades to the seam's "decline" (empty result) — a broken agent shows no pick rather than crashing.
+
+The `python/lts2_agent/` reference package ships the env, the decision server, a shared protocol
+module, an example heuristic policy, and a training-loop skeleton. `AgentWireTests` covers the
+serialization, the client's index-mapping + graceful decline (over an in-memory channel), and the env
+server's reset/step/close + error handling; the Python round-trip exercises the real stdio transport.
 
 ## Determinism, snapshots & restore
 

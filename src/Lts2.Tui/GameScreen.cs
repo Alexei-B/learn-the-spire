@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Lts2.Agent;
 using Lts2.Harness;
 using Terminal.Gui;
 
@@ -53,9 +54,11 @@ internal sealed class GameScreen
 
     // The pluggable decision engines the "auto-play" (Tab) shortcut can use, and which one is active.
     // Swapping engines lets the app drive its recommendations from a different strategy (rules, random,
-    // or a future learned policy) behind the shared IDecisionEngine seam — the same seam agent training
-    // and evaluation use. Built once; the active one is highlighted in the Strategy menu.
-    private readonly IDecisionEngine[] _engines = { new RulesDecisionEngine(), new RandomDecisionEngine() };
+    // or an external/learned policy) behind the shared IDecisionEngine seam — the same seam agent
+    // training and evaluation use. Built once in the constructor; the active one is highlighted in the
+    // Strategy menu. An external policy server (a ProcessDecisionEngine) is appended when configured
+    // via the LTS2_AGENT_CMD environment variable (see BuildEngines).
+    private readonly IDecisionEngine[] _engines;
     private MenuItem[] _strategyItems = Array.Empty<MenuItem>();
     private int _engineIndex;
     private IDecisionEngine Engine => _engines[_engineIndex];
@@ -73,6 +76,7 @@ internal sealed class GameScreen
     public GameScreen(System.IO.TextWriter sessionLog)
     {
         _sessionLog = sessionLog;
+        _engines = BuildEngines(sessionLog);
         _root = new Toplevel { ColorScheme = Theme.Base };
 
         _strategyItems = _engines.Select((e, i) =>
@@ -179,6 +183,45 @@ internal sealed class GameScreen
     }
 
     public Toplevel Root => _root;
+
+    /// <summary>
+    /// The decision engines available in the Strategy menu: the built-in rules and random engines, plus
+    /// an external policy server when one is configured. Set <c>LTS2_AGENT_CMD</c> to the command that
+    /// launches a decision server speaking the agent line protocol (e.g. <c>python</c>), with
+    /// <c>LTS2_AGENT_ARGS</c> for its arguments (e.g. the script path) and <c>LTS2_AGENT_NAME</c> for the
+    /// menu label. A launch failure is logged and skipped rather than blocking startup.
+    /// </summary>
+    private static IDecisionEngine[] BuildEngines(System.IO.TextWriter log)
+    {
+        var engines = new List<IDecisionEngine> { new RulesDecisionEngine(), new RandomDecisionEngine() };
+
+        string? command = Environment.GetEnvironmentVariable("LTS2_AGENT_CMD");
+        if (!string.IsNullOrWhiteSpace(command))
+        {
+            string? args = Environment.GetEnvironmentVariable("LTS2_AGENT_ARGS");
+            string name = Environment.GetEnvironmentVariable("LTS2_AGENT_NAME") ?? "External";
+            try
+            {
+                engines.Add(ProcessDecisionEngine.Launch(name, command, args, log: log.WriteLine));
+            }
+            catch (Exception ex)
+            {
+                log.WriteLine($"[agent] failed to launch external engine '{command}': {ex.Message}");
+            }
+        }
+
+        return engines.ToArray();
+    }
+
+    /// <summary>Tear down any engines that own external resources (e.g. a policy subprocess). Called on
+    /// exit so a launched decision server is killed with the app.</summary>
+    public void Shutdown()
+    {
+        foreach (IDecisionEngine engine in _engines)
+        {
+            (engine as IDisposable)?.Dispose();
+        }
+    }
 
     /// <summary>Switch the active decision engine (the Strategy menu), tick its radio item, and repaint so
     /// the new engine's "auto-play" recommendation shows immediately.</summary>

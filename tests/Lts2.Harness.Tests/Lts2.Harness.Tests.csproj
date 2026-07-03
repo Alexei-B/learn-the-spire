@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Lts2.Harness\Lts2.Harness.csproj" />
+    <ProjectReference Include="..\..\src\Lts2.Agent\Lts2.Agent.csproj" />
   </ItemGroup>
 
 </Project>

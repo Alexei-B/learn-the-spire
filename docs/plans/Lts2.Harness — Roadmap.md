@@ -355,10 +355,35 @@ multiplayer net path (`SetUpNewMultiplayer`, `IsMultiplayer()`), out of scope.
   trimming). The fuzz/determinism suites run fast enough for CI; a dedicated throughput pass is left for
   when agent-training throughput demands it (out of the current scope).
 
+## M9 — Cross-process agent interop — _done (transport + both environments)_
+Take the in-process `IDecisionEngine` seam across a process boundary so agents trained in another
+language (e.g. Python) can both **train against** the harness and **run inside** the TUI, over one
+shared wire schema (see design "Cross-process agent interop (Lts2.Agent)" and
+`docs/design/Lts2.Agent — Protocol.md`).
+- **Wire protocol** — _done_: newline-delimited JSON (`src/Lts2.Agent/Wire`). The observation is the
+  immutable `GameState` serialized as-is plus the legal options; an action is the **index** into that
+  option list (or explicit `cardIndices` for a choose-N-of-M card choice). One shared
+  `JsonSerializerOptions` (`AgentJson`, string enums) guarantees both directions agree on the schema.
+  Transport is abstracted behind `ILineChannel` (stdio today; TCP later without a schema change).
+- **Training environment** — _done_: `TrainingEnvironmentServer` drives one `GameHost` from
+  `reset`/`step`/`close` commands and replies with observations; the headless `Lts2.AgentHost` exe hosts
+  it over stdio. Python's `Lts2Env` (a gym-style `reset`/`step`) spawns it. **Reward is not baked in** —
+  observations carry the score + raw scalars in an `info` block and the training loop derives its own
+  signal. One run per process (process-wide singletons); a vectorized trainer runs N processes.
+- **Evaluation environment** — _done_: `DecisionEngineServerProcess` (a generic child-process manager)
+  + `ProcessDecisionEngine : IDecisionEngine` let the TUI delegate its auto-play recommendation to an
+  external policy server; any failure degrades to "decline" (no pick) rather than crashing. Selected
+  from the TUI's Strategy menu when configured via `LTS2_AGENT_CMD`.
+- **Python reference package** — _done_: `python/lts2_agent/` ships the env, the decision server, a
+  shared protocol module, an example heuristic policy, and a training-loop skeleton. A policy trained
+  against the env plugs into the decision server unchanged (same observation + action encoding).
+- **Tests** — _done_: `AgentWireTests` covers observation serialization, the `ProcessDecisionEngine`
+  index-mapping + graceful decline (over an in-memory channel), and the env server's reset/step/close +
+  error handling; the Python round-trip exercises the real stdio transport.
+
 ## Out of scope (future, separate system)
-Multi-process orchestration and the RL/agent training framework. The API (read /
-list-options / apply, per-player) is being shaped to enable them, but they are not part
-of the emulator itself. A first step toward that shaping now exists: the **`IDecisionEngine`**
-seam (state + legal options in → scored actions out; `RulesDecisionEngine` / `RandomDecisionEngine`
-ship, the TUI's auto-play consumes it) — see design "Decision engines (agent seam)". The learned
-engines and the training loop themselves stay out of scope.
+The RL/agent training framework itself — the learned policies and their training loops. The
+cross-process seam to plug them in now exists (M9: the wire protocol, the training environment, and the
+evaluation environment behind the shared `IDecisionEngine`), but the models and algorithms that learn
+to play stay out of scope. Multi-process **orchestration** (scheduling/aggregating many env workers for
+large-scale training) is likewise left to the training framework.

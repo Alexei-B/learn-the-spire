@@ -15,3 +15,7 @@ obj/
 
 # Test / regression artifacts that are environment-specific
 TestResults/
+
+# Python (lts2_agent reference package)
+__pycache__/
+*.pyc

@@ -216,6 +216,7 @@ internal static class Program
             });
 
             Application.Run(screen.Root);
+            screen.Shutdown();
             screen.Root.Dispose();
             return 0;
         }

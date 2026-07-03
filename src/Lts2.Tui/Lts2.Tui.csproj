@@ -20,6 +20,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Lts2.Harness\Lts2.Harness.csproj" />
     <ProjectReference Include="..\Lts2.Localization\Lts2.Localization.csproj" />
+    <!-- The cross-process decision-engine seam: lets the Strategy menu drive auto-play from an
+         external policy server (e.g. a Python model) via ProcessDecisionEngine. -->
+    <ProjectReference Include="..\Lts2.Agent\Lts2.Agent.csproj" />
   </ItemGroup>
 
 </Project>

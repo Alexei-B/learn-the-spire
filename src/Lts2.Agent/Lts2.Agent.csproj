@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- GameState/GameOption expose game enums (CardType, PlayerTurnPhase, …) in their public
+         API, so this project compiles against sts2.dll too. See Directory.Build.targets. -->
+    <ReferencesGameLib>true</ReferencesGameLib>
+  </PropertyGroup>
+
+  <!-- The harness library (transitively brings in the GodotSharp shim). -->
+  <ItemGroup>
+    <ProjectReference Include="..\Lts2.Harness\Lts2.Harness.csproj" />
+  </ItemGroup>
+
+</Project>
