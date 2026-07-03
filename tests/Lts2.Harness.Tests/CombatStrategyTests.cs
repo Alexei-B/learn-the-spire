@@ -1,22 +1,22 @@
 using System.Collections.Generic;
 using System.Linq;
 using Lts2.Harness;
-using Lts2.Tui;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace Lts2.Harness.Tests;
 
 /// <summary>
-/// Drives a real first combat entirely by <see cref="CombatStrategy.ChooseDefaultMove"/> (the TUI's
-/// Tab auto-play). Verifies the policy only ever returns a legal, listed move, that its choices honour
-/// the documented rules (block only when it would take damage and the block is ≥80% used; attacks aim
-/// at the lowest-health enemy; it only ends the turn when out of energy), and that it plays the fight
-/// to a finish.
+/// Drives a real first combat entirely by <see cref="RulesDecisionEngine"/> (the engine behind the TUI's
+/// Tab auto-play), via its <c>Recommend</c> top pick. Verifies the policy only ever returns a legal,
+/// listed move, that its choices honour the documented rules (block only when it would take damage and
+/// the block is ≥80% used; attacks aim at the lowest-health enemy; it only ends the turn when out of
+/// energy), and that it plays the fight to a finish.
 /// </summary>
 public sealed class CombatStrategyTests
 {
     private readonly ITestOutputHelper _out;
+    private readonly RulesDecisionEngine _engine = new();
 
     public CombatStrategyTests(ITestOutputHelper output) => _out = output;
 
@@ -45,7 +45,7 @@ public sealed class CombatStrategyTests
                 continue;
             }
 
-            GameOption? pick = CombatStrategy.ChooseDefaultMove(state, options);
+            GameOption? pick = _engine.Recommend(state, options);
             if (pick is null)
             {
                 // The policy declined (it has energy but only cards it doesn't act on). That must not

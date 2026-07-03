@@ -54,7 +54,9 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
 - **`src/Lts2.Tui`** → a **full-screen** terminal client (Terminal.Gui **v2** — owns the screen like
   ncurses, soft true-colour theme) that plays full single-player runs purely through the public
   `GetState`/`ListOptions`/`Apply` trio — a manual-testing front end (character/ascension/seed select, then a board canvas,
-  a map/piles side panel, a numbered option list, and a scrolling **event log**). It is the only consumer of the
+  a map/piles side panel, a numbered option list, and a scrolling **event log**). Its **Tab "auto-play"**
+  shortcut applies the recommendation of the selected `IDecisionEngine` (a **Strategy** menu switches
+  between the shipped engines — see "Decision engines"). It is the only consumer of the
   `StartNewRun(seed, IReadOnlyList<CharacterModel>, ascension)` overload (added for character selection; the
   `playerCount` overloads still assign characters automatically). The event log needs no game-side event
   stream: it **diffs consecutive `GameState`s** (HP/gold/relics/potions/powers, cards gained or moved between
@@ -268,6 +270,29 @@ via `N*.Instance` singletons we leave **null** — the logic null-guards them.
   if no `RewardsSet.testSelector` is installed. The harness installs one (see Custom rewards under
   Key mechanisms) so the agent chooses instead. The post-combat path is separate — it uses
   `GenerateForRoomEnd` + `BeginRewardsSet`, not `Offer`.
+
+## Decision engines (agent seam)
+
+A pluggable policy interface sits on top of the read/list/apply trio, shaping the eventual
+agent-training/evaluation surface: **`IDecisionEngine.Evaluate(GameState, options) → IReadOnlyList<ScoredOption>`**
+(`IDecisionEngine.cs`). State *and* the legal options go in; a score per option comes out (`ScoredOption`
+= option + score + optional rationale). The two inputs cover both engine styles: an engine that reasons
+purely from state (a future learned policy emitting action logits) **masks** its candidates against the
+supplied options; a simple engine scores the options directly. Contract: the returned options are a
+**subset** of the input (an engine never invents a move) and omitting an option means "no opinion" (not
+score 0); an empty result means the engine declines for this state. `DecisionEngineExtensions.Best`/
+`Recommend` take the top pick, breaking ties toward the earliest option for determinism.
+
+Two engines ship: **`RulesDecisionEngine`** — the hand-written combat auto-play (block-if-efficient →
+lethal → best damage-per-energy at the weakest enemy → power → skill → end turn), expressed as priority
+**bands** so the top-scored option equals the old policy's pick (it was ported verbatim from the TUI's
+former `CombatStrategy.ChooseDefaultMove`; combat-only, declines elsewhere); and **`RandomDecisionEngine`**
+— a seeded all-phase baseline (scores every legal option) useful as an eval control and a smoke-test
+driver. `RulesDecisionEngine` is faithful under `CombatStrategyTests`/`NecrobinderStrategyTests` (which
+drive it via `Recommend`); the interface contract (subset/mask/decline, Best↔top-score) is covered by
+`DecisionEngineTests`. The TUI's **Tab "auto-play"** now applies whichever engine is selected in its
+**Strategy** menu — in *every* phase, not just combat (the rules engine simply has no pick off the
+battlefield). The learned engines and multi-process training loop remain out of scope (see Roadmap).
 
 ## Determinism, snapshots & restore
 

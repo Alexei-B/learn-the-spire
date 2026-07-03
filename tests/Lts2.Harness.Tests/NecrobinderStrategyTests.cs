@@ -5,19 +5,20 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using Lts2.Harness;
-using Lts2.Tui;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace Lts2.Harness.Tests;
 
 /// <summary>
-/// Character-specific combat-strategy behaviour: the Necrobinder's Osty summon counts as block, and
-/// the auto-play policy ends the turn when only unplayable junk is left even with energy to spare.
+/// Character-specific combat-strategy behaviour of <see cref="RulesDecisionEngine"/>: the Necrobinder's
+/// Osty summon counts as block, and the auto-play policy ends the turn when only unplayable junk is left
+/// even with energy to spare.
 /// </summary>
 public sealed class NecrobinderStrategyTests
 {
     private readonly ITestOutputHelper _out;
+    private readonly RulesDecisionEngine _engine = new();
     public NecrobinderStrategyTests(ITestOutputHelper output) => _out = output;
 
     private static GameHost StartCombatAs(string characterTypeName)
@@ -111,7 +112,7 @@ public sealed class NecrobinderStrategyTests
         // Osty big enough to eat the whole telegraphed hit → blocking is wasted, so attack instead.
         osty.SetMaxHpInternal(incoming + 100);
         osty.SetCurrentHpInternal(incoming + 100);
-        GameOption? withBigOsty = CombatStrategy.ChooseDefaultMove(host.GetState(), host.ListOptions());
+        GameOption? withBigOsty = _engine.Recommend(host.GetState(), host.ListOptions());
         _out.WriteLine($"incoming={incoming}, bigOsty pick={withBigOsty?.Card?.Type.ToString() ?? "null"}");
         Assert.NotNull(withBigOsty);
         Assert.Equal(CardType.Attack, withBigOsty!.Card!.Type);
@@ -122,7 +123,7 @@ public sealed class NecrobinderStrategyTests
         osty.SetMaxHpInternal(1);
         osty.SetCurrentHpInternal(1);
         bool blockIsEfficient = (incoming - 1) * 5 >= 5 * 4;
-        GameOption? withTinyOsty = CombatStrategy.ChooseDefaultMove(host.GetState(), host.ListOptions());
+        GameOption? withTinyOsty = _engine.Recommend(host.GetState(), host.ListOptions());
         _out.WriteLine($"tinyOsty pick={withTinyOsty?.Card?.Type.ToString() ?? "null"}, blockEfficient={blockIsEfficient}");
         Assert.NotNull(withTinyOsty);
         Assert.Equal(blockIsEfficient ? CardType.Skill : CardType.Attack, withTinyOsty!.Card!.Type);
@@ -149,7 +150,7 @@ public sealed class NecrobinderStrategyTests
         Assert.True(state.Players[0].CombatState!.Energy > 0, "test presumes energy remains");
         Assert.Contains(options, o => o.Kind == OptionKind.EndTurn);
 
-        GameOption? pick = CombatStrategy.ChooseDefaultMove(state, options);
+        GameOption? pick = _engine.Recommend(state, options);
         _out.WriteLine($"pick={pick?.Kind.ToString() ?? "null"}");
         Assert.NotNull(pick);
         Assert.Equal(OptionKind.EndTurn, pick!.Kind);

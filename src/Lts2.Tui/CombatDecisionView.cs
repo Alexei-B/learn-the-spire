@@ -83,13 +83,17 @@ internal sealed class CombatDecisionView : View
     /// <summary>A one-line status hint for the current mode (targeting prompt), or null.</summary>
     public string? Prompt { get; private set; }
 
-    /// <summary>Rebuild the hand/options model from a fresh combat state (resets any targeting).</summary>
-    public void SetState(GameState state, IReadOnlyList<GameOption> options)
+    /// <summary>
+    /// Rebuild the hand/options model from a fresh combat state (resets any targeting).
+    /// <paramref name="recommended"/> is the decision engine's suggested move (the Tab "auto-play" pick),
+    /// or null if it has none — computed by the caller so the strategy engine is swappable.
+    /// </summary>
+    public void SetState(GameState state, IReadOnlyList<GameOption> options, GameOption? recommended)
     {
         _state = state;
         _endTurn = options.FirstOrDefault(o => o.Kind == OptionKind.EndTurn);
         _potions = state.Players.Count > 0 ? state.Players[0].Potions.ToList() : new List<string?>();
-        _auto = state.Phase == GamePhase.Combat ? CombatStrategy.ChooseDefaultMove(state, options) : null;
+        _auto = recommended;
 
         Dictionary<int, List<GameOption>> byIndex = options
             .Where(o => o.Kind == OptionKind.PlayCard && o.HandIndex is not null)

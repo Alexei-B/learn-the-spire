@@ -51,6 +51,15 @@ internal sealed class GameScreen
     private bool _busy;
     private bool _gameOverShown;
 
+    // The pluggable decision engines the "auto-play" (Tab) shortcut can use, and which one is active.
+    // Swapping engines lets the app drive its recommendations from a different strategy (rules, random,
+    // or a future learned policy) behind the shared IDecisionEngine seam — the same seam agent training
+    // and evaluation use. Built once; the active one is highlighted in the Strategy menu.
+    private readonly IDecisionEngine[] _engines = { new RulesDecisionEngine(), new RandomDecisionEngine() };
+    private MenuItem[] _strategyItems = Array.Empty<MenuItem>();
+    private int _engineIndex;
+    private IDecisionEngine Engine => _engines[_engineIndex];
+
     // Set when the current state is a multi-select card choice (choose N of M): such a choice can't be
     // resolved by a single flat option, so the decision list shows one "open the picker" entry and
     // activating it opens the interactive selector (see OpenCardPicker). Null otherwise.
@@ -65,6 +74,13 @@ internal sealed class GameScreen
     {
         _sessionLog = sessionLog;
         _root = new Toplevel { ColorScheme = Theme.Base };
+
+        _strategyItems = _engines.Select((e, i) =>
+            new MenuItem($"_{i + 1}  {e.Name}", "", () => SelectEngine(i))
+            {
+                CheckType = MenuItemCheckStyle.Radio,
+                Checked = i == _engineIndex,
+            }).ToArray();
 
         var menu = new MenuBar
         {
@@ -84,6 +100,7 @@ internal sealed class GameScreen
                     new MenuItem("_Deck / Relics", "", ShowDeck),
                     new MenuItem("_Map", "", ShowMap),
                 }),
+                new MenuBarItem("_Strategy", _strategyItems),
             },
         };
 
@@ -163,6 +180,19 @@ internal sealed class GameScreen
 
     public Toplevel Root => _root;
 
+    /// <summary>Switch the active decision engine (the Strategy menu), tick its radio item, and repaint so
+    /// the new engine's "auto-play" recommendation shows immediately.</summary>
+    private void SelectEngine(int index)
+    {
+        _engineIndex = index;
+        for (int i = 0; i < _strategyItems.Length; i++)
+        {
+            _strategyItems[i].Checked = i == index;
+        }
+        _msg.Text = $" Strategy engine: {Engine.Name}";
+        Refresh();
+    }
+
     /// <summary>
     /// Show the opening dialog and act on it: start a new run, resume the autosave, or (cancelled)
     /// return false so the caller can exit. A resume loads asynchronously (see <see cref="LoadFrom"/>).
@@ -241,6 +271,11 @@ internal sealed class GameScreen
 
         _options = _host.ListOptions().ToList();
 
+        // The active decision engine's suggested move (the Tab "auto-play" pick) for this state, or null
+        // if it has no opinion here (e.g. the rules engine off the battlefield). Combat draws it as a
+        // "(tab)" marker on the hand card; other phases mark it in the options list.
+        GameOption? recommended = Engine.Recommend(state, _options);
+
         // In active combat the decision area draws the hand as interactive card art (its own layout); every
         // other phase (including a mid-combat card Choice) uses the scrolling options list. Any aiming
         // overlay is cleared on refresh — the state has moved on.
@@ -251,7 +286,7 @@ internal sealed class GameScreen
         if (combatDecision)
         {
             _multiChoice = null;
-            _combatView.SetState(state, _options);
+            _combatView.SetState(state, _options, recommended);
             _combatView.SetFocus();
         }
         else
@@ -275,7 +310,10 @@ internal sealed class GameScreen
                     entries.Add(new OptionsView.Entry(BoardRenderer.OptionLabel(o, state), BoardRenderer.OptionDescSegs(o, state)));
                 }
                 int endTurn = _options.FindIndex(o => o.Kind == OptionKind.EndTurn);
-                _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null);
+                // The engine's pick (if any) is Tab-selectable in the list too, marked "(tab)".
+                int autoIdx = recommended is null ? -1 : _options.IndexOf(recommended);
+                _optionsView.SetEntries(entries, endTurn >= 0 ? endTurn : null,
+                    autoIndex: autoIdx >= 0 ? autoIdx : null);
             }
             _optionsView.SetFocus();
         }

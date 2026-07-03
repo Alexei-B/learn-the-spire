@@ -358,4 +358,7 @@ multiplayer net path (`SetUpNewMultiplayer`, `IsMultiplayer()`), out of scope.
 ## Out of scope (future, separate system)
 Multi-process orchestration and the RL/agent training framework. The API (read /
 list-options / apply, per-player) is being shaped to enable them, but they are not part
-of the emulator itself.
+of the emulator itself. A first step toward that shaping now exists: the **`IDecisionEngine`**
+seam (state + legal options in → scored actions out; `RulesDecisionEngine` / `RandomDecisionEngine`
+ship, the TUI's auto-play consumes it) — see design "Decision engines (agent seam)". The learned
+engines and the training loop themselves stay out of scope.

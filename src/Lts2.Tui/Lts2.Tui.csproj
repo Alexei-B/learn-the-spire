@@ -15,13 +15,6 @@
     <PackageReference Include="Terminal.Gui" Version="2.0.0" />
   </ItemGroup>
 
-  <!-- The combat-strategy policy (internal) is exercised by the harness test project. -->
-  <ItemGroup>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
-      <_Parameter1>Lts2.Harness.Tests</_Parameter1>
-    </AssemblyAttribute>
-  </ItemGroup>
-
   <!-- The harness library (which transitively brings in the GodotSharp shim), and the opt-in
        localization library (packages the extracted loc tables + name/description helpers). -->
   <ItemGroup>
