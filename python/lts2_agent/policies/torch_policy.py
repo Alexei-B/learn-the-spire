@@ -54,12 +54,24 @@ def make_policy(ckpt_path: str, device: str = "cpu") -> CombatPolicy:
     print(f"[torch_policy] loaded {ckpt_path} (hidden={meta['hidden']}, static_dim={meta.get('static_dim')}) "
           f"on {device}.", file=sys.stderr, flush=True)
 
+    # This is a per-(card,target) policy: probability mass splits across many similar card options while
+    # EndTurn is one option, so the raw ARGMAX collapses onto EndTurn and plays terribly. The trained
+    # *distribution* plays cards well. So by default SAMPLE from the (temperature-scaled) softmax and
+    # recommend that action — it matches how the policy was trained. Set LTS2_POLICY_GREEDY=1 for argmax.
+    greedy = os.environ.get("LTS2_POLICY_GREEDY") in ("1", "true")
+    temp = float(os.environ.get("LTS2_POLICY_TEMP", "1.0"))
+
     def policy(state: dict[str, Any], options: list[dict[str, Any]]):
         if not features.is_combat(state) or not options:
             return []   # decline: the game/TUI default drives non-combat
-        logits = _forward(features.encode(state, options)).cpu().numpy()
+        logits = _forward(features.encode(state, options))
         n = min(len(options), features.MAX_OPTIONS)
-        return [(i, float(logits[i])) for i in range(n)]
+        if greedy:
+            return [(i, float(logits[i])) for i in range(n)]
+        # Sample one legal action from the softmax and recommend it (score 1.0), matching training play.
+        probs = torch.softmax(logits[:n] / max(temp, 1e-3), dim=-1)
+        choice = int(torch.multinomial(probs, 1).item())
+        return [{"index": choice, "score": 1.0, "rationale": "sampled from the trained policy"}]
 
     return policy
 
@@ -74,10 +86,13 @@ def policy(state: dict[str, Any], options: list[dict[str, Any]]):
         _cached = make_policy(os.environ.get("LTS2_PPO_CKPT", "checkpoints/necro_random.pt"))
     res = _cached(state, options)
     if res:
-        top = max(res, key=lambda t: t[1])
-        o = options[top[0]]
+        # entries are (index, score) tuples (greedy) or {"index","score"} dicts (sampled)
+        def ix_sc(e):
+            return (e["index"], e["score"]) if isinstance(e, dict) else (e[0], e[1])
+        ti, ts = max((ix_sc(e) for e in res), key=lambda t: t[1])
+        o = options[ti]
         label = (o.get("card") or {}).get("cardId") if o.get("kind") == "PlayCard" else o.get("kind")
-        print(f"[torch_policy] phase={state.get('phase')} opts={len(options)} -> top {label} ({top[1]:.2f})",
+        print(f"[torch_policy] phase={state.get('phase')} opts={len(options)} -> pick {label} ({ts:.2f})",
               file=sys.stderr, flush=True)
     else:
         print(f"[torch_policy] phase={state.get('phase')} opts={len(options)} -> decline (out of combat / no options)",
