@@ -12,6 +12,7 @@ shared with the JAX path; only the model + PPO + rollout are PyTorch.
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 import numpy as np
@@ -72,6 +73,11 @@ def main() -> int:
     ap.add_argument("--bodyguard-patience", type=int, default=8,
                     help="report the iteration at which the Bodyguard decision is correct this many "
                          "consecutive evals (the benchmark: prior pipeline needed ~100 iters)")
+    ap.add_argument("--no-dense", action="store_true",
+                    help="disable the dense damage/kill shaping entirely (win/loss + per-step HP + the "
+                         "fight-length cap remain, so fights still can't stall)")
+    ap.add_argument("--fresh", action="store_true",
+                    help="ignore any existing checkpoint and start training from scratch")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -82,10 +88,30 @@ def main() -> int:
     print(f"[train_torch] device={device} "
           f"{torch.cuda.get_device_name(0) if device.type == 'cuda' else ''}")
 
-    model = model_torch.ActorCritic(hidden=args.hidden).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
     pcfg = ppo_torch.PPOConfig(lr=args.lr, epochs=args.epochs, minibatch_size=args.minibatch)
-    opt = ppo_torch.make_optimizer(model, pcfg)
+
+    # Resume: if the checkpoint exists (and --fresh wasn't passed), continue from it — the model weights,
+    # the optimizer state, and the iteration counter — so re-running the same command picks up where it
+    # stopped. The model checkpoint (.pt) is what serve/eval load; the optimizer + iteration live in a
+    # companion .train file.
+    train_state_path = (args.ckpt + ".train") if args.ckpt else None
+    start_it = 1
+    if args.ckpt and os.path.exists(args.ckpt) and not args.fresh:
+        model, _meta = model_torch.load_checkpoint(args.ckpt, device)
+        model = model.to(device)
+        opt = ppo_torch.make_optimizer(model, pcfg)
+        if train_state_path and os.path.exists(train_state_path):
+            ts = torch.load(train_state_path, map_location=device)
+            try:
+                opt.load_state_dict(ts["optimizer"])
+            except Exception as e:
+                print(f"[train_torch] could not restore optimizer ({e}); continuing with a fresh one.")
+            start_it = int(ts.get("iteration", 0)) + 1
+        print(f"[train_torch] resumed from {args.ckpt} at iter {start_it}")
+    else:
+        model = model_torch.ActorCritic(hidden=args.hidden).to(device)
+        opt = ppo_torch.make_optimizer(model, pcfg)
+    n_params = sum(p.numel() for p in model.parameters())
 
     scfg = ScenarioConfig(
         n_envs=args.envs, steps_per_env=args.steps,
@@ -103,8 +129,11 @@ def main() -> int:
     rollout = TorchScenarioRollout(scfg)
     try:
         ramp_end = max(1.0, args.shaping_ramp_frac * args.iterations)
-        for it in range(1, args.iterations + 1):
-            shaping_coef = max(0.0, 1.0 - (it - 1) / ramp_end)   # 1.0 -> 0.0 over ramp_end iterations
+        for it in range(start_it, args.iterations + 1):
+            if args.no_dense or args.shaping_ramp_frac <= 0.0:
+                shaping_coef = 0.0
+            else:
+                shaping_coef = max(0.0, 1.0 - (it - 1) / ramp_end)   # 1.0 -> 0.0 over ramp_end iterations
             t0 = time.perf_counter()
             batch, outcomes = rollout.collect(model, device, shaping_coef=shaping_coef)
             t_collect = time.perf_counter() - t0
@@ -133,6 +162,8 @@ def main() -> int:
 
             if args.ckpt:
                 model_torch.save_checkpoint(args.ckpt, model)
+                if train_state_path:
+                    torch.save({"optimizer": opt.state_dict(), "iteration": it}, train_state_path)
 
         if bg_fixture is not None:
             print(f"[train_torch] Bodyguard benchmark: reached {args.bodyguard_patience}-streak at "
