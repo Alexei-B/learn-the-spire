@@ -38,6 +38,7 @@ class TorchScenarioRollout:
         self._seed_counters = [itertools.count() for _ in range(config.n_envs)]
         self._cur: list[Optional[dict[str, Any]]] = [None] * config.n_envs
         self._start_hp: list[int] = [1] * config.n_envs
+        self._fight_steps: list[int] = [0] * config.n_envs   # decisions taken in the current fight
         self._pool = ThreadPoolExecutor(max_workers=config.n_envs)
 
     # --- env management (mirrors scenario.ScenarioRollout) -----------------------------------------
@@ -57,6 +58,7 @@ class TorchScenarioRollout:
                     character=cfg.character, elite_pct=cfg.elite_pct, boss_pct=cfg.boss_pct,
                     starter_deck=cfg.starter_deck, act=cfg.act)
                 start_hp = obs["state"]["players"][0].get("maxHp", 1) if obs["state"].get("players") else 1
+                self._fight_steps[i] = 0
                 return obs, max(1, start_hp)
             except Exception as e:
                 last_err = e
@@ -165,9 +167,17 @@ class TorchScenarioRollout:
                     continue
                 if prof:
                     obs_bytes += nxt.get("_bytes", 0)
-                done = bool(nxt["done"])
+                self._fight_steps[i] += 1
                 prev = prevs[i] if prevs[i] is not None else nxt
                 r = reward.scenario_dense_reward(prev, nxt, starts[i], cfg.weights, shaping_coef)
+
+                # Truncate a fight that runs past the cap and score it as a loss, so stalling can't beat
+                # winning. Terminates the episode here (with a done flag for GAE) and starts a fresh fight.
+                truncated = not nxt["done"] and self._fight_steps[i] >= cfg.max_fight_len
+                if truncated:
+                    r -= cfg.weights.truncate_penalty
+                done = bool(nxt["done"]) or truncated
+
                 for k in features.MODEL_KEYS:
                     feats_buf[i][k].append(feats_list[i][k])
                 actions_b[i].append(int(a[i])); logps_b[i].append(float(lp[i]))
@@ -175,8 +185,10 @@ class TorchScenarioRollout:
                 dones_b[i].append(1.0 if done else 0.0)
                 if done:
                     info = nxt["info"]
-                    outcomes.append({"won": bool(info.get("won")), "hp_lost": info.get("hpLost") or 0,
-                                     "room": info.get("roomType"), "act": info.get("act")})
+                    won = bool(info.get("won")) and not truncated
+                    outcomes.append({"won": won, "hp_lost": info.get("hpLost") or 0,
+                                     "room": info.get("roomType"), "act": info.get("act"),
+                                     "truncated": truncated, "flen": self._fight_steps[i]})
                     self._cur[i] = None
                 else:
                     self._cur[i] = nxt

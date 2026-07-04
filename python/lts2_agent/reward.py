@@ -44,6 +44,7 @@ class ScenarioWeights:
     damage: float = 0.5          # per fraction-of-startHP damage dealt to enemies (ramped)
     kill: float = 0.2            # per enemy killed (ramped)
     step_penalty: float = 0.02   # per decision (always on; anti-stall)
+    truncate_penalty: float = 1.0  # applied (like a loss) when a fight is truncated at max_fight_len
 
 
 DEFAULT_SCENARIO_WEIGHTS = ScenarioWeights()

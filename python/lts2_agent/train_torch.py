@@ -24,11 +24,12 @@ from .scenario import ScenarioConfig
 
 def scenario_summary(outcomes: list[dict]) -> dict:
     if not outcomes:
-        return {"n": 0, "win_rate": 0.0, "mean_hp_lost": 0.0}
+        return {"n": 0, "win_rate": 0.0, "mean_hp_lost": 0.0, "trunc_rate": 0.0}
     n = len(outcomes)
     wins = sum(1 for o in outcomes if o["won"])
+    trunc = sum(1 for o in outcomes if o.get("truncated"))
     hp = float(np.mean([o["hp_lost"] for o in outcomes]))
-    return {"n": n, "win_rate": wins / n, "mean_hp_lost": hp}
+    return {"n": n, "win_rate": wins / n, "mean_hp_lost": hp, "trunc_rate": trunc / n}
 
 
 def main() -> int:
@@ -91,6 +92,7 @@ def main() -> int:
             s = scenario_summary(outcomes)
             flen = n / max(1, s["n"])   # avg decisions per fight — should stay low with the anti-stall term
             print(f"[it {it:04d}] steps={n} fights={s['n']} flen={flen:.0f} win={s['win_rate']:.2f} "
+                  f"trunc={s['trunc_rate']:.2f} "
                   f"hpLost~{s['mean_hp_lost']:.1f} shape={shaping_coef:.2f} loss={metrics['loss']:.3f} "
                   f"kl={metrics['approx_kl']:.4f} ent={metrics['entropy']:.3f} "
                   f"maxRatio={metrics['max_ratio']:.1f} | "

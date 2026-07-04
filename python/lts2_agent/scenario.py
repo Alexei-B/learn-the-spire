@@ -42,6 +42,10 @@ class ScenarioConfig:
     act: Optional[int] = None          # restrict encounters to this act (0/1/2)
     weights: reward.ScenarioWeights = field(default_factory=reward.ScenarioWeights)
     max_navigate: int = 500
+    # Hard cap on decisions per fight: if the policy hasn't won by here the fight is truncated and scored
+    # as a loss, so stalling (chip damage + defend forever) can never beat winning. A real fight is well
+    # under this; it only bites a degenerate non-terminating policy.
+    max_fight_len: int = 60
 
 
 class ScenarioRollout:
