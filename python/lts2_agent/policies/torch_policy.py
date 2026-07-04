@@ -30,7 +30,18 @@ CombatPolicy = Callable[[dict[str, Any], list[dict[str, Any]]], list]
 
 def make_policy(ckpt_path: str, device: str = "cpu") -> CombatPolicy:
     """Build a ``policy(state, options)`` from a torch checkpoint (loaded + warmed up)."""
-    model, meta = model_torch.load_checkpoint(ckpt_path, device=device)
+    import time as _time
+    last: Exception | None = None
+    model = meta = None
+    for _ in range(6):   # a running trainer rewrites the checkpoint every ~2s; retry a partial read
+        try:
+            model, meta = model_torch.load_checkpoint(ckpt_path, device=device)
+            break
+        except Exception as e:
+            last = e
+            _time.sleep(0.3)
+    if model is None:
+        raise RuntimeError(f"could not load {ckpt_path} after retries: {last}")
     model.eval()
 
     def _forward(feats: dict) -> "torch.Tensor":
@@ -61,4 +72,14 @@ def policy(state: dict[str, Any], options: list[dict[str, Any]]):
     global _cached
     if _cached is None:
         _cached = make_policy(os.environ.get("LTS2_PPO_CKPT", "checkpoints/necro_random.pt"))
-    return _cached(state, options)
+    res = _cached(state, options)
+    if res:
+        top = max(res, key=lambda t: t[1])
+        o = options[top[0]]
+        label = (o.get("card") or {}).get("cardId") if o.get("kind") == "PlayCard" else o.get("kind")
+        print(f"[torch_policy] phase={state.get('phase')} opts={len(options)} -> top {label} ({top[1]:.2f})",
+              file=sys.stderr, flush=True)
+    else:
+        print(f"[torch_policy] phase={state.get('phase')} opts={len(options)} -> decline (out of combat / no options)",
+              file=sys.stderr, flush=True)
+    return res
