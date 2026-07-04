@@ -54,7 +54,6 @@ class ActorCritic(nn.Module):
         self.ctx = nn.Linear(hidden + hidden, hidden)
 
         # Per-option scorer: option features ⊕ card embedding ⊕ static ⊕ broadcast context -> logit.
-        self.logit_scale = 10.0
         self.o1 = nn.Linear(features.OPTION_DIM + embed_dim + self.static_dim + hidden, hidden)
         self.o2 = nn.Linear(hidden, hidden)
         self.o_logit = nn.Linear(hidden, 1)
@@ -87,11 +86,11 @@ class ActorCritic(nn.Module):
 
         z = F.relu(self.o1(opt_in))
         z = F.relu(self.o2(z))
-        # Bound the logits (tanh to ±logit_scale) so no single option's score can run away. This caps the
-        # PPO importance ratio exp(new_logp - old_logp): unbounded logits let it explode to ~1e27 and
-        # diverge the policy once training sharpens. ±logit_scale still allows very peaked softmaxes.
-        raw_logits = self.o_logit(z).squeeze(-1)                 # [B, M]
-        logits = self.logit_scale * torch.tanh(raw_logits / self.logit_scale)
+        # Raw logits (no tanh clamp): a clamp caps the PPO ratio but its gradient vanishes once logits
+        # saturate, which froze the policy and stopped it learning. Divergence is instead held off by an
+        # L2 penalty on the logits in the loss (see ppo_torch), which keeps them bounded with a healthy
+        # linear gradient.
+        logits = self.o_logit(z).squeeze(-1)                     # [B, M]
         masked_logits = torch.where(mask, logits, logits.new_full((), NEG_INF))
 
         raw_value = self.v_out(F.relu(self.v1(ctx))).squeeze(-1)          # [B]

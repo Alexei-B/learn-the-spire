@@ -148,7 +148,7 @@ def main() -> int:
                   f"trunc={s['trunc_rate']:.2f} "
                   f"hpLost~{s['mean_hp_lost']:.1f} shape={shaping_coef:.2f} loss={metrics['loss']:.3f} "
                   f"kl={metrics['approx_kl']:.4f} ent={metrics['entropy']:.3f} "
-                  f"maxRatio={metrics['max_ratio']:.1f} | "
+                  f"maxRatio={metrics['max_ratio']:.1f} maxLogit={metrics['max_logit']:.1f} | "
                   f"collect={t_collect:.2f}s update={t_update:.2f}s sps={sps:.0f}", flush=True)
 
             if bg_fixture is not None:

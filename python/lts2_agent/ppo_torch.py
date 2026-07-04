@@ -32,6 +32,10 @@ class PPOConfig:
     target_kl: float = 0.03
     clip_vloss: bool = True
     adv_clip: float = 10.0
+    # L2 penalty on the (legal) option logits: holds them in a sane range so the PPO ratio can't explode,
+    # replacing the old tanh clamp whose vanishing gradient froze the policy. Small enough to still allow a
+    # confident, discriminating softmax.
+    logit_reg: float = 0.01
 
 
 def make_optimizer(model: model_torch.ActorCritic, config: PPOConfig) -> torch.optim.Optimizer:
@@ -67,13 +71,14 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
 
     model.train()
     stop = False
+    max_logit = 0.0
     for _ in range(config.epochs):
         if stop:
             break
         perm = torch.randperm(n, device=device)
-        epoch_kls: list[float] = []
         for start in range(0, n, mb_size):
             idx = perm[start:start + mb_size]
+            mb_mask = feats[features.MODEL_KEYS.index("mask")][idx]   # [mb, M] bool: legal options
             logits, values = model(*(t[idx] for t in feats))
             new_logp = model_torch.log_prob(logits, action[idx])
             logratio = new_logp - old_logp[idx]
@@ -93,7 +98,11 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
             else:
                 v_loss = F.smooth_l1_loss(values, ret_t[idx], beta=1.0)
             ent = model_torch.entropy(logits).mean()
-            loss = pg_loss + config.vf_coef * v_loss - config.ent_coef * ent
+            # L2-penalize the legal logits so they stay in a sane range (bounds the ratio) without a
+            # gradient-killing clamp.
+            logit_reg = (logits[mb_mask] ** 2).mean()
+            loss = (pg_loss + config.vf_coef * v_loss - config.ent_coef * ent
+                    + config.logit_reg * logit_reg)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -108,18 +117,22 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
                 if torch.isfinite(ratio).all():
                     max_ratio = max(max_ratio, float(ratio.max()))
                 max_val = max(max_val, float(values.abs().max()))
-            epoch_kls.append(float(approx_kl))
+                if mb_mask.any():
+                    max_logit = max(max_logit, float(logits[mb_mask].abs().max()))
             m = {"loss": loss, "pg_loss": pg_loss, "v_loss": v_loss, "entropy": ent,
                  "approx_kl": approx_kl, "clip_frac": clip_frac}
             for k, val in m.items():
                 acc[k] = acc.get(k, 0.0) + float(val)
             count += 1
 
-        # Early-stop the remaining epochs once the policy has moved too far this update.
-        if config.target_kl is not None and epoch_kls and np.mean(epoch_kls) > config.target_kl:
-            stop = True
+            # Per-minibatch KL early-stop: bail out of the whole update as soon as the policy has moved
+            # too far from the behavior policy, so one bad batch can't run the ratio away.
+            if config.target_kl is not None and float(approx_kl) > 1.5 * config.target_kl:
+                stop = True
+                break
 
     out = {k: v / count for k, v in acc.items()}
     out["max_ratio"] = max_ratio
     out["max_val"] = max_val
+    out["max_logit"] = max_logit
     return out
