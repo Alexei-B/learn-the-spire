@@ -55,6 +55,11 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
     adv = np.clip(adv, -config.adv_clip, config.adv_clip)
     ret = np.clip(batch["ret"], -config.return_clip, config.return_clip).astype(np.float32)
 
+    # Explained variance of the critic (how much of the return variance the value head predicts): ~0 means
+    # the value function is useless, so advantages are pure noise and the policy can't learn. Key diagnostic.
+    var_ret = float(np.var(batch["ret"]))
+    ev = 1.0 - float(np.var(batch["ret"] - batch["value"])) / (var_ret + 1e-8) if var_ret > 1e-8 else 0.0
+
     # Whole batch to device once; minibatches are indexed on-device.
     feats = model_torch.to_tensors({k: batch[k] for k in features.MODEL_KEYS}, device)
     action = torch.as_tensor(batch["action"], dtype=torch.long, device=device)
@@ -135,4 +140,8 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
     out["max_ratio"] = max_ratio
     out["max_val"] = max_val
     out["max_logit"] = max_logit
+    out["explained_var"] = ev
+    out["ret_std"] = float(np.std(batch["ret"]))     # signal in the returns (0 => nothing to learn)
+    out["val_std"] = float(np.std(batch["value"]))   # spread of critic outputs (0 => constant critic)
+    out["ret_mean"] = float(np.mean(batch["ret"]))
     return out

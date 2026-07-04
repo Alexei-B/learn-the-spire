@@ -18,9 +18,58 @@ import time
 import numpy as np
 import torch
 
-from . import features, model_torch, ppo_torch, reward, synthetic_eval
+from . import features, model_torch, navigator, ppo_torch, reward, synthetic_eval
+from .env import Lts2Env
 from .rollout_torch import TorchScenarioRollout
 from .scenario import ScenarioConfig
+
+_EVAL_COMBAT = {"PlayCard", "EndTurn", "UsePotion", "DiscardPotion"}
+
+
+@torch.no_grad()
+def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV"):
+    """Play fights with the GREEDY (argmax) policy — the real deployed behavior, unlike the sampled
+    win rate the trainer optimizes. Returns win rate, EndTurn fraction, and avg fight length."""
+    model.eval()
+    wins = fights = endturns = steps = 0
+    for env in envs:
+        for s in range(n_seeds):
+            try:
+                obs = env.reset_combat(seed=f"{tag}-{s}", character=scfg.character, elite_pct=scfg.elite_pct,
+                                       boss_pct=scfg.boss_pct, starter_deck=scfg.starter_deck, act=scfg.act)
+            except Exception:
+                continue
+            for _ in range(scfg.max_fight_len + 6):
+                if obs["done"] or not obs["options"]:
+                    break
+                st, opts = obs["state"], obs["options"]
+                ph = st.get("phase")
+                if ph == "Choice":
+                    try:
+                        obs = env.step(navigator.noncombat_action(st, opts))
+                    except Exception:
+                        break
+                    continue
+                if ph != "Combat":
+                    break
+                f = features.encode(st, opts)
+                for j, o in enumerate(opts[:features.MAX_OPTIONS]):
+                    if o.get("kind") not in _EVAL_COMBAT:
+                        f["mask"][j] = False
+                args = model_torch.to_tensors({k: f[k][None] for k in features.MODEL_KEYS}, device)
+                logits, _ = model(*args)
+                a = int(logits[0].argmax())
+                if opts[a].get("kind") == "EndTurn":
+                    endturns += 1
+                steps += 1
+                try:
+                    obs = env.step(a)
+                except Exception:
+                    break
+            fights += 1
+            if obs.get("info", {}).get("won"):
+                wins += 1
+    return {"win": wins / max(1, fights), "endturn": endturns / max(1, steps), "n": fights}
 
 
 @torch.no_grad()
@@ -60,6 +109,9 @@ def main() -> int:
     ap.add_argument("--minibatch", type=int, default=4096)
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--ent-coef", type=float, default=0.01, help="entropy bonus (lower = sharper greedy)")
+    ap.add_argument("--logit-reg", type=float, default=0.01, help="L2 penalty on logits (lower = more confident)")
+    ap.add_argument("--gamma", type=float, default=0.99)
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--ckpt", default="checkpoints/necro_torch.pt")
@@ -78,6 +130,11 @@ def main() -> int:
                          "fight-length cap remain, so fights still can't stall)")
     ap.add_argument("--fresh", action="store_true",
                     help="ignore any existing checkpoint and start training from scratch")
+    ap.add_argument("--eval-every", type=int, default=0,
+                    help="every N iters, measure the GREEDY (argmax) win rate on fresh fights (the real "
+                         "deployed behavior). 0 = off.")
+    ap.add_argument("--eval-envs", type=int, default=3)
+    ap.add_argument("--eval-fights", type=int, default=8, help="greedy fights per eval env")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -88,7 +145,8 @@ def main() -> int:
     print(f"[train_torch] device={device} "
           f"{torch.cuda.get_device_name(0) if device.type == 'cuda' else ''}")
 
-    pcfg = ppo_torch.PPOConfig(lr=args.lr, epochs=args.epochs, minibatch_size=args.minibatch)
+    pcfg = ppo_torch.PPOConfig(lr=args.lr, epochs=args.epochs, minibatch_size=args.minibatch,
+                               ent_coef=args.ent_coef, logit_reg=args.logit_reg)
 
     # Resume: if the checkpoint exists (and --fresh wasn't passed), continue from it — the model weights,
     # the optimizer state, and the iteration counter — so re-running the same command picks up where it
@@ -114,7 +172,7 @@ def main() -> int:
     n_params = sum(p.numel() for p in model.parameters())
 
     scfg = ScenarioConfig(
-        n_envs=args.envs, steps_per_env=args.steps,
+        n_envs=args.envs, steps_per_env=args.steps, gamma=args.gamma,
         character=args.character, elite_pct=args.elite_pct, boss_pct=args.boss_pct,
         starter_deck=args.starter_deck, act=(args.act if args.act >= 0 else None),
         weights=reward.ScenarioWeights())
@@ -125,6 +183,8 @@ def main() -> int:
     bg_fixture = synthetic_eval.load_fixture(synthetic_eval.DEFAULT_FIXTURE) if args.bodyguard_eval else None
     bg_streak = 0
     bg_reached: int | None = None
+
+    eval_envs = [Lts2Env() for _ in range(args.eval_envs)] if args.eval_every > 0 else []
 
     rollout = TorchScenarioRollout(scfg)
     try:
@@ -147,9 +207,15 @@ def main() -> int:
             print(f"[it {it:04d}] steps={n} fights={s['n']} flen={flen:.0f} win={s['win_rate']:.2f} "
                   f"trunc={s['trunc_rate']:.2f} "
                   f"hpLost~{s['mean_hp_lost']:.1f} shape={shaping_coef:.2f} loss={metrics['loss']:.3f} "
-                  f"kl={metrics['approx_kl']:.4f} ent={metrics['entropy']:.3f} "
+                  f"kl={metrics['approx_kl']:.4f} ent={metrics['entropy']:.3f} ev={metrics['explained_var']:+.2f} "
+                  f"rstd={metrics['ret_std']:.2f} vstd={metrics['val_std']:.2f} rmean={metrics['ret_mean']:+.2f} "
                   f"maxRatio={metrics['max_ratio']:.1f} maxLogit={metrics['max_logit']:.1f} | "
                   f"collect={t_collect:.2f}s update={t_update:.2f}s sps={sps:.0f}", flush=True)
+
+            if eval_envs and (it % args.eval_every == 0 or it == start_it):
+                ev = greedy_winrate(model, eval_envs, scfg, args.eval_fights, device, tag=f"E{it}")
+                print(f"         GREEDY-EVAL win={ev['win']:.2f} endTurn/step={ev['endturn']:.2f} "
+                      f"(n={ev['n']} fights, argmax policy)", flush=True)
 
             if bg_fixture is not None:
                 scores = bodyguard_scores(model, bg_fixture, device)
@@ -171,6 +237,11 @@ def main() -> int:
                   f"(prior pipeline baseline ~100 iters)", flush=True)
     finally:
         rollout.close()
+        for e in eval_envs:
+            try:
+                e.close()
+            except Exception:
+                pass
     return 0
 
 
