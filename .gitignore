@@ -19,3 +19,12 @@ TestResults/
 # Python (lts2_agent reference package)
 __pycache__/
 *.pyc
+.venv/
+# Training artifacts (checkpoints, metric logs)
+checkpoints/
+*.msgpack
+runs/
+*.metrics.csv
+
+# Local TUI agent config (machine-specific paths); commit lts2.agent.example.json instead
+lts2.agent.json

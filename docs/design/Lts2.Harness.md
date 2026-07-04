@@ -300,8 +300,8 @@ driver. `RulesDecisionEngine` is faithful under `CombatStrategyTests`/`Necrobind
 drive it via `Recommend`); the interface contract (subset/mask/decline, Best↔top-score) is covered by
 `DecisionEngineTests`. The TUI's **Tab "auto-play"** now applies whichever engine is selected in its
 **Strategy** menu — in *every* phase, not just combat (the rules engine simply has no pick off the
-battlefield). The learned engines themselves remain out of scope (see Roadmap); the seam to plug them
-in across a process boundary is built (next).
+battlefield). A first *learned* engine now exists too (a PPO combat policy in `python/lts2_agent/`, see
+below); the seam to plug it in across a process boundary is built (next).
 
 ## Cross-process agent interop (`Lts2.Agent`)
 
@@ -331,6 +331,27 @@ The `python/lts2_agent/` reference package ships the env, the decision server, a
 module, an example heuristic policy, and a training-loop skeleton. `AgentWireTests` covers the
 serialization, the client's index-mapping + graceful decline (over an in-memory channel), and the env
 server's reset/step/close + error handling; the Python round-trip exercises the real stdio transport.
+
+It also carries a first **learned combat engine**: a per-option action-scoring actor-critic trained by
+**PPO** (JAX/Flax) against the env — combat only, with the scripted `navigator` driving non-combat so
+runs finish. A shared `features.py` encoder guarantees train/serve parity, and the checkpoint serves
+back into the TUI's Strategy menu via `policies/jax_policy.py` behind the same decision server
+(`LTS2_PPO_CKPT` + `LTS2_AGENT_*`, or a `lts2.agent.json` config so no env vars are needed). Training
+deps are isolated in `requirements-train.txt` (protocol/env stay stdlib-only). Vectorized training runs
+one host process per env; this surfaced a concurrency bug — `GameRuntime.EnsureMinimalLocalizationData`
+overwrote a shared `res://` completion file on every boot, so N hosts starting together collided — now
+fixed by skipping the write when the file already exists.
+
+Two training modes share the model/features/PPO update. **Run mode** plays full games (reward: HP +
+damage + kills + floor/win). **Scenario mode** trains combat over a far wider spread than a normal run
+visits: each episode is an isolated fight built by `CombatScenario` (`src/Lts2.Harness`) — a random
+character, a random 15-card deck from its pool, its starting relic + 5 random relics, at full HP, in a
+random act-1/2/3 encounter weighted by elite/boss rate — served over a new `reset_combat` command on the
+`TrainingEnvironmentServer`. Its observation reports the fight terminal (`done` when combat ends) plus
+`won`/`hpLost`, where HP lost adds back the character's end-of-combat starter heal (Ironclad's Burning
+Blood +6) so it scores real combat damage. Building an arbitrary deck required setting each cloned
+card's `Owner` (the run's hook iteration NREs otherwise); a few cards/relics still hit harness edge
+cases mid-fight, which the trainer's per-env resilience absorbs by abandoning that fight.
 
 ## Determinism, snapshots & restore
 

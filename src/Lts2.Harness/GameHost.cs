@@ -219,6 +219,22 @@ public sealed class GameHost
         // can exist per process. Tear down any previous run before starting a new one.
         if (RunManager.Instance.IsInProgress)
         {
+            // Combat-over is detected before death-triggered actions finish draining (e.g. Swipe adds a
+            // card when a creature it marked dies). Those actions live in the process-wide ActionExecutor
+            // and can be suspended for a later phase, so a passive drain returns before they finish; if we
+            // then CleanUp, a leftover action runs during the *next* fight against the removed RunState and
+            // throws "HasBeenRemovedFromState". Cancel the whole queue (marks queued/mid-flight actions
+            // canceled so they're skipped), then wait it out — bounded so it can't block a fresh run.
+            try
+            {
+                MegaCrit.Sts2.Core.GameActions.ActionExecutor executor = RunManager.Instance.ActionExecutor;
+                executor.Cancel();
+                executor.FinishedExecutingActions().Wait(2000);
+            }
+            catch
+            {
+                // Best effort: a prior fight's action residue must never block a new run.
+            }
             RunManager.Instance.CleanUp();
         }
 
@@ -493,14 +509,19 @@ public sealed class GameHost
     /// </summary>
     public void EnterFirstRoom()
     {
+        long t = System.Diagnostics.Stopwatch.GetTimestamp();
         RunManager rm = RunManager.Instance;
-        Pump(rm.SetActInternal(0));
+        // EnterAct(0) already calls SetActInternal(0) internally (which runs the ~100ms map generation),
+        // so we don't call it a second time up front — that doubled the reset cost. The location buffers
+        // are notified after the act (and its map) are set up.
+        Pump(rm.EnterAct(0));
         rm.RunLocationTargetedBuffer.OnLocationChanged(Run.RunLocation);
         rm.MapSelectionSynchronizer.OnLocationChanged(Run.MapLocation);
-        Pump(rm.EnterAct(0));
+        t = ResetProfiler.Mark("  EnterFirst.EnterAct", t);
         // With all epochs unlocked the run opens on the Neow ancient event; wait for its
         // options to be generated (BeginEvent runs as a fire-and-forget task).
         WaitForEventReady();
+        ResetProfiler.Mark("  EnterFirst.WaitForEventReady", t);
     }
 
     /// <summary>The current combat, or null if not in a battle.</summary>
@@ -590,19 +611,30 @@ public sealed class GameHost
         MegaCrit.Sts2.Core.Models.RelicModel relic)
     {
         MegaCrit.Sts2.Core.Models.RelicModel mutable = relic.IsMutable ? relic : relic.ToMutable();
-        System.Threading.Tasks.Task obtain = MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(
-            MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain(mutable, Run.Players[0]));
-        // Keep the obtain task registered while it is still in flight — whether it suspended on a
-        // custom reward (resumed by ProceedFromRewards) or on a mid-effect card choice (resumed by
-        // Apply(SelectCards), e.g. NewLeaf's transform or PreservedFog's removal pick) — so the
-        // resumer pumps it to completion instead of leaving the continuation racing GetState.
-        _suspendedRoomTask = obtain;
-        PumpRoomTaskUntilIdleOrChoice(obtain);
-        if (obtain.IsCompleted)
+        // A relic's on-obtain effect can raise a card *selection* (e.g. Pomander upgrades a deck card).
+        // This is out of combat with no agent to resolve it, so auto-resolve those picks randomly (per
+        // design) rather than surfacing/blocking on a choice the setup can't answer.
+        Selector.AutoResolveRandom = true;
+        try
         {
-            _suspendedRoomTask = null;
+            System.Threading.Tasks.Task obtain = MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(
+                MegaCrit.Sts2.Core.Commands.RelicCmd.Obtain(mutable, Run.Players[0]));
+            // Keep the obtain task registered while it is still in flight — whether it suspended on a
+            // custom reward (resumed by ProceedFromRewards) or on a mid-effect card choice (resumed by
+            // Apply(SelectCards), e.g. NewLeaf's transform or PreservedFog's removal pick) — so the
+            // resumer pumps it to completion instead of leaving the continuation racing GetState.
+            _suspendedRoomTask = obtain;
+            PumpRoomTaskUntilIdleOrChoice(obtain);
+            if (obtain.IsCompleted)
+            {
+                _suspendedRoomTask = null;
+            }
+            return mutable;
         }
-        return mutable;
+        finally
+        {
+            Selector.AutoResolveRandom = false;
+        }
     }
 
     /// <summary>
@@ -1601,7 +1633,17 @@ public sealed class GameHost
         var sync = RunManager.Instance.RewardsSetSynchronizer;
         if (IsLocalPlayer(set.Player))
         {
-            Pump(sync.SelectLocalReward(reward));
+            try
+            {
+                Pump(sync.SelectLocalReward(reward));
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("not currently viewing any reward set"))
+            {
+                // In headless scenario mode a reward can be offered whose set was never begun in the
+                // synchronizer (the UI-driven BeginRewardsSet path doesn't run), so selecting it throws.
+                // Combat training never consumes rewards, so skip it rather than crash the step.
+                Godot.GD.Print($"[harness] skipping reward with no active set: {ex.Message}");
+            }
             return;
         }
         int index = IndexOfReward(set, reward);
@@ -2386,6 +2428,61 @@ public sealed class GameHost
         Pump(RunManager.Instance.ActionExecutor.FinishedExecutingActions());
 
     /// <summary>
+    /// True when this run carries no leftover action/choice residue from a prior fight, so a
+    /// <b>soft re-entry</b> (<see cref="EnterEncounterDebug"/> on the reused run) is safe. Residue is: a
+    /// card selection abandoned at combat-end (e.g. HOLOGRAM's "put a card from your discard into your
+    /// hand" pick — the episode stops at combat-end without resolving it), which keeps its
+    /// <c>PlayCardAction</c> blocked on the selection; or a queued/running action. Any of these would wedge
+    /// the next combat's <see cref="DrainActionQueue"/> (the <c>NonInteractiveMode</c> executor loop awaits
+    /// <c>Execute()</c> with no cancel check, and the blocked effect can't be safely resumed in an ended
+    /// combat). When not clean, the caller full-resets: a fresh <see cref="StartNewRun"/> builds a new
+    /// executor + selector, orphaning the parked effect harmlessly.
+    /// </summary>
+    public bool IsReadyForSoftReenter =>
+        (Selector is null || Selector.Pending is null)
+        && !RunManager.Instance.ActionExecutor.IsRunning
+        && RunManager.Instance.ActionQueueSet.IsEmpty;
+
+    private static readonly System.Reflection.FieldInfo? MapHistoryField =
+        typeof(RunState).GetField("_mapPointHistory",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+    /// <summary>
+    /// Tear down the residue a prior fight left on this run before a <b>soft re-entry</b>
+    /// (<see cref="EnterEncounterDebug"/> on a reused run), which a full <see cref="StartNewRun"/> would
+    /// otherwise clear. Two leaks, both fatal over a long training run:
+    /// <list type="number">
+    /// <item><b>Combat state:</b> re-entry starts a new combat without ending the previous one, so every
+    /// fight's cards, piles and <c>CombatEnded</c> subscriptions pile up (millions of objects → GC thrash
+    /// that stalls the process). <c>CombatManager.Reset</c> drops the old combat state.</item>
+    /// <item><b>Map history:</b> each re-entry appends a room to <c>MapPointHistory</c>, which every
+    /// <see cref="GetState"/> walks (<c>CalculateScore</c>, <c>ProjectMap</c>, <c>TotalFloor</c>) — it grows
+    /// until the projection spins. Clearing each act's room list keeps re-entry cheap. Score/floor read 0
+    /// in isolated combat scenarios, which don't use them.</item>
+    /// </list>
+    /// </summary>
+    public void PrepareForSoftReenter()
+    {
+        MegaCrit.Sts2.Core.Combat.CombatManager.Instance.Reset(graceful: true);
+
+        // Release the combat card registry. NetCombatCardDb.StartCombat (run on every EnterEncounterDebug)
+        // registers the player's cards into id<->card maps that are only cleared on a real combat end; a
+        // soft re-entry never fires that, so cards (and their DynamicVarSets etc.) pile up unboundedly.
+        MegaCrit.Sts2.Core.GameActions.Multiplayer.NetCombatCardDb.Instance.ClearCardsForTesting();
+
+        if (MapHistoryField?.GetValue(Run) is System.Collections.IEnumerable acts)
+        {
+            foreach (object? act in acts)
+            {
+                if (act is System.Collections.IList rooms)
+                {
+                    rooms.Clear();
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Block until the player is back in their Play phase, combat has ended, or the enemy turn
     /// raised a mid-effect choice the agent must resolve.
     ///
@@ -2398,7 +2495,11 @@ public sealed class GameHost
     /// surfaces (<see cref="GamePhase.Choice"/>); resolving it resumes the enemy turn and the caller
     /// waits again. The timeout is a safety net and throws if hit.
     /// </summary>
-    private void WaitUntilPlayerCanActOrCombatEnds(Player player, int timeoutMs = 5000)
+    // A settled headless enemy turn resumes the player in well under a second (no animation delays), so a
+    // multi-second wait means the async turn-progression chain (RunAutoPrePlayPhase / ExecuteEnemyTurn) has
+    // genuinely stalled — it will not recover, so fail fast and let the caller start a fresh fight cheaply
+    // rather than blocking the whole rollout barrier for the full timeout.
+    private void WaitUntilPlayerCanActOrCombatEnds(Player player, int timeoutMs = 2000)
     {
         var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
         var tcs = new System.Threading.Tasks.TaskCompletionSource(
@@ -2431,8 +2532,13 @@ public sealed class GameHost
                 timeoutMs);
             if (idx < 0)
             {
+                MegaCrit.Sts2.Core.Entities.Players.PlayerCombatState? cur = player.PlayerCombatState;
+                string diag = $"inProgress={cm.IsInProgress} phase={cur?.Phase.ToString() ?? "null"} "
+                    + $"pcsChanged={!ReferenceEquals(cur, pcs)} suspended={EffectSuspended} "
+                    + $"executorRunning={RunManager.Instance.ActionExecutor.IsRunning} "
+                    + $"pendingChoice={Selector.Pending is not null}";
                 throw new System.TimeoutException(
-                    "Timed out waiting for the player's turn to resume or combat to end.");
+                    "Timed out waiting for the player's turn to resume or combat to end. [" + diag + "]");
             }
         }
         finally

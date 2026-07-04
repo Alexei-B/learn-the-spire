@@ -59,7 +59,8 @@ public sealed class DecisionEngineServerProcess : IDecisionChannel, IDisposable
         string? arguments = null,
         string? workingDirectory = null,
         TimeSpan? timeout = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        System.Collections.Generic.IReadOnlyDictionary<string, string>? environment = null)
     {
         if (string.IsNullOrWhiteSpace(command))
         {
@@ -79,6 +80,14 @@ public sealed class DecisionEngineServerProcess : IDecisionChannel, IDisposable
         if (!string.IsNullOrEmpty(workingDirectory))
         {
             psi.WorkingDirectory = workingDirectory;
+        }
+        if (environment is not null)
+        {
+            // Extra vars for the child (inherits the parent env otherwise), e.g. a checkpoint path.
+            foreach (System.Collections.Generic.KeyValuePair<string, string> kv in environment)
+            {
+                psi.Environment[kv.Key] = kv.Value;
+            }
         }
 
         Process process = Process.Start(psi)

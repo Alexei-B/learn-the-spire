@@ -5,6 +5,7 @@ using System.Text.Json;
 using Lts2.Agent.Wire;
 using Lts2.Harness;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace Lts2.Agent;
 
@@ -23,6 +24,12 @@ namespace Lts2.Agent;
 public sealed class TrainingEnvironmentServer
 {
     private GameHost? _host;
+    // Non-null while serving a combat scenario (reset_combat); null in full-run mode (reset).
+    private CombatScenario.Spec? _scenario;
+    // The options from the last observation the driver received. A step's index refers to exactly this
+    // list, and the state cannot change between that Observe and the next Step, so we reuse it for the
+    // step's validation/apply instead of recomputing ListOptions (which is ~1/4 of the per-step C# cost).
+    private IReadOnlyList<GameOption>? _lastOptions;
 
     /// <summary>
     /// Serve commands from <paramref name="channel"/> until it hits end-of-stream or a <c>close</c>
@@ -74,6 +81,8 @@ public sealed class TrainingEnvironmentServer
             {
                 case "reset":
                     return (Reset(command), false);
+                case "reset_combat":
+                    return (ResetCombat(command), false);
                 case "step":
                     return (Step(command), false);
                 case "close":
@@ -84,12 +93,16 @@ public sealed class TrainingEnvironmentServer
         }
         catch (Exception ex)
         {
+            // Full exception (message + stack) to stderr for debugging (suppressed unless the driver
+            // sets log_stderr); the wire error stays the concise message.
+            Console.Error.WriteLine($"[env-error] {ex}");
             return (Error(ex.Message), false);
         }
     }
 
     private string Reset(EnvCommand command)
     {
+        _scenario = null; // full-run mode
         string seed = string.IsNullOrEmpty(command.Seed) ? "AGENT" : command.Seed!;
         int ascension = command.Ascension ?? 0;
         CharacterModel character = ResolveCharacter(command.Character);
@@ -97,6 +110,101 @@ public sealed class TrainingEnvironmentServer
         _host = GameHost.StartNewRun(seed, new[] { character }, ascension);
         _host.EnterFirstRoom();
         return Observe();
+    }
+
+    private string ResetCombat(EnvCommand command)
+    {
+        string seed = string.IsNullOrEmpty(command.Seed) ? "AGENT" : command.Seed!;
+
+        if (command.Cards is { Count: > 0 })
+        {
+            // Fully-specified closed-eval scenario: exact character + deck + encounter (always full build).
+            string character = string.IsNullOrEmpty(command.Character) ? "IRONCLAD" : command.Character!;
+            string encounter = command.Encounter
+                ?? throw new InvalidOperationException("reset_combat with explicit 'cards' also needs an 'encounter'.");
+            (GameHost host, CombatScenario.Spec spec) = CombatScenario.CreateExplicit(
+                seed, character, command.Cards, command.Relics, encounter, command.EnemyHp);
+            _host = host;
+            _scenario = spec;
+            return Observe();
+        }
+
+        var rng = new Random(StableSeed(seed));
+        double elite = command.ElitePct ?? 0.2, boss = command.BossPct ?? 0.05;
+        bool starter = command.StarterDeck ?? false;
+        int act = command.Act ?? -1;
+
+        // Soft reset (~80x cheaper than a fresh StartNewRun): reuse the live run when the requested
+        // character matches the one it was built for. A run is a single character, so a caller keeps an
+        // env pinned to one character and gets character diversity by spreading them across env processes.
+        if (_host is { } live && CanSoftReset(live, command.Character) && live.IsReadyForSoftReenter)
+        {
+            _scenario = CombatScenario.Reenter(live, rng, elite, boss, starter, act);
+            return Observe();
+        }
+
+        (GameHost created, CombatScenario.Spec createdSpec) = CombatScenario.Create(
+            seed, rng, command.Character, elite, boss, starter, act);
+        _host = created;
+        _scenario = createdSpec;
+        return Observe();
+    }
+
+    /// <summary>Whether the live run can be soft-reset into a new fight for <paramref name="wanted"/>.
+    /// A run is one character: when a specific character is requested we reuse the run only if it matches;
+    /// when none is requested (random-character training) we <em>pin</em> to whatever character this env's
+    /// run was first built with, so it can still soft-reset (diversity then comes from spreading characters
+    /// across env processes, whose differing seeds pick different first characters).</summary>
+    // Soft reset makes a fresh fight ~80x cheaper (reuse the run + EnterEncounterDebug vs a full
+    // StartNewRun) and is correct for a handful of fights, but reusing one run across MANY fights leaks
+    // combat state unboundedly: EnterEncounterDebug starts a new combat without the game's real combat-end
+    // / room-transition teardown, so cards, piles, NetCombatCardDb registrations and (worst) millions of
+    // event-subscription delegates accumulate (2.5 GB+ within one training iteration → GC thrash that
+    // stalls the process). Patching individual leak sources (CombatManager.Reset, NetCombatCardDb clear,
+    // map-history — see GameHost.PrepareForSoftReenter) is not enough; the delegate leak has too many
+    // channels. So it is OFF by default and not currently viable for real training — the iteration-speed
+    // win comes from the stable full-reset path + more env processes. Opt in with LTS2_SOFT_RESET=1 only
+    // for short isolated/benchmarking use.
+    private static readonly bool SoftResetEnabled =
+        Environment.GetEnvironmentVariable("LTS2_SOFT_RESET") is "1" or "true";
+
+    private static bool CanSoftReset(GameHost host, string? wanted)
+    {
+        if (!SoftResetEnabled)
+        {
+            return false;
+        }
+        try
+        {
+            if (!RunManager.Instance.IsInProgress || host.Run.IsGameOver)
+            {
+                // A game-over run (the player died in the last fight) poisons the next combat's turn
+                // signalling — rebuild it fresh. (Leftover action/choice residue is handled separately by
+                // TryClearCombatResidue, which falls back to a full reset if it can't be cleared.)
+                return false;
+            }
+            return string.IsNullOrEmpty(wanted)
+                || host.Run.Players[0].Character.Id.Entry.Contains(wanted!, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>A process-stable hash of the seed (unlike string.GetHashCode, which is randomized per
+    /// process) so a given seed reproduces the same random scenario composition.</summary>
+    private static int StableSeed(string s)
+    {
+        unchecked
+        {
+            int h = 17;
+            foreach (char c in s)
+            {
+                h = h * 31 + c;
+            }
+            return h;
+        }
     }
 
     private string Step(EnvCommand command)
@@ -112,28 +220,102 @@ public sealed class TrainingEnvironmentServer
         }
         else if (command.Index is { } index)
         {
-            IReadOnlyList<GameOption> options = host.ListOptions();
+            long t = System.Diagnostics.Stopwatch.GetTimestamp();
+            // The index refers to the options from the last observation; reuse them (state is unchanged
+            // since then) rather than recomputing.
+            IReadOnlyList<GameOption> options = _lastOptions ?? host.ListOptions();
+            t = StepProfiler.Mark("listOptions_validate", t);
             if (index < 0 || index >= options.Count)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(command.Index), index, $"Action index out of range (expected 0..{options.Count - 1}).");
             }
             host.Apply(options[index]);
+            StepProfiler.Mark("apply", t);
         }
         else
         {
             throw new InvalidOperationException("A 'step' needs an 'index' or 'cardIndices'.");
         }
 
-        return Observe();
+        string obs = Observe();
+        StepProfiler.StepDone();
+        return obs;
     }
 
     private string Observe()
     {
         GameHost host = _host!;
+
+        long t = System.Diagnostics.Stopwatch.GetTimestamp();
         GameState state = host.GetState();
+        t = StepProfiler.Mark("getState", t);
         IReadOnlyList<GameOption> options = host.ListOptions();
-        return JsonSerializer.Serialize(Observation.From(state, options), AgentJson.Options);
+        _lastOptions = options;   // reused by the next Step's validation/apply (state is unchanged until then)
+        t = StepProfiler.Mark("listOptions", t);
+        Observation obs = _scenario is { } spec
+            ? BuildScenarioObservation(host, state, options, spec)
+            : Observation.From(state, options);
+        t = StepProfiler.Mark("buildObs", t);
+        string json = JsonSerializer.Serialize(obs, AgentJson.Options);
+        StepProfiler.Mark("serialize", t);
+        return json;
+    }
+
+    /// <summary>
+    /// Build a scenario observation: the episode is a single fight, so <c>Done</c> marks the combat
+    /// ending (won or lost), and the info carries the outcome + HP lost during the fight (with the
+    /// character's end-of-combat starter heal added back on a win — see <see cref="CombatScenario"/>).
+    /// </summary>
+    private static Observation BuildScenarioObservation(
+        GameHost host, GameState state, IReadOnlyList<GameOption> options, CombatScenario.Spec spec)
+    {
+        // The fight is over once no combat move is on offer. Keying off the actual options is the
+        // reliable signal: host.InCombat can linger true on the post-combat reward screen, and the
+        // phase can momentarily read Combat while rewards are already being offered — either way, if
+        // the only options are rewards/map (no PlayCard/EndTurn/potion/mid-combat choice), the fight
+        // has ended and the agent must not act on those.
+        bool canStillFight = host.InCombat && options.Any(o =>
+            o.Kind is OptionKind.PlayCard or OptionKind.EndTurn
+                or OptionKind.UsePotion or OptionKind.DiscardPotion or OptionKind.SelectCards);
+        bool combatOver = !canStillFight;
+        bool playerAlive = host.Run.Players[0].Creature.IsAlive;
+        bool won = combatOver && playerAlive;
+        int? hpLost = null;
+        if (combatOver)
+        {
+            int endHp = state.Players.Count > 0 ? state.Players[0].CurrentHp : 0;
+            int loss = spec.StartHp - endHp + (won ? spec.StarterHeal : 0);
+            hpLost = Math.Clamp(loss, 0, spec.StartHp);
+        }
+
+        var players = new List<PlayerInfo>(state.Players.Count);
+        foreach (PlayerState p in state.Players)
+        {
+            players.Add(new PlayerInfo { CurrentHp = p.CurrentHp, MaxHp = p.MaxHp, Gold = p.Gold });
+        }
+
+        return new Observation
+        {
+            State = state,
+            Options = options,
+            Done = combatOver,
+            Info = new ObservationInfo
+            {
+                Score = state.Score,
+                Phase = state.Phase.ToString(),
+                Floor = state.Floor,
+                Act = spec.Act,
+                GameOver = state.IsGameOver,
+                Victory = won,
+                Players = players,
+                CombatOver = combatOver,
+                Won = won,
+                HpLost = hpLost,
+                Encounter = spec.Encounter,
+                RoomType = spec.RoomType,
+            },
+        };
     }
 
     private static CharacterModel ResolveCharacter(string? name) =>
@@ -144,4 +326,56 @@ public sealed class TrainingEnvironmentServer
 
     private static string Error(string message) =>
         JsonSerializer.Serialize(new ErrorResponse { Error = message }, AgentJson.Options);
+}
+
+/// <summary>
+/// Opt-in per-step timing (set <c>LTS2_PROFILE=1</c>) that accumulates how long each part of a step
+/// takes — <c>listOptions</c>, <c>getState</c> (projection), <c>buildObs</c>, <c>serialize</c>,
+/// <c>apply</c> (the game logic + pump) — and prints an average µs/step breakdown to stderr every N
+/// steps. Zero cost when disabled. Lets us optimize the measured hotspot instead of guessing.
+/// </summary>
+internal static class StepProfiler
+{
+    public static readonly bool Enabled =
+        Environment.GetEnvironmentVariable("LTS2_PROFILE") is "1" or "true";
+    private const int ReportEvery = 500;
+
+    private static readonly object Lock = new();
+    private static readonly Dictionary<string, long> Ticks = new();
+    private static int _steps;
+
+    /// <summary>Record the time since <paramref name="since"/> under <paramref name="category"/> and
+    /// return a fresh timestamp (so calls chain: <c>t = Mark("a", t); t = Mark("b", t);</c>).</summary>
+    public static long Mark(string category, long since)
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (Enabled)
+        {
+            lock (Lock)
+            {
+                Ticks.TryGetValue(category, out long acc);
+                Ticks[category] = acc + (now - since);
+            }
+        }
+        return now;
+    }
+
+    public static void StepDone()
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+        lock (Lock)
+        {
+            if (++_steps % ReportEvery != 0)
+            {
+                return;
+            }
+            double usPerStep = 1_000_000.0 / System.Diagnostics.Stopwatch.Frequency / _steps;
+            string parts = string.Join(" ", Ticks.OrderByDescending(kv => kv.Value)
+                .Select(kv => $"{kv.Key}={kv.Value * usPerStep:0}us"));
+            Console.Error.WriteLine($"[profile] steps={_steps} per-step: {parts}");
+        }
+    }
 }

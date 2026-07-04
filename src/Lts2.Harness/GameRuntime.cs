@@ -79,12 +79,26 @@ public static class GameRuntime
 
     /// <summary>
     /// Write the minimal localization-completion file LocManager.Initialize() requires.
-    /// The path resolves through the shim's globalized temp filesystem.
+    /// The path resolves through the shim's globalized filesystem (under <c>res://</c>, i.e. the
+    /// build output — shared across processes). Skip the write when it already exists so that several
+    /// hosts booting in parallel (vectorized agent training runs one host per process) don't collide
+    /// overwriting the same shared file; a cold-start race where two create it at once is tolerated.
     /// </summary>
     private static void EnsureMinimalLocalizationData()
     {
         string completionPath = Godot.ProjectSettings.GlobalizePath("res://localization/completion.json");
+        if (System.IO.File.Exists(completionPath))
+        {
+            return; // already present (possibly written by another concurrent host) — reuse it.
+        }
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(completionPath)!);
-        System.IO.File.WriteAllText(completionPath, "{\"eng\":1}");
+        try
+        {
+            System.IO.File.WriteAllText(completionPath, "{\"eng\":1}");
+        }
+        catch (System.IO.IOException) when (System.IO.File.Exists(completionPath))
+        {
+            // A concurrent host won the race and wrote the identical content — proceed with theirs.
+        }
     }
 }

@@ -377,9 +377,22 @@ shared wire schema (see design "Cross-process agent interop (Lts2.Agent)" and
 - **Python reference package** — _done_: `python/lts2_agent/` ships the env, the decision server, a
   shared protocol module, an example heuristic policy, and a training-loop skeleton. A policy trained
   against the env plugs into the decision server unchanged (same observation + action encoding).
+- **Learned combat engine (PPO, JAX)** — _initial attempt done_: `python/lts2_agent/` also carries a
+  first *learned* policy — a per-option action-scoring actor-critic trained by PPO against the env
+  (combat only; the scripted `navigator` drives non-combat so runs finish). Shared `features.py`
+  guarantees train/serve parity, and the checkpoint serves back into the TUI's Strategy menu via
+  `jax_policy` behind the same decision server (env vars or a `lts2.agent.json` config). Deps are
+  isolated in `requirements-train.txt` (protocol/env stay stdlib-only). See `python/README.md`. Parallel
+  training required one harness fix: `GameRuntime.EnsureMinimalLocalizationData` now skips the shared
+  `res://` completion-file write when it already exists, so N hosts booting at once no longer collide.
+  Two training modes: full runs, and **combat scenarios** — `CombatScenario` (`src/Lts2.Harness`) +
+  the `reset_combat` command build isolated random fights (random character/deck/relics/act encounter)
+  so combat is trained over a far wider spread than a run visits; reward is win/loss + HP lost (with the
+  starter end-of-combat heal added back).
 - **Tests** — _done_: `AgentWireTests` covers observation serialization, the `ProcessDecisionEngine`
   index-mapping + graceful decline (over an in-memory channel), and the env server's reset/step/close +
-  error handling; the Python round-trip exercises the real stdio transport.
+  error handling; the Python round-trip exercises the real stdio transport. The Python `tests/` cover
+  the feature encoder, the model (masking/legality), and checkpoint-round-trip serve parity (no C# dep).
 
 ## Out of scope (future, separate system)
 The RL/agent training framework itself — the learned policies and their training loops. The

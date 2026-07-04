@@ -60,6 +60,15 @@ internal sealed class HarnessCardSelector : ICardSelector
     private readonly object _gate = new();
     private PendingChoice? _pending;
     private TaskCompletionSource _pendingSignal = NewSignal();
+    private readonly Random _autoRng = new();
+
+    /// <summary>
+    /// When set, a card selection is resolved immediately with a random valid pick instead of surfacing
+    /// a <see cref="PendingChoice"/>. Used for out-of-combat selections that no agent will resolve — e.g.
+    /// a relic's <c>AfterObtained</c> deck upgrade (Pomander) during scenario setup. Set only around such
+    /// out-of-combat obtains; combat discover/scry/exhaust choices still surface to the agent.
+    /// </summary>
+    public bool AutoResolveRandom { get; set; }
 
     /// <summary>The choice the game is currently blocked on, or null if none.</summary>
     public PendingChoice? Pending
@@ -80,18 +89,25 @@ internal sealed class HarnessCardSelector : ICardSelector
     public Task<IEnumerable<CardModel>> GetSelectedCards(IEnumerable<CardModel> options, int minSelect, int maxSelect)
     {
         var list = options.ToList();
-        var choice = new PendingChoice(list, minSelect, maxSelect);
         lock (_gate)
         {
+            if (AutoResolveRandom)
+            {
+                // Out-of-combat selection with no agent to resolve it: pick a random valid subset now.
+                int n = Math.Clamp(maxSelect, minSelect, list.Count);
+                var picked = list.OrderBy(_ => _autoRng.Next()).Take(n).ToList();
+                return Task.FromResult<IEnumerable<CardModel>>(picked);
+            }
             if (_pending is not null)
             {
                 throw new InvalidOperationException(
                     "A card choice is already pending; the harness resolves choices one at a time.");
             }
+            var choice = new PendingChoice(list, minSelect, maxSelect);
             _pending = choice;
             _pendingSignal.TrySetResult();
+            return AwaitSelection(choice);
         }
-        return AwaitSelection(choice);
     }
 
     private static async Task<IEnumerable<CardModel>> AwaitSelection(PendingChoice choice) =>

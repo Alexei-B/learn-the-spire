@@ -1,0 +1,8 @@
+# Training/eval dependencies for the PPO decision engine (JAX).
+# The protocol/env/decision-server modules are stdlib-only; only the learning code needs these.
+# Pinned for Python 3.9 (the last JAX line that supports 3.9 is 0.4.30).
+numpy>=1.24,<2.0
+jax==0.4.30
+jaxlib==0.4.30
+flax==0.8.5
+optax==0.2.3

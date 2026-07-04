@@ -72,14 +72,32 @@ internal static class HarmonyPatches
                 AccessTools.Method(typeof(EventModel), nameof(EventModel.GetOptionDescription)),
                 postfix: new HarmonyMethod(typeof(HarmonyPatches), nameof(GetOptionDescriptionPostfix)));
 
-            // CardModel.SelectionScreenPrompt *throws* "No selection screen prompt for X" when its
-            // loc key is missing (our tables are empty), rather than degrading like other lookups.
-            // Cards that raise a mid-effect card selection read it (e.g. Wish's draw-pile pick), so a
-            // missing prompt faults the card mid-play. Swallow the throw and hand back a key-named
-            // LocString (rendered as the key) — the prompt is display-only, irrelevant to mechanics.
+            // CardModel/PowerModel.SelectionScreenPrompt *throw* "No selection screen prompt for X" when
+            // their loc key is missing, rather than degrading like other lookups. Both feed the prompt
+            // into a CardSelectCmd the harness's selector services, so a missing key faults the effect
+            // mid-play *before* the selection is even offered — e.g. a card's draw-pile pick, or a power
+            // like FOREGONE_CONCLUSION_POWER, which deadlocks the enemy turn (the faulted task never
+            // fires TurnStarted → our 5s timeout). Swallow the throw and hand back a key-named LocString
+            // (rendered as the key) so the selection proceeds. (RelicModel/PotionModel don't check
+            // Exists, so they never throw.)
             harmony.Patch(
                 AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Models.CardModel), "SelectionScreenPrompt"),
                 finalizer: new HarmonyMethod(typeof(HarmonyPatches), nameof(SelectionScreenPromptFinalizer)));
+            harmony.Patch(
+                AccessTools.PropertyGetter(typeof(MegaCrit.Sts2.Core.Models.PowerModel), "SelectionScreenPrompt"),
+                finalizer: new HarmonyMethod(typeof(HarmonyPatches), nameof(PowerSelectionScreenPromptFinalizer)));
+
+            // Map generation spends ~100ms in MapPathPruning.PruneAndRepair — a loop (up to ~150 passes)
+            // that dedupes path segments by building interpolated STRING keys per segment and comparing
+            // them in a dictionary. Absurd for a ~30-node graph, and entirely wasted for combat training,
+            // which never navigates the map (it drops straight into one encounter via EnterEncounterDebug).
+            // So we no-op the prune when SkipMapPruning is set (combat scenarios only — see CombatScenario;
+            // the TUI/full-run path leaves it off, keeping a properly pruned, navigable map). The map is
+            // still generated and valid to enter; it just keeps its duplicate paths.
+            harmony.Patch(
+                AccessTools.Method(typeof(MegaCrit.Sts2.Core.Map.MapPathPruning),
+                    nameof(MegaCrit.Sts2.Core.Map.MapPathPruning.PruneAndRepair)),
+                prefix: new HarmonyMethod(typeof(HarmonyPatches), nameof(SkipMapPruningPrefix)));
 
             // The Crystal Sphere minigame's screen instantiates a UI scene (null headless) and pushes
             // it onto the overlay stack. Skip it and hand the live minigame to the harness, which
@@ -420,6 +438,25 @@ internal static class HarmonyPatches
         }
         return null;
     }
+
+    // Same for PowerModel (e.g. FOREGONE_CONCLUSION_POWER): degrade the missing prompt to a key-named
+    // LocString from the "powers" table so the power's card selection runs instead of faulting the turn.
+    private static Exception? PowerSelectionScreenPromptFinalizer(
+        Exception? __exception, MegaCrit.Sts2.Core.Models.PowerModel __instance, ref LocString __result)
+    {
+        if (__exception != null)
+        {
+            __result = new LocString("powers", __instance.Id.Entry + ".selectionScreenPrompt");
+        }
+        return null;
+    }
+
+    /// <summary>When set, combat-scenario map generation skips the expensive path-segment pruning (the map
+    /// is never navigated in combat training). Off by default so full runs / the TUI keep a valid map.</summary>
+    internal static bool SkipMapPruning;
+
+    // Prefix returning false skips the original PruneAndRepair when the flag is set.
+    private static bool SkipMapPruningPrefix() => !SkipMapPruning;
 
     // Skip the Crystal Sphere UI screen entirely (it would instantiate a null scene and NRE), routing
     // the live minigame to the active harness instead. Returning false suppresses the original; the

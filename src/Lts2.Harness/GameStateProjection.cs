@@ -24,6 +24,10 @@ internal static class GameStateProjection
         CombatState? combat = host.Combat;
         PendingChoice? pending = host.Selector.Pending;
         GamePhase phase = DeterminePhase(host, run, pending);
+        int score = ScoreUtility.CalculateScore(run, won: RunManager.Instance.WinTime > 0);
+        var players = run.Players.Select(p => ProjectPlayer(p, combat)).ToList();
+        var combatView = combat is null ? null : ProjectCombat(combat);
+        var map = ProjectMap(run);
 
         return new GameState
         {
@@ -34,10 +38,10 @@ internal static class GameStateProjection
             AscensionLevel = run.AscensionLevel,
             IsGameOver = run.IsGameOver,
             IsVictory = run.IsGameOver && RunManager.Instance.WinTime > 0,
-            Score = ScoreUtility.CalculateScore(run, won: RunManager.Instance.WinTime > 0),
-            Players = run.Players.Select(p => ProjectPlayer(p, combat)).ToList(),
-            Combat = combat is null ? null : ProjectCombat(combat),
-            Map = ProjectMap(run),
+            Score = score,
+            Players = players,
+            Combat = combatView,
+            Map = map,
             PendingChoice = pending is null ? null : ProjectPendingChoice(pending),
             BundleChoice = host.PendingBundles is { } bundles ? ProjectBundleChoice(bundles) : null,
             Rewards = host.PendingRewards is null ? null : ProjectRewards(host.PendingRewards),
@@ -112,7 +116,12 @@ internal static class GameStateProjection
             Block = player.Creature.Block,
             Gold = player.Gold,
             MaxEnergy = player.MaxEnergy,
-            Deck = player.Deck.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
+            // In combat the four piles (Hand/Draw/Discard/Exhaust) are a strict superset of the master
+            // deck (same cards, categorized by location, plus combat-generated cards), so sending Deck
+            // too is pure duplication — omit it. Out of combat, Deck is the only card list, so keep it.
+            Deck = combat is null
+                ? player.Deck.Cards.Select(c => ProjectCard(c, canPlay: false, computePreview: false)).ToList()
+                : NoCards,
             Relics = player.Relics.Select(r => r.Id.Entry).ToList(),
             Potions = player.PotionSlots.Select(p => p?.Id.Entry).ToList(),
             CombatState = pcs is null ? null : ProjectPlayerCombat(player, pcs),
@@ -127,10 +136,13 @@ internal static class GameStateProjection
             Stars = pcs.Stars,
             TurnNumber = pcs.TurnNumber,
             Phase = pcs.Phase,
-            Hand = pcs.Hand.Cards.Select(c => ProjectCard(c, c.CanPlay())).ToList(),
-            DrawPile = pcs.DrawPile.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
-            DiscardPile = pcs.DiscardPile.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
-            ExhaustPile = pcs.ExhaustPile.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
+            // Only hand cards need the live damage/block preview (they're the playable set); the
+            // draw/discard/exhaust piles carry static card info only, so skip their (expensive)
+            // per-card UpdateDynamicVarPreview.
+            Hand = pcs.Hand.Cards.Select(c => ProjectCard(c, SafeCanPlay(c))).ToList(),
+            DrawPile = pcs.DrawPile.Cards.Select(c => ProjectCard(c, canPlay: false, computePreview: false)).ToList(),
+            DiscardPile = pcs.DiscardPile.Cards.Select(c => ProjectCard(c, canPlay: false, computePreview: false)).ToList(),
+            ExhaustPile = pcs.ExhaustPile.Cards.Select(c => ProjectCard(c, canPlay: false, computePreview: false)).ToList(),
             Powers = player.Creature.Powers.Select(ProjectPower).ToList(),
             Orbs = pcs.OrbQueue.Orbs.Select(ProjectOrb).ToList(),
             OrbSlots = pcs.OrbQueue.Capacity,
@@ -155,35 +167,101 @@ internal static class GameStateProjection
             Powers = osty.Powers.Select(ProjectPower).ToList(),
         };
 
+    private static readonly IReadOnlyList<CardView> NoCards = System.Array.Empty<CardView>();
+
     internal static CardView ProjectCard(
-        CardModel card, bool canPlay, bool? upgradedOverride = null, Creature? target = null)
+        CardModel card, bool canPlay, bool? upgradedOverride = null, Creature? target = null,
+        bool computePreview = true)
     {
-        CostModifiers modifiers = card.IsInCombat ? CostModifiers.All : CostModifiers.None;
-        (int? dmg, int? baseDmg, int? block, int? baseBlock, int? summon) = CardEffectPreview(card, target);
-        return new CardView
+        try
         {
-            CardId = card.Id.Entry,
-            EnergyCost = card.EnergyCost.GetWithModifiers(modifiers),
-            CostsX = card.EnergyCost.CostsX,
-            Type = card.Type,
-            Rarity = card.Rarity,
-            TargetType = card.TargetType,
-            PoolId = PoolIdOf(card),
-            // The forge shows each candidate as the upgraded card it would become; override the flag so
-            // the UI renders it with a "+" and the upgraded description.
-            Upgraded = upgradedOverride ?? card.IsUpgraded,
-            CanPlay = canPlay,
-            Damage = dmg,
-            BaseDamage = baseDmg,
-            Block = block,
-            BaseBlock = baseBlock,
-            Summon = summon,
-            StarCost = StarCostOf(card),
-            EnchantmentId = card.Enchantment?.Id.Entry,
-            AfflictionId = card.Affliction?.Id.Entry,
-            ReplayCount = ReplayCountOf(card),
-            AddedKeywords = AddedKeywordsOf(card),
-        };
+            CostModifiers modifiers = card.IsInCombat ? CostModifiers.All : CostModifiers.None;
+            // The damage/block preview runs live game code (UpdateDynamicVarPreview) that can NRE on some
+            // cards in some states. GetState is a read-only projection and must never throw, so degrade a
+            // failed preview to "no preview" rather than crashing the whole observation.
+            (int? dmg, int? baseDmg, int? block, int? baseBlock, int? summon) =
+                computePreview ? SafeCardEffectPreview(card, target) : (null, null, null, null, null);
+            return new CardView
+            {
+                CardId = card.Id.Entry,
+                EnergyCost = card.EnergyCost.GetWithModifiers(modifiers),
+                CostsX = card.EnergyCost.CostsX,
+                Type = card.Type,
+                Rarity = card.Rarity,
+                TargetType = card.TargetType,
+                PoolId = PoolIdOf(card),
+                // The forge shows each candidate as the upgraded card it would become; override the flag so
+                // the UI renders it with a "+" and the upgraded description.
+                Upgraded = upgradedOverride ?? card.IsUpgraded,
+                CanPlay = canPlay,
+                Damage = dmg,
+                BaseDamage = baseDmg,
+                Block = block,
+                BaseBlock = baseBlock,
+                Summon = summon,
+                StarCost = StarCostOf(card),
+                EnchantmentId = card.Enchantment?.Id.Entry,
+                AfflictionId = card.Affliction?.Id.Entry,
+                ReplayCount = ReplayCountOf(card),
+                AddedKeywords = AddedKeywordsOf(card),
+            };
+        }
+        catch
+        {
+            // A projection race — a background combat task moving this card between piles while GetState
+            // reads it — can transiently NRE on card.IsInCombat / EnergyCost / etc. GetState must never
+            // crash the whole observation, so degrade this one card to a minimal, safe view.
+            return new CardView
+            {
+                CardId = SafeCardId(card),
+                EnergyCost = 0,
+                CostsX = false,
+                Type = default,
+                Rarity = default,
+                TargetType = default,
+                Upgraded = false,
+                CanPlay = false,
+            };
+        }
+    }
+
+    private static string SafeCardId(CardModel card)
+    {
+        try
+        {
+            return card.Id.Entry;
+        }
+        catch
+        {
+            return "UNKNOWN";
+        }
+    }
+
+    /// <summary><see cref="CardModel.CanPlay"/> guarded: it runs live playability checks that can NRE on
+    /// some cards mid-effect. GetState must never throw, so treat a failure as "not playable".</summary>
+    private static bool SafeCanPlay(CardModel card)
+    {
+        try
+        {
+            return card.CanPlay();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary><see cref="CardEffectPreview"/> guarded: degrade a preview that throws to "no preview".</summary>
+    private static (int?, int?, int?, int?, int?) SafeCardEffectPreview(CardModel card, Creature? target)
+    {
+        try
+        {
+            return CardEffectPreview(card, target);
+        }
+        catch
+        {
+            return (null, null, null, null, null);
+        }
     }
 
     /// <summary>
@@ -614,11 +692,27 @@ internal static class GameStateProjection
             Type = MegaCrit.Sts2.Core.Rewards.RewardType.Card,
             Taken = card.SuccessfullySelected,
             Cards = card.Cards.Select(c => ProjectCard(c, canPlay: false)).ToList(),
-            CardAlternatives = MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative
-                .Generate(card).Select(a => a.OptionId).Where(id => id != "Skip").ToList(),
+            CardAlternatives = SafeCardAlternatives(card),
         },
         _ => new RewardView { Type = MegaCrit.Sts2.Core.Rewards.RewardType.None, Taken = reward.SuccessfullySelected },
     };
+
+    /// <summary>The "swap this card reward" alternative option ids, or empty if the game can't generate
+    /// them for this reward. <c>CardRewardAlternative.Generate</c> throws for some reward shapes (e.g. more
+    /// than two alternatives); the alternatives are a non-essential projection detail, so degrade to none
+    /// rather than let a whole <see cref="GameHost.GetState"/> crash.</summary>
+    private static IReadOnlyList<string> SafeCardAlternatives(MegaCrit.Sts2.Core.Rewards.CardReward card)
+    {
+        try
+        {
+            return MegaCrit.Sts2.Core.Entities.CardRewardAlternatives.CardRewardAlternative
+                .Generate(card).Select(a => a.OptionId).Where(id => id != "Skip").ToList();
+        }
+        catch
+        {
+            return System.Array.Empty<string>();
+        }
+    }
 
     private static PowerView ProjectPower(PowerModel power) =>
         new() { PowerId = power.Id.Entry, Amount = power.Amount };

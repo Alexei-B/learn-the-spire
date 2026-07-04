@@ -42,10 +42,11 @@ public sealed class ProcessDecisionEngine : IDecisionEngine, IDisposable
         string? arguments = null,
         string? workingDirectory = null,
         TimeSpan? timeout = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        System.Collections.Generic.IReadOnlyDictionary<string, string>? environment = null)
     {
         DecisionEngineServerProcess server =
-            DecisionEngineServerProcess.Start(command, arguments, workingDirectory, timeout, log);
+            DecisionEngineServerProcess.Start(command, arguments, workingDirectory, timeout, log, environment);
         return new ProcessDecisionEngine(name, server, log);
     }
 

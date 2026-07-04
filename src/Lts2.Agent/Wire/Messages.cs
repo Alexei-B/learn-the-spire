@@ -58,6 +58,20 @@ public sealed record EnvCommand
     public string? Character { get; init; }
     public int? Ascension { get; init; }
 
+    // reset_combat: an isolated randomized fight (see CombatScenario). Character null = random.
+    public double? ElitePct { get; init; }
+    public double? BossPct { get; init; }
+    public bool? StarterDeck { get; init; }   // use the character's fixed starting deck + starter relic
+    public int? Act { get; init; }            // restrict a random encounter to this act (0/1/2)
+
+    // reset_combat, explicit form (closed evals): an exact deck (card ids) + named encounter, and
+    // optionally extra relics + per-enemy HP overrides (for unambiguous situations like a free lethal).
+    // When Cards is set the scenario is fully specified and deterministic.
+    public IReadOnlyList<string>? Cards { get; init; }
+    public IReadOnlyList<string>? Relics { get; init; }
+    public string? Encounter { get; init; }
+    public IReadOnlyList<int>? EnemyHp { get; init; }
+
     // step: pick Options[Index], or resolve a card choice with CardIndices (choose N of M).
     public int? Index { get; init; }
     public IReadOnlyList<int>? CardIndices { get; init; }
@@ -122,6 +136,15 @@ public sealed record ObservationInfo
     public required bool GameOver { get; init; }
     public required bool Victory { get; init; }
     public required IReadOnlyList<PlayerInfo> Players { get; init; }
+
+    // Combat-scenario mode (reset_combat) only; null in full-run mode. The scenario episode is one
+    // fight: CombatOver marks the terminal step, Won is the fight outcome, and HpLost is the HP lost
+    // during the fight (with the character's end-of-combat starter heal added back — see CombatScenario).
+    public bool? CombatOver { get; init; }
+    public bool? Won { get; init; }
+    public int? HpLost { get; init; }
+    public string? Encounter { get; init; }
+    public string? RoomType { get; init; }
 }
 
 /// <summary>Per-player reward scalars in an <see cref="ObservationInfo"/>.</summary>

@@ -1,0 +1,23 @@
+{
+  "//": "Copy this to lts2.agent.json (gitignored) to auto-load external decision engines in the TUI.",
+  "//paths": "Relative command/workingDirectory resolve against this file's directory (the repo root).",
+  "//found": "The TUI finds the file by walking up from its exe, or via the LTS2_AGENT_CONFIG env var.",
+  "agents": [
+    {
+      "name": "PPO run (jax)",
+      "command": "python/.venv/Scripts/python.exe",
+      "arguments": "-m lts2_agent.decision_server lts2_agent.policies.jax_policy:policy",
+      "workingDirectory": "python",
+      "environment": { "LTS2_PPO_CKPT": "checkpoints/ppo" },
+      "timeoutSeconds": 60
+    },
+    {
+      "name": "PPO scenario (jax)",
+      "command": "python/.venv/Scripts/python.exe",
+      "arguments": "-m lts2_agent.decision_server lts2_agent.policies.jax_policy:policy",
+      "workingDirectory": "python",
+      "environment": { "LTS2_PPO_CKPT": "checkpoints/scenario" },
+      "timeoutSeconds": 60
+    }
+  ]
+}

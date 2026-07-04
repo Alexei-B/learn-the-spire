@@ -12,8 +12,11 @@ vectorized trainer should spawn several :class:`Lts2Env` instances.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
@@ -53,11 +56,25 @@ class Lts2Env:
         character: Optional[str] = None,
         ascension: int = 0,
         log_stderr: bool = False,
+        isolate_user_dir: bool = True,
     ) -> None:
         self.seed = seed
         self.character = character
         self.ascension = ascension
         command = list(host_command) if host_command is not None else default_host_command()
+
+        # The host maps Godot's ``user://`` (mock saves, localization overrides) under the process's
+        # temp dir. Several hosts sharing one temp dir collide on those files and a host can crash — so
+        # for vectorized training each env gets its own temp dir via a private TEMP/TMP. See
+        # Lts2.GodotShim/Godot/GodotPath.cs (UserDir derives from Path.GetTempPath()).
+        env = None
+        self._temp_dir: Optional[str] = None
+        if isolate_user_dir:
+            env = dict(os.environ)
+            self._temp_dir = tempfile.mkdtemp(prefix="lts2env-")
+            env["TEMP"] = self._temp_dir
+            env["TMP"] = self._temp_dir
+
         self._proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -66,6 +83,7 @@ class Lts2Env:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            env=env,
         )
 
     def reset(
@@ -88,6 +106,31 @@ class Lts2Env:
                 "seed": self.seed,
                 "character": self.character,
                 "ascension": self.ascension,
+            }
+        )
+
+    def reset_combat(
+        self,
+        *,
+        seed: Optional[str] = None,
+        character: Optional[str] = None,
+        elite_pct: float = 0.2,
+        boss_pct: float = 0.05,
+    ) -> dict[str, Any]:
+        """Start a fresh isolated **combat scenario** (random character/deck/relics/encounter) and
+        return its opening observation. The episode is a single fight: ``obs['done']`` marks the combat
+        ending and ``obs['info']`` carries ``won``/``hpLost`` (see the C# ``CombatScenario``)."""
+        if seed is not None:
+            self.seed = seed
+        if character is not None:
+            self.character = character
+        return self._roundtrip(
+            {
+                "cmd": "reset_combat",
+                "seed": self.seed,
+                "character": self.character,
+                "elitePct": elite_pct,
+                "bossPct": boss_pct,
             }
         )
 
@@ -115,6 +158,9 @@ class Lts2Env:
                 self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
+        if self._temp_dir is not None:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
 
     def _roundtrip(self, message: dict[str, Any]) -> dict[str, Any]:
         protocol.write_message(self._proc.stdin, message)

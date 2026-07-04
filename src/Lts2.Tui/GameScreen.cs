@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Lts2.Agent;
@@ -186,31 +188,127 @@ internal sealed class GameScreen
 
     /// <summary>
     /// The decision engines available in the Strategy menu: the built-in rules and random engines, plus
-    /// an external policy server when one is configured. Set <c>LTS2_AGENT_CMD</c> to the command that
-    /// launches a decision server speaking the agent line protocol (e.g. <c>python</c>), with
-    /// <c>LTS2_AGENT_ARGS</c> for its arguments (e.g. the script path) and <c>LTS2_AGENT_NAME</c> for the
-    /// menu label. A launch failure is logged and skipped rather than blocking startup.
+    /// any external policy servers. Two ways to configure one, so you don't have to set env vars every
+    /// run: a <c>lts2.agent.json</c> config file (see <see cref="LoadConfiguredAgents"/>), and/or the
+    /// <c>LTS2_AGENT_CMD</c>/<c>LTS2_AGENT_ARGS</c>/<c>LTS2_AGENT_NAME</c> env vars. Both are additive; a
+    /// launch failure is logged and skipped rather than blocking startup.
     /// </summary>
     private static IDecisionEngine[] BuildEngines(System.IO.TextWriter log)
     {
         var engines = new List<IDecisionEngine> { new RulesDecisionEngine(), new RandomDecisionEngine() };
+        LoadConfiguredAgents(engines, log);          // from lts2.agent.json (the zero-env-var path)
+        LoadEnvVarAgent(engines, log);               // from LTS2_AGENT_* (still supported)
+        return engines.ToArray();
+    }
 
+    /// <summary>Add the external engine described by the <c>LTS2_AGENT_*</c> env vars, if set.</summary>
+    private static void LoadEnvVarAgent(List<IDecisionEngine> engines, System.IO.TextWriter log)
+    {
         string? command = Environment.GetEnvironmentVariable("LTS2_AGENT_CMD");
-        if (!string.IsNullOrWhiteSpace(command))
+        if (string.IsNullOrWhiteSpace(command))
         {
-            string? args = Environment.GetEnvironmentVariable("LTS2_AGENT_ARGS");
-            string name = Environment.GetEnvironmentVariable("LTS2_AGENT_NAME") ?? "External";
-            try
+            return;
+        }
+        string? args = Environment.GetEnvironmentVariable("LTS2_AGENT_ARGS");
+        string name = Environment.GetEnvironmentVariable("LTS2_AGENT_NAME") ?? "External";
+        try
+        {
+            engines.Add(ProcessDecisionEngine.Launch(name, command, args, log: log.WriteLine));
+        }
+        catch (Exception ex)
+        {
+            log.WriteLine($"[agent] failed to launch external engine '{command}': {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Add every external engine listed in a <c>lts2.agent.json</c> config file, so a learned policy can
+    /// be loaded without setting any environment variables. The file is found by walking up from the
+    /// executable to the repo root (or via the <c>LTS2_AGENT_CONFIG</c> path); each agent's relative
+    /// <c>command</c>/<c>workingDirectory</c> resolve against the config file's own directory. See
+    /// <c>lts2.agent.example.json</c> for the schema. Missing file = nothing added; a bad entry is
+    /// logged and skipped.
+    /// </summary>
+    private static void LoadConfiguredAgents(List<IDecisionEngine> engines, System.IO.TextWriter log)
+    {
+        string? path = FindAgentConfig();
+        if (path is null)
+        {
+            return;
+        }
+        try
+        {
+            var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            AgentConfigFile? cfg = JsonSerializer.Deserialize<AgentConfigFile>(File.ReadAllText(path), opts);
+            string baseDir = Path.GetDirectoryName(Path.GetFullPath(path))!;
+            foreach (AgentEntry a in cfg?.Agents ?? new List<AgentEntry>())
             {
-                engines.Add(ProcessDecisionEngine.Launch(name, command, args, log: log.WriteLine));
-            }
-            catch (Exception ex)
-            {
-                log.WriteLine($"[agent] failed to launch external engine '{command}': {ex.Message}");
+                if (string.IsNullOrWhiteSpace(a.Command))
+                {
+                    continue;
+                }
+                string command = ResolveRelative(baseDir, a.Command!);
+                string? workingDir = string.IsNullOrWhiteSpace(a.WorkingDirectory)
+                    ? null : ResolveRelative(baseDir, a.WorkingDirectory!);
+                TimeSpan? timeout = a.TimeoutSeconds is > 0
+                    ? TimeSpan.FromSeconds(a.TimeoutSeconds.Value) : null;
+                try
+                {
+                    engines.Add(ProcessDecisionEngine.Launch(
+                        a.Name ?? "Agent", command, a.Arguments, workingDir, timeout,
+                        log.WriteLine, a.Environment));
+                }
+                catch (Exception ex)
+                {
+                    log.WriteLine($"[agent] failed to launch configured engine '{a.Name}': {ex.Message}");
+                }
             }
         }
+        catch (Exception ex)
+        {
+            log.WriteLine($"[agent] failed to read agent config {path}: {ex.Message}");
+        }
+    }
 
-        return engines.ToArray();
+    /// <summary>Locate <c>lts2.agent.json</c>: the <c>LTS2_AGENT_CONFIG</c> path if set, else the nearest
+    /// one found walking up from the executable (so it works regardless of the launch directory).</summary>
+    private static string? FindAgentConfig()
+    {
+        string? explicitPath = Environment.GetEnvironmentVariable("LTS2_AGENT_CONFIG");
+        if (!string.IsNullOrWhiteSpace(explicitPath))
+        {
+            return File.Exists(explicitPath) ? explicitPath : null;
+        }
+        for (DirectoryInfo? dir = new(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            string candidate = Path.Combine(dir.FullName, "lts2.agent.json");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Resolve a (possibly relative) config path against the config file's directory.</summary>
+    private static string ResolveRelative(string baseDir, string path) =>
+        Path.IsPathRooted(path) ? path : Path.GetFullPath(Path.Combine(baseDir, path));
+
+    /// <summary>The <c>lts2.agent.json</c> schema: a list of external decision-server agents.</summary>
+    private sealed record AgentConfigFile
+    {
+        public List<AgentEntry>? Agents { get; init; }
+    }
+
+    /// <summary>One external agent: how to launch its decision server.</summary>
+    private sealed record AgentEntry
+    {
+        public string? Name { get; init; }
+        public string? Command { get; init; }
+        public string? Arguments { get; init; }
+        public string? WorkingDirectory { get; init; }
+        public Dictionary<string, string>? Environment { get; init; }
+        public double? TimeoutSeconds { get; init; }
     }
 
     /// <summary>Tear down any engines that own external resources (e.g. a policy subprocess). Called on
