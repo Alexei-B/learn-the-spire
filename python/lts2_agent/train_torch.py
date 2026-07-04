@@ -17,9 +17,23 @@ import time
 import numpy as np
 import torch
 
-from . import features, model_torch, ppo_torch, reward
+from . import features, model_torch, ppo_torch, reward, synthetic_eval
 from .rollout_torch import TorchScenarioRollout
 from .scenario import ScenarioConfig
+
+
+@torch.no_grad()
+def bodyguard_scores(model: model_torch.ActorCritic, obs: dict, device) -> dict:
+    """Per-move model score on the fixed Bodyguard fixture (torch port of synthetic_eval.per_card_scores)."""
+    feats = features.encode(obs["state"], obs["options"])
+    args = model_torch.to_tensors({k: feats[k][None] for k in features.MODEL_KEYS}, device)
+    logits, _ = model(*args)
+    logits = logits[0].cpu().numpy()
+    best: dict[str, float] = {}
+    for i, o in enumerate(obs["options"][:features.MAX_OPTIONS]):
+        key = (o.get("card") or {}).get("cardId") if o.get("kind") == "PlayCard" else o.get("kind")
+        best[key] = max(best.get(key, -1e18), float(logits[i]))
+    return best
 
 
 def scenario_summary(outcomes: list[dict]) -> dict:
@@ -52,6 +66,12 @@ def main() -> int:
     ap.add_argument("--shaping-ramp-frac", type=float, default=0.75,
                     help="fraction of training over which the dense damage/kill shaping ramps 1->0 "
                          "(0 = shaping off; the HP + anti-stall terms are always on)")
+    ap.add_argument("--bodyguard-eval", action="store_true",
+                    help="each iter, run the harness-free Bodyguard-before-Unleash fixture check and "
+                         "track the consecutive-pass streak (the Necrobinder synergy benchmark)")
+    ap.add_argument("--bodyguard-patience", type=int, default=8,
+                    help="report the iteration at which the Bodyguard decision is correct this many "
+                         "consecutive evals (the benchmark: prior pipeline needed ~100 iters)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -76,6 +96,10 @@ def main() -> int:
     print(f"[train_torch] envs={args.envs} steps/env={args.steps} "
           f"batch={args.envs * args.steps} minibatch={args.minibatch} params={n_params} lr={args.lr}")
 
+    bg_fixture = synthetic_eval.load_fixture(synthetic_eval.DEFAULT_FIXTURE) if args.bodyguard_eval else None
+    bg_streak = 0
+    bg_reached: int | None = None
+
     rollout = TorchScenarioRollout(scfg)
     try:
         ramp_end = max(1.0, args.shaping_ramp_frac * args.iterations)
@@ -98,8 +122,22 @@ def main() -> int:
                   f"maxRatio={metrics['max_ratio']:.1f} | "
                   f"collect={t_collect:.2f}s update={t_update:.2f}s sps={sps:.0f}", flush=True)
 
+            if bg_fixture is not None:
+                scores = bodyguard_scores(model, bg_fixture, device)
+                bg_pass, why = synthetic_eval.bodyguard_pass(scores)
+                bg_streak = bg_streak + 1 if bg_pass else 0
+                if bg_reached is None and bg_streak >= args.bodyguard_patience:
+                    bg_reached = it
+                print(f"         BODYGUARD pass={bg_pass} streak={bg_streak}/{args.bodyguard_patience} "
+                      f"({why})", flush=True)
+
             if args.ckpt:
                 model_torch.save_checkpoint(args.ckpt, model)
+
+        if bg_fixture is not None:
+            print(f"[train_torch] Bodyguard benchmark: reached {args.bodyguard_patience}-streak at "
+                  f"{('iter ' + str(bg_reached - args.bodyguard_patience + 1)) if bg_reached else 'NOT REACHED'} "
+                  f"(prior pipeline baseline ~100 iters)", flush=True)
     finally:
         rollout.close()
     return 0
