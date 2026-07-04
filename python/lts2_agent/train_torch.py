@@ -27,11 +27,13 @@ _EVAL_COMBAT = {"PlayCard", "EndTurn", "UsePotion", "DiscardPotion"}
 
 
 @torch.no_grad()
-def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV"):
-    """Play fights with the GREEDY (argmax) policy — the real deployed behavior, unlike the sampled
-    win rate the trainer optimizes. Returns win rate, EndTurn fraction, and avg fight length."""
+def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV", greedy=True):
+    """Play a FIXED set of fights (same seeds each call, for comparable measurement) with either the
+    GREEDY (argmax) policy — the deployed behavior — or the SAMPLED policy the trainer optimizes.
+    Returns win rate, EndTurn fraction, avg HP lost."""
     model.eval()
     wins = fights = endturns = steps = 0
+    hp_lost_sum = 0.0
     for env in envs:
         for s in range(n_seeds):
             try:
@@ -58,7 +60,7 @@ def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV"):
                         f["mask"][j] = False
                 args = model_torch.to_tensors({k: f[k][None] for k in features.MODEL_KEYS}, device)
                 logits, _ = model(*args)
-                a = int(logits[0].argmax())
+                a = int(logits[0].argmax()) if greedy else int(model_torch.sample_action(logits)[0][0])
                 if opts[a].get("kind") == "EndTurn":
                     endturns += 1
                 steps += 1
@@ -67,9 +69,12 @@ def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV"):
                 except Exception:
                     break
             fights += 1
-            if obs.get("info", {}).get("won"):
+            info = obs.get("info", {})
+            if info.get("won"):
                 wins += 1
-    return {"win": wins / max(1, fights), "endturn": endturns / max(1, steps), "n": fights}
+            hp_lost_sum += info.get("hpLost") or 0
+    return {"win": wins / max(1, fights), "endturn": endturns / max(1, steps),
+            "hp_lost": hp_lost_sum / max(1, fights), "n": fights}
 
 
 @torch.no_grad()
@@ -112,7 +117,15 @@ def main() -> int:
     ap.add_argument("--ent-coef", type=float, default=0.01, help="entropy bonus (lower = sharper greedy)")
     ap.add_argument("--logit-reg", type=float, default=0.01, help="L2 penalty on logits (lower = more confident)")
     ap.add_argument("--gamma", type=float, default=0.99)
+    ap.add_argument("--step-penalty", type=float, default=0.02,
+                    help="per-decision reward penalty. WARNING: >0 rewards ending the turn early "
+                         "(fewer decisions = less penalty); truncation already prevents stalling, so 0 is safer.")
+    ap.add_argument("--hp-weight", type=float, default=1.0, help="penalty per fraction of start HP lost")
+    ap.add_argument("--damage-weight", type=float, default=0.5, help="dense reward per fraction dmg dealt")
+    ap.add_argument("--kill-weight", type=float, default=0.2, help="dense reward per enemy killed")
     ap.add_argument("--hidden", type=int, default=128)
+    ap.add_argument("--no-static", action="store_true",
+                    help="drop the 147-dim per-card static multi-hots (test if they hinder the policy)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--ckpt", default="checkpoints/necro_torch.pt")
     ap.add_argument("--seed", type=int, default=0)
@@ -167,7 +180,9 @@ def main() -> int:
             start_it = int(ts.get("iteration", 0)) + 1
         print(f"[train_torch] resumed from {args.ckpt} at iter {start_it}")
     else:
-        model = model_torch.ActorCritic(hidden=args.hidden).to(device)
+        import numpy as _np
+        static = _np.zeros((features.CARD_VOCAB, 0), _np.float32) if args.no_static else None
+        model = model_torch.ActorCritic(hidden=args.hidden, static_table=static).to(device)
         opt = ppo_torch.make_optimizer(model, pcfg)
     n_params = sum(p.numel() for p in model.parameters())
 
@@ -175,7 +190,8 @@ def main() -> int:
         n_envs=args.envs, steps_per_env=args.steps, gamma=args.gamma,
         character=args.character, elite_pct=args.elite_pct, boss_pct=args.boss_pct,
         starter_deck=args.starter_deck, act=(args.act if args.act >= 0 else None),
-        weights=reward.ScenarioWeights())
+        weights=reward.ScenarioWeights(hp=args.hp_weight, damage=args.damage_weight,
+                                       kill=args.kill_weight, step_penalty=args.step_penalty))
 
     print(f"[train_torch] envs={args.envs} steps/env={args.steps} "
           f"batch={args.envs * args.steps} minibatch={args.minibatch} params={n_params} lr={args.lr}")
@@ -213,9 +229,11 @@ def main() -> int:
                   f"collect={t_collect:.2f}s update={t_update:.2f}s sps={sps:.0f}", flush=True)
 
             if eval_envs and (it % args.eval_every == 0 or it == start_it):
-                ev = greedy_winrate(model, eval_envs, scfg, args.eval_fights, device, tag=f"E{it}")
-                print(f"         GREEDY-EVAL win={ev['win']:.2f} endTurn/step={ev['endturn']:.2f} "
-                      f"(n={ev['n']} fights, argmax policy)", flush=True)
+                g = greedy_winrate(model, eval_envs, scfg, args.eval_fights, device, tag="EVAL", greedy=True)
+                sm = greedy_winrate(model, eval_envs, scfg, args.eval_fights, device, tag="EVAL", greedy=False)
+                print(f"         EVAL[fixed {g['n']}] greedy: win={g['win']:.2f} hp~{g['hp_lost']:.0f} "
+                      f"endT={g['endturn']:.2f}  |  sampled: win={sm['win']:.2f} hp~{sm['hp_lost']:.0f} "
+                      f"endT={sm['endturn']:.2f}", flush=True)
 
             if bg_fixture is not None:
                 scores = bodyguard_scores(model, bg_fixture, device)
