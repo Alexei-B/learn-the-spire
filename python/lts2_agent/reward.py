@@ -33,10 +33,17 @@ DEFAULT_WEIGHTS = RewardWeights()
 
 @dataclass(frozen=True)
 class ScenarioWeights:
-    """Reward for an isolated combat scenario (see :func:`scenario_reward`)."""
+    """Reward for an isolated combat scenario (see :func:`scenario_reward` / :func:`scenario_dense_reward`)."""
     win: float = 1.0     # terminal bonus for winning the fight
     loss: float = 1.0    # terminal penalty for losing (dying)
-    hp: float = 1.0      # penalty per fraction of starting HP lost during the fight
+    hp: float = 1.0      # penalty per fraction of starting HP lost (per step in the dense reward)
+    # Dense shaping (per decision). damage/kill are a denser proxy for the win and are *ramped* down over
+    # training (strong early to bootstrap, weak late so the policy optimizes the true win/HP objective).
+    # step_penalty is always on: it charges a small cost per decision so the policy is pushed to end fights
+    # efficiently rather than stalling (terminal-only reward let fight length balloon ~7x).
+    damage: float = 0.5          # per fraction-of-startHP damage dealt to enemies (ramped)
+    kill: float = 0.2            # per enemy killed (ramped)
+    step_penalty: float = 0.02   # per decision (always on; anti-stall)
 
 
 DEFAULT_SCENARIO_WEIGHTS = ScenarioWeights()
@@ -58,6 +65,37 @@ def scenario_reward(obs: dict[str, Any], start_hp: int,
     hp_lost = info.get("hpLost") or 0
     r = (w.win if won else -w.loss)
     r -= w.hp * (hp_lost / max(1, start_hp))
+    return float(r)
+
+
+def scenario_dense_reward(prev: dict[str, Any], cur: dict[str, Any], start_hp: int,
+                          w: ScenarioWeights = DEFAULT_SCENARIO_WEIGHTS,
+                          shaping_coef: float = 1.0) -> float:
+    """Per-decision dense reward for a combat scenario, computed from consecutive observations.
+
+    Always-on core: the terminal win/loss outcome, the HP lost *this step* (dense credit assignment
+    instead of one lump at the end), and a small per-decision step penalty that discourages stalling.
+    Ramped shaping (scaled by ``shaping_coef`` in [0, 1]): damage dealt to enemies + kills — a denser
+    proxy for winning that guides early learning and is annealed away so the final policy optimizes the
+    true objective. Unlike :func:`scenario_reward` this is non-zero on *every* step.
+    """
+    r = 0.0
+    if cur.get("done") and cur["info"].get("combatOver"):
+        r += w.win if cur["info"].get("won") else -w.loss
+
+    # Dense HP: penalize HP lost this step (only losses — the post-combat starter heal shouldn't reward).
+    hp_lost_step = max(0, _player_hp(prev) - _player_hp(cur)) / max(1, start_hp)
+    r -= w.hp * hp_lost_step
+    r -= w.step_penalty
+
+    if shaping_coef > 0.0:
+        prev_ehp = _enemy_hp(prev) if features.is_combat(prev["state"]) else 0
+        cur_ehp = _enemy_hp(cur) if features.is_combat(cur["state"]) else 0
+        dmg = max(0, prev_ehp - cur_ehp) / max(1, start_hp)
+        prev_n = _enemy_count(prev) if features.is_combat(prev["state"]) else 0
+        cur_n = _enemy_count(cur) if features.is_combat(cur["state"]) else 0
+        kills = max(0, prev_n - cur_n)
+        r += shaping_coef * (w.damage * dmg + w.kill * kills)
     return float(r)
 
 

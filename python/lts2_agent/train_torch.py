@@ -48,6 +48,9 @@ def main() -> int:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--ckpt", default="checkpoints/necro_torch.pt")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--shaping-ramp-frac", type=float, default=0.75,
+                    help="fraction of training over which the dense damage/kill shaping ramps 1->0 "
+                         "(0 = shaping off; the HP + anti-stall terms are always on)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -74,9 +77,11 @@ def main() -> int:
 
     rollout = TorchScenarioRollout(scfg)
     try:
+        ramp_end = max(1.0, args.shaping_ramp_frac * args.iterations)
         for it in range(1, args.iterations + 1):
+            shaping_coef = max(0.0, 1.0 - (it - 1) / ramp_end)   # 1.0 -> 0.0 over ramp_end iterations
             t0 = time.perf_counter()
-            batch, outcomes = rollout.collect(model, device)
+            batch, outcomes = rollout.collect(model, device, shaping_coef=shaping_coef)
             t_collect = time.perf_counter() - t0
             metrics = ppo_torch.update(model, opt, batch, pcfg, device)
             t_update = time.perf_counter() - t0 - t_collect
@@ -84,10 +89,11 @@ def main() -> int:
             n = int(batch["action"].shape[0])
             sps = n / (time.perf_counter() - t0)
             s = scenario_summary(outcomes)
-            print(f"[it {it:04d}] steps={n} fights={s['n']} win={s['win_rate']:.2f} "
-                  f"hpLost~{s['mean_hp_lost']:.1f} loss={metrics['loss']:.3f} "
+            flen = n / max(1, s["n"])   # avg decisions per fight — should stay low with the anti-stall term
+            print(f"[it {it:04d}] steps={n} fights={s['n']} flen={flen:.0f} win={s['win_rate']:.2f} "
+                  f"hpLost~{s['mean_hp_lost']:.1f} shape={shaping_coef:.2f} loss={metrics['loss']:.3f} "
                   f"kl={metrics['approx_kl']:.4f} ent={metrics['entropy']:.3f} "
-                  f"maxRatio={metrics['max_ratio']:.1f} maxVal={metrics['max_val']:.1f} | "
+                  f"maxRatio={metrics['max_ratio']:.1f} | "
                   f"collect={t_collect:.2f}s update={t_update:.2f}s sps={sps:.0f}", flush=True)
 
             if args.ckpt:

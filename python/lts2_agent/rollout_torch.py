@@ -107,7 +107,7 @@ class TorchScenarioRollout:
     # --- collection --------------------------------------------------------------------------------
 
     @torch.no_grad()
-    def collect(self, model: model_torch.ActorCritic, device):
+    def collect(self, model: model_torch.ActorCritic, device, shaping_coef: float = 1.0):
         cfg = self.config
         N = cfg.n_envs
         model.eval()
@@ -154,6 +154,7 @@ class TorchScenarioRollout:
 
             t = time.perf_counter()
             starts = list(self._start_hp)
+            prevs = list(self._cur)   # pre-step observations, for the dense per-step reward
             nxts = list(self._pool.map(lambda i: self._step_env(i, int(a[i])), range(N)))
             if prof: tt["step"] += time.perf_counter() - t
 
@@ -165,7 +166,8 @@ class TorchScenarioRollout:
                 if prof:
                     obs_bytes += nxt.get("_bytes", 0)
                 done = bool(nxt["done"])
-                r = reward.scenario_reward(nxt, starts[i], cfg.weights) if done else 0.0
+                prev = prevs[i] if prevs[i] is not None else nxt
+                r = reward.scenario_dense_reward(prev, nxt, starts[i], cfg.weights, shaping_coef)
                 for k in features.MODEL_KEYS:
                     feats_buf[i][k].append(feats_list[i][k])
                 actions_b[i].append(int(a[i])); logps_b[i].append(float(lp[i]))
