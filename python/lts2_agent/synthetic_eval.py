@@ -45,6 +45,38 @@ def per_card_scores(apply_fn, params, obs: dict[str, Any]) -> dict[str, float]:
     return best
 
 
+def per_card_scores_torch(model, obs: dict[str, Any]) -> dict[str, float]:
+    """Per-move score for a PyTorch model (torch counterpart of :func:`per_card_scores`)."""
+    import torch
+    from . import model_torch
+    feats = features.encode(obs["state"], obs["options"])
+    args = model_torch.to_tensors({k: feats[k][None] for k in features.MODEL_KEYS}, "cpu")
+    with torch.no_grad():
+        logits, _ = model(*args)
+    logits = logits[0].cpu().numpy()
+    best: dict[str, float] = {}
+    for i, o in enumerate(obs["options"][:features.MAX_OPTIONS]):
+        key = (o.get("card") or {}).get("cardId") if o.get("kind") == "PlayCard" else o.get("kind")
+        best[key] = max(best.get(key, -1e18), float(logits[i]))
+    return best
+
+
+def _load_torch_scores(ckpt_path: str, obs: dict[str, Any]) -> dict[str, float]:
+    """Load a torch checkpoint (retrying a read that races the trainer's rewrite) and score the obs."""
+    import time
+    from . import model_torch
+    last = None
+    for _ in range(6):
+        try:
+            model, _meta = model_torch.load_checkpoint(ckpt_path, device="cpu")
+            model.eval()
+            return per_card_scores_torch(model, obs)
+        except Exception as e:  # a partial read while training saves — retry
+            last = e
+            time.sleep(0.3)
+    raise RuntimeError(f"could not load {ckpt_path}: {last}")
+
+
 def ranking(scores: dict[str, float]) -> list[tuple[str, float]]:
     return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
 
@@ -107,12 +139,23 @@ def capture(path: str, character: str, cards: list[str], encounter: str,
     return fixture
 
 
+def _score_for(scores: dict[str, float], sub: str) -> float:
+    for k in scores:
+        if k and sub in k.upper():
+            return scores[k]
+    return float("nan")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Harness-free synthetic eval of the policy on a fixture.")
-    p.add_argument("--ckpt", default="checkpoints/scenario")
+    p.add_argument("--ckpt", default="checkpoints/necro_random.pt")
     p.add_argument("--fixture", default=DEFAULT_FIXTURE)
     p.add_argument("--show", action="store_true", help="print the observation + labeled model input")
     p.add_argument("--capture", action="store_true", help="(re)capture the default Necrobinder fixture")
+    p.add_argument("--jax", action="store_true", help="score with a JAX checkpoint (default is PyTorch)")
+    p.add_argument("--watch", type=float, default=0.0,
+                   help="re-evaluate the (live) checkpoint every N seconds, printing PASS + streak — "
+                        "for monitoring a training run")
     args = p.parse_args(argv)
 
     if args.capture:
@@ -125,11 +168,35 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.show:
         print(describe_input(obs), file=sys.stderr)
 
-    import jax
-    m, params, _ = model.load_checkpoint(args.ckpt)
-    apply = jax.jit(m.apply)
-    scores = per_card_scores(apply, params, obs)
-    ok, reason = bodyguard_pass(scores)
+    def evaluate() -> tuple[dict[str, float], bool, str]:
+        if args.jax:
+            import jax
+            m, params, _ = model.load_checkpoint(args.ckpt)
+            scores = per_card_scores(jax.jit(m.apply), params, obs)
+        else:
+            scores = _load_torch_scores(args.ckpt, obs)
+        ok, reason = bodyguard_pass(scores)
+        return scores, ok, reason
+
+    if args.watch > 0:
+        import time
+        streak = 0
+        print(f"[synthetic_eval] watching {args.ckpt} every {args.watch:g}s "
+              f"(PASS = Bodyguard ranked above Unleash and Defend lowest). Ctrl-C to stop.", file=sys.stderr)
+        while True:
+            try:
+                scores, ok, reason = evaluate()
+                streak = streak + 1 if ok else 0
+                print(f"{time.strftime('%H:%M:%S')} PASS={int(ok)} streak={streak:2d} "
+                      f"bodyguard={_score_for(scores, 'BODYGUARD'):+6.2f} "
+                      f"unleash={_score_for(scores, 'UNLEASH'):+6.2f} "
+                      f"strike={_score_for(scores, 'STRIKE'):+6.2f} "
+                      f"defend={_score_for(scores, 'DEFEND'):+6.2f}", flush=True)
+            except Exception as e:
+                print(f"{time.strftime('%H:%M:%S')} (eval error: {e})", flush=True)
+            time.sleep(args.watch)
+
+    scores, ok, reason = evaluate()
     print("\n--- RANKING (high → low) ---", file=sys.stderr)
     for name, s in ranking(scores):
         print(f"  {s:8.3f}  {name}", file=sys.stderr)
