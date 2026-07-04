@@ -116,6 +116,9 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--ent-coef", type=float, default=0.01, help="entropy bonus (lower = sharper greedy)")
     ap.add_argument("--logit-reg", type=float, default=0.01, help="L2 penalty on logits (lower = more confident)")
+    ap.add_argument("--ent-floor", type=float, default=0.6,
+                    help="hard-penalize mean entropy below this so the served (sampled) policy can't "
+                         "collapse onto EndTurn; 0 = off")
     ap.add_argument("--gamma", type=float, default=0.99)
     ap.add_argument("--step-penalty", type=float, default=0.02,
                     help="per-decision reward penalty. WARNING: >0 rewards ending the turn early "
@@ -159,7 +162,7 @@ def main() -> int:
           f"{torch.cuda.get_device_name(0) if device.type == 'cuda' else ''}")
 
     pcfg = ppo_torch.PPOConfig(lr=args.lr, epochs=args.epochs, minibatch_size=args.minibatch,
-                               ent_coef=args.ent_coef, logit_reg=args.logit_reg)
+                               ent_coef=args.ent_coef, logit_reg=args.logit_reg, ent_floor=args.ent_floor)
 
     # Resume: if the checkpoint exists (and --fresh wasn't passed), continue from it — the model weights,
     # the optimizer state, and the iteration counter — so re-running the same command picks up where it

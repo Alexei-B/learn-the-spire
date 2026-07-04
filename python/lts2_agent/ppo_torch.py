@@ -36,6 +36,10 @@ class PPOConfig:
     # replacing the old tanh clamp whose vanishing gradient froze the policy. Small enough to still allow a
     # confident, discriminating softmax.
     logit_reg: float = 0.01
+    # Entropy floor: a hard penalty when mean entropy drops below this, so the policy can't collapse onto
+    # a single option (EndTurn) — the served policy samples from the distribution, which must stay spread
+    # over the good cards. The entropy *bonus* alone doesn't hold it (entropy still collapsed to ~0.1).
+    ent_floor: float = 0.6
 
 
 def make_optimizer(model: model_torch.ActorCritic, config: PPOConfig) -> torch.optim.Optimizer:
@@ -108,6 +112,8 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
             logit_reg = (logits[mb_mask] ** 2).mean()
             loss = (pg_loss + config.vf_coef * v_loss - config.ent_coef * ent
                     + config.logit_reg * logit_reg)
+            if config.ent_floor > 0.0:   # strongly penalize entropy below the floor (anti-collapse)
+                loss = loss + 2.0 * torch.relu(config.ent_floor - ent)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
