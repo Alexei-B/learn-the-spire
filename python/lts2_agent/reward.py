@@ -34,16 +34,15 @@ DEFAULT_WEIGHTS = RewardWeights()
 @dataclass(frozen=True)
 class ScenarioWeights:
     """Reward for an isolated combat scenario (see :func:`scenario_reward` / :func:`scenario_dense_reward`)."""
+    # Rebalanced after the learning investigation (see [[torch-ppo-training-diagnostics]]):
     win: float = 1.0     # terminal bonus for winning the fight
     loss: float = 1.0    # terminal penalty for losing (dying)
-    hp: float = 1.0      # penalty per fraction of starting HP lost (per step in the dense reward)
-    # Dense shaping (per decision). damage/kill are a denser proxy for the win and are *ramped* down over
-    # training (strong early to bootstrap, weak late so the policy optimizes the true win/HP objective).
-    # step_penalty is always on: it charges a small cost per decision so the policy is pushed to end fights
-    # efficiently rather than stalling (terminal-only reward let fight length balloon ~7x).
-    damage: float = 0.5          # per fraction-of-startHP damage dealt to enemies (ramped)
-    kill: float = 0.2            # per enemy killed (ramped)
-    step_penalty: float = 0.02   # per decision (always on; anti-stall)
+    hp: float = 0.3      # per fraction of start HP lost per step. WAS 1.0, which drowned the sparse win
+                         # signal and taught passive/defensive play; kept small so winning dominates.
+    damage: float = 0.5          # per fraction-of-startHP damage dealt to enemies (dense progress signal)
+    kill: float = 0.3            # per enemy killed
+    step_penalty: float = 0.0    # WAS 0.02, but a per-decision penalty rewards ending the turn early
+                                 # (fewer decisions = less penalty); truncation already prevents stalling.
     truncate_penalty: float = 1.0  # applied (like a loss) when a fight is truncated at max_fight_len
 
 
