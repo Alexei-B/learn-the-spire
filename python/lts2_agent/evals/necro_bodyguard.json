@@ -1,0 +1,1219 @@
+{
+ "state": {
+  "phase": "Combat",
+  "seed": "FIXTURE",
+  "actIndex": 0,
+  "floor": 2,
+  "ascensionLevel": 0,
+  "isGameOver": false,
+  "isVictory": false,
+  "score": 20,
+  "players": [
+   {
+    "netId": 1,
+    "character": "NECROBINDER",
+    "currentHp": 66,
+    "maxHp": 66,
+    "block": 0,
+    "gold": 99,
+    "maxEnergy": 3,
+    "deck": [
+     {
+      "cardId": "STRIKE_NECROBINDER",
+      "energyCost": 1,
+      "costsX": false,
+      "type": "Attack",
+      "rarity": "Basic",
+      "targetType": "AnyEnemy",
+      "upgraded": false,
+      "poolId": "NECROBINDER_CARD_POOL",
+      "canPlay": false,
+      "starCost": -1,
+      "replayCount": 0,
+      "addedKeywords": []
+     },
+     {
+      "cardId": "DEFEND_NECROBINDER",
+      "energyCost": 1,
+      "costsX": false,
+      "type": "Skill",
+      "rarity": "Basic",
+      "targetType": "Self",
+      "upgraded": false,
+      "poolId": "NECROBINDER_CARD_POOL",
+      "canPlay": false,
+      "starCost": -1,
+      "replayCount": 0,
+      "addedKeywords": []
+     },
+     {
+      "cardId": "UNLEASH",
+      "energyCost": 1,
+      "costsX": false,
+      "type": "Attack",
+      "rarity": "Basic",
+      "targetType": "AnyEnemy",
+      "upgraded": false,
+      "poolId": "NECROBINDER_CARD_POOL",
+      "canPlay": false,
+      "starCost": -1,
+      "replayCount": 0,
+      "addedKeywords": []
+     },
+     {
+      "cardId": "BODYGUARD",
+      "energyCost": 1,
+      "costsX": false,
+      "type": "Skill",
+      "rarity": "Basic",
+      "targetType": "Self",
+      "upgraded": false,
+      "poolId": "NECROBINDER_CARD_POOL",
+      "canPlay": false,
+      "starCost": -1,
+      "replayCount": 0,
+      "addedKeywords": []
+     }
+    ],
+    "relics": [
+     "BOUND_PHYLACTERY"
+    ],
+    "potions": [
+     null,
+     null,
+     null
+    ],
+    "combatState": {
+     "energy": 3,
+     "maxEnergy": 3,
+     "stars": 0,
+     "turnNumber": 1,
+     "phase": "Play",
+     "hand": [
+      {
+       "cardId": "STRIKE_NECROBINDER",
+       "energyCost": 1,
+       "costsX": false,
+       "type": "Attack",
+       "rarity": "Basic",
+       "targetType": "AnyEnemy",
+       "upgraded": false,
+       "poolId": "NECROBINDER_CARD_POOL",
+       "canPlay": true,
+       "damage": 6,
+       "baseDamage": 6,
+       "starCost": -1,
+       "replayCount": 0,
+       "addedKeywords": []
+      },
+      {
+       "cardId": "BODYGUARD",
+       "energyCost": 1,
+       "costsX": false,
+       "type": "Skill",
+       "rarity": "Basic",
+       "targetType": "Self",
+       "upgraded": false,
+       "poolId": "NECROBINDER_CARD_POOL",
+       "canPlay": true,
+       "summon": 5,
+       "starCost": -1,
+       "replayCount": 0,
+       "addedKeywords": []
+      },
+      {
+       "cardId": "DEFEND_NECROBINDER",
+       "energyCost": 1,
+       "costsX": false,
+       "type": "Skill",
+       "rarity": "Basic",
+       "targetType": "Self",
+       "upgraded": false,
+       "poolId": "NECROBINDER_CARD_POOL",
+       "canPlay": true,
+       "block": 5,
+       "baseBlock": 5,
+       "starCost": -1,
+       "replayCount": 0,
+       "addedKeywords": []
+      },
+      {
+       "cardId": "UNLEASH",
+       "energyCost": 1,
+       "costsX": false,
+       "type": "Attack",
+       "rarity": "Basic",
+       "targetType": "AnyEnemy",
+       "upgraded": false,
+       "poolId": "NECROBINDER_CARD_POOL",
+       "canPlay": true,
+       "damage": 7,
+       "baseDamage": 6,
+       "starCost": -1,
+       "replayCount": 0,
+       "addedKeywords": []
+      }
+     ],
+     "drawPile": [],
+     "discardPile": [],
+     "exhaustPile": [],
+     "powers": [],
+     "orbs": [],
+     "orbSlots": 0,
+     "osty": {
+      "currentHp": 1,
+      "maxHp": 1,
+      "block": 0,
+      "isAlive": true,
+      "powers": [
+       {
+        "powerId": "DIE_FOR_YOU_POWER",
+        "amount": 1
+       }
+      ]
+     }
+    }
+   }
+  ],
+  "combat": {
+   "roundNumber": 1,
+   "currentSide": "Player",
+   "enemies": [
+    {
+     "combatId": 1,
+     "monsterId": "CALCIFIED_CULTIST",
+     "currentHp": 60,
+     "maxHp": 60,
+     "block": 0,
+     "isHittable": true,
+     "powers": [],
+     "intents": [
+      {
+       "type": "Buff"
+      }
+     ]
+    },
+    {
+     "combatId": 2,
+     "monsterId": "DAMP_CULTIST",
+     "currentHp": 60,
+     "maxHp": 60,
+     "block": 0,
+     "isHittable": true,
+     "powers": [],
+     "intents": [
+      {
+       "type": "Buff"
+      }
+     ]
+    }
+   ]
+  },
+  "map": {
+   "actIndex": 0,
+   "currentCoord": {
+    "col": 3,
+    "row": 0
+   },
+   "points": [
+    {
+     "coord": {
+      "col": 0,
+      "row": 1
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 0,
+       "row": 2
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 2
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 0,
+       "row": 3
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 3
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 1,
+       "row": 4
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 5
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 0,
+       "row": 6
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 6
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 0,
+       "row": 7
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 7
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 1,
+       "row": 8
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 9
+     },
+     "pointType": "Treasure",
+     "children": [
+      {
+       "col": 0,
+       "row": 10
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 10
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 0,
+       "row": 11
+      },
+      {
+       "col": 1,
+       "row": 11
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 11
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 0,
+       "row": 12
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 12
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 0,
+       "row": 13
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 13
+     },
+     "pointType": "Shop",
+     "children": [
+      {
+       "col": 1,
+       "row": 14
+      },
+      {
+       "col": 0,
+       "row": 14
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 0,
+      "row": 14
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 1,
+       "row": 15
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 1,
+      "row": 4
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 2,
+       "row": 5
+      },
+      {
+       "col": 0,
+       "row": 5
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 1,
+      "row": 6
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 2,
+       "row": 7
+      },
+      {
+       "col": 0,
+       "row": 7
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 1,
+      "row": 8
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 0,
+       "row": 9
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 1,
+      "row": 10
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 1,
+       "row": 11
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 1,
+      "row": 11
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 0,
+       "row": 12
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 1,
+      "row": 14
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 2,
+       "row": 15
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 1,
+      "row": 15
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 3,
+       "row": 16
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 1
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 2,
+       "row": 2
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 2
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 2,
+       "row": 3
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 3
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 2,
+       "row": 4
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 4
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 2,
+       "row": 5
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 5
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 1,
+       "row": 6
+      },
+      {
+       "col": 2,
+       "row": 6
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 6
+     },
+     "pointType": "Elite",
+     "children": [
+      {
+       "col": 2,
+       "row": 7
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 7
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 3,
+       "row": 8
+      },
+      {
+       "col": 2,
+       "row": 8
+      },
+      {
+       "col": 1,
+       "row": 8
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 8
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 2,
+       "row": 9
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 9
+     },
+     "pointType": "Treasure",
+     "children": [
+      {
+       "col": 1,
+       "row": 10
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 10
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 1,
+       "row": 11
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 2,
+      "row": 15
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 3,
+       "row": 16
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 3
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 3,
+       "row": 4
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 4
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 4,
+       "row": 5
+      },
+      {
+       "col": 2,
+       "row": 5
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 8
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 3,
+       "row": 9
+      },
+      {
+       "col": 4,
+       "row": 9
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 9
+     },
+     "pointType": "Treasure",
+     "children": [
+      {
+       "col": 2,
+       "row": 10
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 11
+     },
+     "pointType": "Elite",
+     "children": [
+      {
+       "col": 3,
+       "row": 12
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 12
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 3,
+       "row": 13
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 13
+     },
+     "pointType": "Elite",
+     "children": [
+      {
+       "col": 3,
+       "row": 14
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 14
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 2,
+       "row": 15
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 1
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 4,
+       "row": 2
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 2
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 5,
+       "row": 3
+      },
+      {
+       "col": 3,
+       "row": 3
+      },
+      {
+       "col": 4,
+       "row": 3
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 3
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 3,
+       "row": 4
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 5
+     },
+     "pointType": "Shop",
+     "children": [
+      {
+       "col": 4,
+       "row": 6
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 6
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 4,
+       "row": 7
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 7
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 3,
+       "row": 8
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 9
+     },
+     "pointType": "Treasure",
+     "children": [
+      {
+       "col": 4,
+       "row": 10
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 10
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 3,
+       "row": 11
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 4,
+      "row": 15
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 3,
+       "row": 16
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 5,
+      "row": 3
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 6,
+       "row": 4
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 5,
+      "row": 14
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 4,
+       "row": 15
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 4
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 6,
+       "row": 5
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 5
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 6,
+       "row": 6
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 6
+     },
+     "pointType": "Elite",
+     "children": [
+      {
+       "col": 6,
+       "row": 7
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 7
+     },
+     "pointType": "Unknown",
+     "children": [
+      {
+       "col": 6,
+       "row": 8
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 8
+     },
+     "pointType": "Shop",
+     "children": [
+      {
+       "col": 6,
+       "row": 9
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 9
+     },
+     "pointType": "Treasure",
+     "children": [
+      {
+       "col": 6,
+       "row": 10
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 10
+     },
+     "pointType": "RestSite",
+     "children": [
+      {
+       "col": 6,
+       "row": 11
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 11
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 6,
+       "row": 12
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 12
+     },
+     "pointType": "Monster",
+     "children": [
+      {
+       "col": 6,
+       "row": 13
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 6,
+      "row": 13
+     },
+     "pointType": "Elite",
+     "children": [
+      {
+       "col": 5,
+       "row": 14
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 0
+     },
+     "pointType": "Ancient",
+     "children": [
+      {
+       "col": 0,
+       "row": 1
+      },
+      {
+       "col": 2,
+       "row": 1
+      },
+      {
+       "col": 4,
+       "row": 1
+      }
+     ]
+    },
+    {
+     "coord": {
+      "col": 3,
+      "row": 16
+     },
+     "pointType": "Boss",
+     "children": []
+    }
+   ],
+   "reachable": [
+    {
+     "col": 0,
+     "row": 1
+    },
+    {
+     "col": 2,
+     "row": 1
+    },
+    {
+     "col": 4,
+     "row": 1
+    }
+   ],
+   "bossEncounterId": "THE_KIN_BOSS"
+  }
+ },
+ "options": [
+  {
+   "kind": "PlayCard",
+   "playerId": 1,
+   "description": "Play STRIKE_NECROBINDER -> CALCIFIED_CULTIST",
+   "card": {
+    "cardId": "STRIKE_NECROBINDER",
+    "energyCost": 1,
+    "costsX": false,
+    "type": "Attack",
+    "rarity": "Basic",
+    "targetType": "AnyEnemy",
+    "upgraded": false,
+    "poolId": "NECROBINDER_CARD_POOL",
+    "canPlay": true,
+    "damage": 6,
+    "baseDamage": 6,
+    "starCost": -1,
+    "replayCount": 0,
+    "addedKeywords": []
+   },
+   "targetCombatId": 1,
+   "handIndex": 0
+  },
+  {
+   "kind": "PlayCard",
+   "playerId": 1,
+   "description": "Play STRIKE_NECROBINDER -> DAMP_CULTIST",
+   "card": {
+    "cardId": "STRIKE_NECROBINDER",
+    "energyCost": 1,
+    "costsX": false,
+    "type": "Attack",
+    "rarity": "Basic",
+    "targetType": "AnyEnemy",
+    "upgraded": false,
+    "poolId": "NECROBINDER_CARD_POOL",
+    "canPlay": true,
+    "damage": 6,
+    "baseDamage": 6,
+    "starCost": -1,
+    "replayCount": 0,
+    "addedKeywords": []
+   },
+   "targetCombatId": 2,
+   "handIndex": 0
+  },
+  {
+   "kind": "PlayCard",
+   "playerId": 1,
+   "description": "Play BODYGUARD",
+   "card": {
+    "cardId": "BODYGUARD",
+    "energyCost": 1,
+    "costsX": false,
+    "type": "Skill",
+    "rarity": "Basic",
+    "targetType": "Self",
+    "upgraded": false,
+    "poolId": "NECROBINDER_CARD_POOL",
+    "canPlay": true,
+    "summon": 5,
+    "starCost": -1,
+    "replayCount": 0,
+    "addedKeywords": []
+   },
+   "handIndex": 1
+  },
+  {
+   "kind": "PlayCard",
+   "playerId": 1,
+   "description": "Play DEFEND_NECROBINDER",
+   "card": {
+    "cardId": "DEFEND_NECROBINDER",
+    "energyCost": 1,
+    "costsX": false,
+    "type": "Skill",
+    "rarity": "Basic",
+    "targetType": "Self",
+    "upgraded": false,
+    "poolId": "NECROBINDER_CARD_POOL",
+    "canPlay": true,
+    "block": 5,
+    "baseBlock": 5,
+    "starCost": -1,
+    "replayCount": 0,
+    "addedKeywords": []
+   },
+   "handIndex": 2
+  },
+  {
+   "kind": "PlayCard",
+   "playerId": 1,
+   "description": "Play UNLEASH -> CALCIFIED_CULTIST",
+   "card": {
+    "cardId": "UNLEASH",
+    "energyCost": 1,
+    "costsX": false,
+    "type": "Attack",
+    "rarity": "Basic",
+    "targetType": "AnyEnemy",
+    "upgraded": false,
+    "poolId": "NECROBINDER_CARD_POOL",
+    "canPlay": true,
+    "damage": 7,
+    "baseDamage": 6,
+    "starCost": -1,
+    "replayCount": 0,
+    "addedKeywords": []
+   },
+   "targetCombatId": 1,
+   "handIndex": 3
+  },
+  {
+   "kind": "PlayCard",
+   "playerId": 1,
+   "description": "Play UNLEASH -> DAMP_CULTIST",
+   "card": {
+    "cardId": "UNLEASH",
+    "energyCost": 1,
+    "costsX": false,
+    "type": "Attack",
+    "rarity": "Basic",
+    "targetType": "AnyEnemy",
+    "upgraded": false,
+    "poolId": "NECROBINDER_CARD_POOL",
+    "canPlay": true,
+    "damage": 7,
+    "baseDamage": 6,
+    "starCost": -1,
+    "replayCount": 0,
+    "addedKeywords": []
+   },
+   "targetCombatId": 2,
+   "handIndex": 3
+  },
+  {
+   "kind": "EndTurn",
+   "playerId": 1,
+   "description": "End turn"
+  }
+ ]
+}

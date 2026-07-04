@@ -36,7 +36,10 @@ def read_message(stream: IO[str]) -> Optional[dict[str, Any]]:
     if not line:
         # Blank line: skip and try the next one.
         return read_message(stream)
-    return json.loads(line)
+    msg = json.loads(line)
+    if isinstance(msg, dict):
+        msg["_bytes"] = len(line)   # raw payload size, for transport profiling (harmless extra key)
+    return msg
 
 
 def legal_action_count(observation: dict[str, Any]) -> int:

@@ -36,23 +36,36 @@ class ActorCritic(nn.Module):
     card_vocab: int = features.CARD_VOCAB
 
     @nn.compact
-    def __call__(self, g, dense, card_idx, mask):
-        # State context.
+    def __call__(self, g, hand_dense, hand_idx, hand_mask, dense, card_idx, mask):
+        card_embed = nn.Embed(self.card_vocab, self.embed_dim)  # shared across hand + options
+
+        # State context from the global scalars.
         h = nn.relu(nn.Dense(self.hidden)(g))
         h = nn.relu(nn.Dense(self.hidden)(h))                       # [B, H]
 
-        # Per-option input: dense features ⊕ card embedding ⊕ broadcast state context.
-        card_emb = nn.Embed(self.card_vocab, self.embed_dim)(card_idx)   # [B, M, E]
+        # Hand summary: encode each held card (features ⊕ embedding), then masked mean-pool. This is
+        # what lets the policy see what else is in hand and learn card synergies.
+        hand_emb = card_embed(hand_idx)                             # [B, MAX_HAND, E]
+        hand_in = jnp.concatenate([hand_dense, hand_emb], axis=-1)
+        hz = nn.relu(nn.Dense(self.hidden)(hand_in))                # [B, MAX_HAND, H]
+        hm = hand_mask.astype(jnp.float32)[..., None]
+        hand_vec = jnp.sum(hz * hm, axis=1) / jnp.clip(jnp.sum(hm, axis=1), 1.0)  # [B, H]
+
+        # Combined context: battlefield + hand contents.
+        ctx = nn.relu(nn.Dense(self.hidden)(jnp.concatenate([h, hand_vec], axis=-1)))  # [B, H]
+
+        # Per-option input: option features ⊕ card embedding ⊕ broadcast combined context.
+        opt_emb = card_embed(card_idx)                             # [B, M, E]
         n_opt = dense.shape[1]
-        h_broadcast = jnp.broadcast_to(h[:, None, :], (h.shape[0], n_opt, h.shape[1]))
-        opt_in = jnp.concatenate([dense, card_emb, h_broadcast], axis=-1)  # [B, M, *]
+        ctx_broadcast = jnp.broadcast_to(ctx[:, None, :], (ctx.shape[0], n_opt, ctx.shape[1]))
+        opt_in = jnp.concatenate([dense, opt_emb, ctx_broadcast], axis=-1)  # [B, M, *]
 
         z = nn.relu(nn.Dense(self.hidden)(opt_in))
         z = nn.relu(nn.Dense(self.hidden)(z))
         logits = nn.Dense(1)(z)[..., 0]                             # [B, M]
         masked_logits = jnp.where(mask, logits, NEG_INF)
 
-        value = nn.Dense(1)(nn.relu(nn.Dense(self.hidden)(h)))[..., 0]  # [B]
+        value = nn.Dense(1)(nn.relu(nn.Dense(self.hidden)(ctx)))[..., 0]  # [B]
         return masked_logits, value
 
 
@@ -77,14 +90,23 @@ def sample_action(logits, key):
     return action, log_prob(logits, action)
 
 
+def forward1(apply_fn, params, feats):
+    """Forward one observation's (unbatched) feature dict → ``(logits[1, M], value[1])``."""
+    args = tuple(jnp.asarray(feats[k])[None] for k in features.MODEL_KEYS)
+    return apply_fn(params, *args)
+
+
 def init_params(rng, model: ActorCritic):
     """Initialize params with a single dummy batch of the correct fixed shapes."""
-    B, M = 1, features.MAX_OPTIONS
+    B, M, Hd = 1, features.MAX_OPTIONS, features.MAX_HAND
     g = jnp.zeros((B, features.STATE_DIM), jnp.float32)
+    hand_dense = jnp.zeros((B, Hd, features.CARD_FEAT_DIM), jnp.float32)
+    hand_idx = jnp.zeros((B, Hd), jnp.int32)
+    hand_mask = jnp.zeros((B, Hd), bool).at[:, 0].set(True)
     dense = jnp.zeros((B, M, features.OPTION_DIM), jnp.float32)
     card_idx = jnp.zeros((B, M), jnp.int32)
     mask = jnp.zeros((B, M), bool).at[:, 0].set(True)
-    return model.init(rng, g, dense, card_idx, mask)
+    return model.init(rng, g, hand_dense, hand_idx, hand_mask, dense, card_idx, mask)
 
 
 # --- Checkpointing (params + a meta sidecar so the server can rebuild the exact model) --------------

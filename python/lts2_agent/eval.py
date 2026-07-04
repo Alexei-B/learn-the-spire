@@ -24,6 +24,8 @@ from .policies import heuristic
 
 CombatPolicy = Callable[[dict[str, Any], list[dict[str, Any]]], list]
 
+_COMBAT_KINDS = {"PlayCard", "EndTurn", "UsePotion", "DiscardPotion"}
+
 
 def _argmax_index(ranking: list) -> Optional[int]:
     if not ranking:
@@ -112,9 +114,18 @@ def play_fight(env: Lts2Env, seed: str, combat_policy: CombatPolicy,
                 continue
             if phase != "Combat":
                 break
-            action = _argmax_index(combat_policy(obs["state"], obs["options"]))
+            opts = obs["options"]
+            # Restrict to actual combat moves (the harness can rarely mix a reward option in).
+            combat_idx = [i for i, o in enumerate(opts) if o.get("kind") in _COMBAT_KINDS]
+            if not combat_idx:
+                break
+            ranking = [e for e in combat_policy(obs["state"], opts)
+                       if (e["index"] if isinstance(e, dict) else e[0]) in combat_idx]
+            action = _argmax_index(ranking)
             if action is None:
-                action = navigator.combat_action(obs["state"], obs["options"])
+                action = navigator.combat_action(obs["state"], opts)
+                if opts[action].get("kind") not in _COMBAT_KINDS:
+                    action = combat_idx[0]
             obs = env.step(action)
     except RuntimeError:
         return None

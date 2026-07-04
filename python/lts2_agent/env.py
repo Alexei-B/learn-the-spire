@@ -116,23 +116,40 @@ class Lts2Env:
         character: Optional[str] = None,
         elite_pct: float = 0.2,
         boss_pct: float = 0.05,
+        cards: Optional[Sequence[str]] = None,
+        relics: Optional[Sequence[str]] = None,
+        encounter: Optional[str] = None,
+        enemy_hp: Optional[Sequence[int]] = None,
+        starter_deck: bool = False,
+        act: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Start a fresh isolated **combat scenario** (random character/deck/relics/encounter) and
-        return its opening observation. The episode is a single fight: ``obs['done']`` marks the combat
-        ending and ``obs['info']`` carries ``won``/``hpLost`` (see the C# ``CombatScenario``)."""
+        """Start a fresh isolated **combat scenario** and return its opening observation. By default the
+        scenario is random (character/deck/relics/encounter). Pass ``cards`` (a deck of card ids) +
+        ``encounter`` (an encounter type name) for a fully-specified *closed* scenario, reproducible for
+        eval. The episode is a single fight: ``obs['done']`` marks the end and ``obs['info']`` carries
+        ``won``/``hpLost`` (see the C# ``CombatScenario``)."""
         if seed is not None:
             self.seed = seed
         if character is not None:
             self.character = character
-        return self._roundtrip(
-            {
-                "cmd": "reset_combat",
-                "seed": self.seed,
-                "character": self.character,
-                "elitePct": elite_pct,
-                "bossPct": boss_pct,
-            }
-        )
+        message: dict[str, Any] = {
+            "cmd": "reset_combat",
+            "seed": self.seed,
+            "character": self.character,
+            "elitePct": elite_pct,
+            "bossPct": boss_pct,
+        }
+        if starter_deck:
+            message["starterDeck"] = True
+        if act is not None:
+            message["act"] = act
+        if cards is not None:
+            message["cards"] = list(cards)
+            message["encounter"] = encounter
+            message["relics"] = list(relics) if relics is not None else []
+            if enemy_hp is not None:
+                message["enemyHp"] = list(enemy_hp)
+        return self._roundtrip(message)
 
     def step(self, action: Action) -> dict[str, Any]:
         """Apply an action and return the resulting observation.

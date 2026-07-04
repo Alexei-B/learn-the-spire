@@ -45,9 +45,7 @@ def test_checkpoint_roundtrip_and_serve_parity(tmp_path):
     state, options = _combat_pair()
 
     # Direct model argmax over the legal options.
-    g = features.encode_state(state)
-    dense, card_idx, mask = features.encode_options(state, options)
-    logits, _ = m.apply(params, g[None], dense[None], card_idx[None], mask[None])
+    logits, _ = model.forward1(m.apply, params, features.encode(state, options))
     direct_argmax = int(np.argmax(np.asarray(logits[0])[:len(options)]))
 
     # Served policy argmax.

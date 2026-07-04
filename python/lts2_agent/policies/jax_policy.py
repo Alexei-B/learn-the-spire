@@ -37,25 +37,17 @@ def make_policy(ckpt_path: str) -> CombatPolicy:
     m, params, meta = model.load_checkpoint(ckpt_path)
     apply = jax.jit(m.apply)
 
-    def _forward(g, dense, card_idx, mask):
-        return apply(params, g, dense, card_idx, mask)
-
-    # Warm up the compile with a dummy legal batch so the first request is fast.
-    B, M = 1, features.MAX_OPTIONS
-    dummy_mask = np.zeros((B, M), bool); dummy_mask[0, 0] = True
-    jax.block_until_ready(_forward(
-        np.zeros((B, features.STATE_DIM), np.float32),
-        np.zeros((B, M, features.OPTION_DIM), np.float32),
-        np.zeros((B, M), np.int32), dummy_mask))
+    # Warm up the compile with a dummy legal observation so the first request is fast.
+    dummy = features.encode(features._SAMPLE_STATE, [{"kind": "EndTurn"}])
+    jax.block_until_ready(model.forward1(apply, params, dummy))
     print(f"[jax_policy] loaded {ckpt_path} (hidden={meta['hidden']}) and warmed up.",
           file=sys.stderr, flush=True)
 
     def policy(state: dict[str, Any], options: list[dict[str, Any]]):
         if not features.is_combat(state) or not options:
             return []   # decline: the game/TUI default drives non-combat
-        g = features.encode_state(state)
-        dense, card_idx, mask = features.encode_options(state, options)
-        logits, _ = _forward(g[None], dense[None], card_idx[None], mask[None])
+        feats = features.encode(state, options)
+        logits, _ = model.forward1(apply, params, feats)
         logits = np.asarray(logits[0])
         n = min(len(options), features.MAX_OPTIONS)
         return [(i, float(logits[i])) for i in range(n)]

@@ -39,10 +39,8 @@ class RolloutConfig:
 
 
 def featurize(state: dict[str, Any], options: list[dict[str, Any]]):
-    """Observation dict -> the fixed-shape arrays the model consumes (single, unbatched)."""
-    g = features.encode_state(state)
-    dense, card_idx, mask = features.encode_options(state, options)
-    return g, dense, card_idx, mask
+    """Observation dict -> the model-input feature dict (keyed by ``features.MODEL_KEYS``, unbatched)."""
+    return features.encode(state, options)
 
 
 def gae(rewards, values, dones, last_value, gamma, lam):
@@ -120,7 +118,7 @@ class Rollout:
             self._cur[i] = self._reset_to_combat(i)
         obs = self._cur[i]
 
-        gs, ds, cis, masks = [], [], [], []
+        feats_buf: dict[str, list] = {k: [] for k in features.MODEL_KEYS}
         actions, logps, values, rewards, dones = [], [], [], [], []
         episodes: list[dict[str, Any]] = []
 
@@ -129,8 +127,8 @@ class Rollout:
                 obs = self._reset_to_combat(i)
                 continue
 
-            g, dense, card_idx, mask = featurize(obs["state"], obs["options"])
-            logits, value = self._apply(params, g[None], dense[None], card_idx[None], mask[None])
+            feats = featurize(obs["state"], obs["options"])
+            logits, value = model.forward1(self._apply, params, feats)
             key, sub = jax.random.split(key)
             action, logp = model.sample_action(logits, sub)
             a = int(action[0])
@@ -149,8 +147,8 @@ class Rollout:
             r = reward.compute(decision, nxt, cfg.weights)
             done = bool(nxt["done"] or not nxt["options"])
 
-            gs.append(np.asarray(g)); ds.append(np.asarray(dense))
-            cis.append(np.asarray(card_idx)); masks.append(np.asarray(mask))
+            for k in features.MODEL_KEYS:
+                feats_buf[k].append(feats[k])
             actions.append(a); logps.append(float(logp[0])); values.append(float(value[0]))
             rewards.append(r); dones.append(1.0 if done else 0.0)
 
@@ -167,17 +165,17 @@ class Rollout:
         if dones[-1] > 0.5:
             last_value = 0.0
         else:
-            g, dense, card_idx, mask = featurize(obs["state"], obs["options"])
-            _, v = self._apply(params, g[None], dense[None], card_idx[None], mask[None])
+            _, v = model.forward1(self._apply, params, featurize(obs["state"], obs["options"]))
             last_value = float(v[0])
 
         adv, returns = gae(rewards, values, dones, last_value, cfg.gamma, cfg.lam)
-        return {
-            "g": np.stack(gs), "dense": np.stack(ds), "card_idx": np.stack(cis), "mask": np.stack(masks),
+        batch = {k: np.stack(feats_buf[k]) for k in features.MODEL_KEYS}
+        batch.update({
             "action": np.asarray(actions, np.int32), "logp": np.asarray(logps, np.float32),
             "value": np.asarray(values, np.float32), "adv": adv, "ret": returns,
             "episodes": episodes,
-        }
+        })
+        return batch
 
     def collect(self, params, key: jax.Array):
         """Collect one on-policy batch across all envs. Returns (batch_dict, episode_summaries)."""
@@ -190,7 +188,7 @@ class Rollout:
 
         batch = {
             k: np.concatenate([r[k] for r in results], axis=0)
-            for k in ("g", "dense", "card_idx", "mask", "action", "logp", "value", "adv", "ret")
+            for k in (*features.MODEL_KEYS, "action", "logp", "value", "adv", "ret")
         }
         episodes = [e for r in results for e in r["episodes"]]
         return batch, episodes

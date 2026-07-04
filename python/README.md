@@ -126,6 +126,16 @@ Each env runs its own `Lts2.AgentHost` process (one run per process — the game
 process-wide singletons), so `--envs N` is real parallelism. Metrics print to stderr and stream to the
 CSV (run mode: floor/win/score; scenario mode: win-rate/HP-lost). Checkpoints (`<ckpt>` +
 `<ckpt>.meta.json`) are written every `--save-every` iterations; `--resume` continues from one.
+Omit `--character` for random-per-fight (the generalist); pass e.g. `--character Necrobinder` to
+specialize.
+
+**Deterministic eval set (scenario mode).** The per-iteration training win-rate is very noisy — random
+fights, exploration, and some fights are simply unwinnable — so it's a poor progress signal. Every
+`--eval-every` iterations the trainer instead plays a **fixed set of `--eval-seeds` seeded fights
+greedily** (same seeds + same params → same fights), and logs `EVAL win / hpLost / hpFrac`. Because it
+is deterministic, it moves only when the policy actually improves; **`hpFrac` (fraction of HP lost) is
+the most sensitive flat-lining detector** since it keeps dropping even after win-rate saturates against
+the unwinnable-fight ceiling. Eval columns are also written to the CSV.
 
 ### Evaluate
 
@@ -135,6 +145,22 @@ python -m lts2_agent.eval --policies ppo,heuristic,random --ckpt checkpoints/ppo
 
 Reports win rate, mean/median/max floor, mean score, and mean combats survived per policy over the
 same seeds — a learned policy should beat random and trend toward (then past) the heuristic.
+Add `--mode scenario` to compare on isolated random fights (win-rate / HP-lost) instead of full runs.
+
+### Inspect specific plays (closed evals)
+
+To debug *why* the policy makes a given decision, `closed_eval.py` runs it on **fully-specified,
+reproducible** situations — exact character + deck (so the hand is known) + encounter, and optionally
+per-enemy HP for unambiguous spots like a free lethal — printing each option's features, the model's
+scores, and the turn it plays:
+
+```sh
+python -m lts2_agent.closed_eval --ckpt checkpoints/scenario
+```
+
+The scenarios live in `closed_eval.py::SCENARIOS`; the underlying knob is
+`Lts2Env.reset_combat(character=…, cards=[…], encounter=…, enemy_hp=[…])` (`CombatScenario.CreateExplicit`
+on the C# side), usable directly to build your own.
 
 ### Serve in the TUI
 

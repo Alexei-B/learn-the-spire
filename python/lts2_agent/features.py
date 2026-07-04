@@ -6,11 +6,12 @@ trained against the environment sees byte-identical inputs when it runs behind t
 Keep it NumPy-only (no JAX) so it imports everywhere, and keep every vector a **fixed length** so the
 model's input dims never shift.
 
-The encoding is deliberately combat-focused (the net only decides combat — see the plan): the state
-vector summarizes the battlefield, and each option is scored from its own feature row plus a stable
-hashed **card-id bucket** (an index into the model's embedding table). Card ids are strings with no
-integer enum, so we hash them with a *stable* CRC (never Python's per-process ``hash``) to guarantee
-the same card maps to the same bucket in training and in the TUI.
+Each card (whether in hand or as an option) is described by a shared :func:`_card_features` vector plus
+a stable hashed **card-id bucket** (an index into the model's embedding table). Crucially the whole
+**hand** is encoded (rich features + embeddings), not just its size — so the policy knows what it is
+holding and can learn card *synergies* (play a summon/buff before its payoff, etc.) generally, rather
+than scoring each option in isolation. Card ids are strings with no integer enum, so we hash them with
+a *stable* CRC (never Python's per-process ``hash``) so the same card maps to the same bucket everywhere.
 """
 
 from __future__ import annotations
@@ -20,19 +21,39 @@ from typing import Any, Optional
 
 import numpy as np
 
+from . import card_catalog
+
 # --- Vocab / sizes ---------------------------------------------------------------------------------
 
 # Bump when the encoding layout changes so stale checkpoints are rejected instead of silently misread.
-FEATURE_VERSION = 1
+FEATURE_VERSION = 5
 
-CARD_VOCAB = 4096          # hashed card-id embedding table size (bucket 0 = "no card")
+# Features are designed to be O(1), but a few quantities can accumulate without bound in a long fight
+# (block under Barricade, scaling damage, stacked powers). An unclipped outlier feeds the net a huge
+# input and its value head then emits enormous outputs (~1e6), blowing up returns and the value loss.
+# Saturate every feature to this range; normal values sit well inside it, so it's a no-op except on the
+# pathological tail.
+FEATURE_CLIP = 30.0
+
+# Card identity is a stable dense index over the game's card catalog (from card_catalog / the
+# --dump-cards dump): no hash collisions, and it also keys the model's static tags/keywords/var-keys
+# table. If the dump is absent (a fresh clone), fall back to a CRC32 hash into a fixed vocab.
+_CATALOG = card_catalog.try_load()
+CARD_VOCAB = _CATALOG.size if _CATALOG else 4096   # embedding table size (index 0 = "no card")
+CARD_STATIC_DIM = _CATALOG.static_dim if _CATALOG else 0
+CATALOG_SIGNATURE = _CATALOG.signature if _CATALOG else "hash"
+
 POWER_BUCKETS = 16         # hashed power-id buckets, per creature side
 MAX_OPTIONS = 64           # padded action-set width (measured max combat option count ~21)
+MAX_HAND = 12              # padded hand width for the hand-content encoding
 
 # Card-type one-hot order (the game's CardType enum, serialized as its name).
 _CARD_TYPES = ["Attack", "Skill", "Power", "Status", "Curse", "Quest"]
 # Option-kind one-hot order (only combat kinds matter; others fall into "Other").
 _OPTION_KINDS = ["PlayCard", "EndTurn", "UsePotion", "DiscardPotion"]
+
+# The model input arrays, in the order the model's __call__ consumes them.
+MODEL_KEYS = ("g", "hand_dense", "hand_idx", "hand_mask", "dense", "card_idx", "mask")
 
 
 def _bucket(text: str, n: int) -> int:
@@ -40,12 +61,24 @@ def _bucket(text: str, n: int) -> int:
     return zlib.crc32(text.encode("utf-8")) % n
 
 
-def card_bucket(card: Optional[dict[str, Any]]) -> int:
-    """The embedding index for a card: 0 for no card, else 1 + a stable hash of (id, upgraded)."""
+def card_index(card: Optional[dict[str, Any]]) -> int:
+    """The embedding index for a card: 0 for no card, else its stable catalog index (or a CRC32 hash
+    when no catalog is loaded). Keyed by base card id — the ``upgraded`` flag is a separate feature."""
     if not card:
         return 0
-    key = card.get("cardId", "") + ("+" if card.get("upgraded") else "")
+    card_id = card.get("cardId", "")
+    if _CATALOG is not None:
+        return _CATALOG.index_of(card_id)
+    key = card_id + ("+" if card.get("upgraded") else "")
     return 1 + _bucket(key, CARD_VOCAB - 1)
+
+
+def card_static_table() -> np.ndarray:
+    """The [CARD_VOCAB, CARD_STATIC_DIM] multi-hot table (tags/keywords/var-keys) the model gathers by
+    card index. Empty (width 0) when no catalog is loaded."""
+    if _CATALOG is not None:
+        return _CATALOG.static_table
+    return np.zeros((CARD_VOCAB, 0), dtype=np.float32)
 
 
 # --- Small readers (null-tolerant; the wire omits null fields) --------------------------------------
@@ -90,6 +123,41 @@ def _power_buckets(powers: list[dict[str, Any]]) -> np.ndarray:
         b = _bucket(p.get("powerId", ""), POWER_BUCKETS)
         v[b] += (p.get("amount") or 0) / 10.0
     return v
+
+
+# --- Per-card features (shared by the hand and the options) ----------------------------------------
+
+def _card_features(card: dict[str, Any]) -> list[float]:
+    """Describe one card's mechanics so the policy can 'understand' it — type, cost, its current
+    damage/block/summon *and how amplified they are right now* (``damage - baseDamage`` captures
+    circumstance/power amplifiers like Strength scaling or Gold Axe), plus star cost, upgrade, replays,
+    granted keywords, and enchant/affliction flags. The game already folds powers/targets into the
+    previewed damage/block, so this reads the live effect, not just the printed number."""
+    type_oh = [1.0 if card.get("type") == t else 0.0 for t in _CARD_TYPES]
+
+    damage = card.get("damage") or 0
+    base_damage = card.get("baseDamage")
+    base_damage = damage if base_damage is None else base_damage
+    block = card.get("block") or 0
+    base_block = card.get("baseBlock")
+    base_block = block if base_block is None else base_block
+
+    return [
+        *type_oh,
+        (card.get("energyCost") or 0) / 6.0,
+        1.0 if card.get("costsX") else 0.0,
+        (card.get("starCost") or 0) / 6.0,
+        1.0 if card.get("upgraded") else 0.0,
+        (card.get("replayCount") or 0) / 3.0,
+        damage / 30.0,
+        (damage - base_damage) / 30.0,        # amplified (>0) or weakened (<0) right now
+        block / 30.0,
+        (block - base_block) / 30.0,
+        (card.get("summon") or 0) / 30.0,
+        len(card.get("addedKeywords") or []) / 5.0,
+        1.0 if card.get("enchantmentId") else 0.0,
+        1.0 if card.get("afflictionId") else 0.0,
+    ]
 
 
 # --- State encoding --------------------------------------------------------------------------------
@@ -153,7 +221,24 @@ def encode_state(state: dict[str, Any]) -> np.ndarray:
         _power_buckets(cs.get("powers") or []),
         _power_buckets([p for e in _live_enemies(state) for p in (e.get("powers") or [])]),
     ]
-    return np.concatenate(parts).astype(np.float32)
+    g = np.concatenate(parts).astype(np.float32)
+    return np.clip(g, -FEATURE_CLIP, FEATURE_CLIP)
+
+
+def encode_hand(state: dict[str, Any]):
+    """Encode the player's whole hand as ``(dense[MAX_HAND, CARD_FEAT_DIM], idx[MAX_HAND], mask)`` — the
+    per-card features + embedding bucket for each held card. Lets the policy see combos in hand."""
+    cs = (_players(state)[0] if _players(state) else {}).get("combatState") or {}
+    hand = cs.get("hand") or []
+    dense = np.zeros((MAX_HAND, CARD_FEAT_DIM), dtype=np.float32)
+    idx = np.zeros(MAX_HAND, dtype=np.int32)
+    mask = np.zeros(MAX_HAND, dtype=bool)
+    for i, card in enumerate(hand[:MAX_HAND]):
+        dense[i] = np.asarray(_card_features(card), dtype=np.float32)
+        idx[i] = card_index(card)
+        mask[i] = True
+    np.clip(dense, -FEATURE_CLIP, FEATURE_CLIP, out=dense)
+    return dense, idx, mask
 
 
 # --- Option encoding -------------------------------------------------------------------------------
@@ -166,17 +251,14 @@ def _weakest_id(state: dict[str, Any]) -> Optional[int]:
 
 
 def _option_scalars(option: dict[str, Any], state: dict[str, Any],
-                    enemies_by_id: dict[int, dict[str, Any]], weakest_id: Optional[int]) -> list[float]:
+                    enemies_by_id: dict[int, dict[str, Any]], weakest_id: Optional[int],
+                    live_enemies: list[dict[str, Any]]) -> list[float]:
     kind = option.get("kind", "")
     kind_oh = [1.0 if kind == k else 0.0 for k in _OPTION_KINDS]
 
     card = option.get("card") or {}
-    ctype = card.get("type")
-    type_oh = [1.0 if ctype == t else 0.0 for t in _CARD_TYPES]
-
     damage = card.get("damage") or 0
-    block = card.get("block") or 0
-    summon = card.get("summon") or 0
+    target_type = card.get("targetType")
 
     target_id = option.get("targetCombatId")
     target = enemies_by_id.get(target_id) if target_id is not None else None
@@ -186,50 +268,68 @@ def _option_scalars(option: dict[str, Any], state: dict[str, Any],
     lethal = 1.0 if (target is not None and damage >= target_hp + target_block and damage > 0) else 0.0
     is_weakest = 1.0 if (target_id is not None and target_id == weakest_id) else 0.0
 
+    # Multi-target damage: an AllEnemies attack (e.g. Sow) hits *every* live enemy, so its real value is
+    # damage × #enemies and it can kill several at once — invisible if we only look at the per-hit number
+    # and single-target lethality. Capture total damage dealt and total kills across the board.
+    is_aoe = 1.0 if target_type == "AllEnemies" else 0.0
+    if is_aoe and damage > 0:
+        num_targets = len(live_enemies)
+        total_damage = damage * num_targets
+        kills = sum(1 for e in live_enemies
+                    if damage >= (e.get("currentHp") or 0) + (e.get("block") or 0))
+    else:
+        num_targets = 1 if damage > 0 else 0
+        total_damage = damage
+        kills = lethal  # single-target: 1 if it kills its target
+
     return [
         *kind_oh,
-        *type_oh,
-        (card.get("energyCost") or 0) / 6.0,
-        1.0 if card.get("costsX") else 0.0,
-        damage / 30.0,
-        block / 30.0,
-        summon / 30.0,
-        (card.get("starCost") or 0) / 6.0,
-        1.0 if card.get("upgraded") else 0.0,
-        (card.get("replayCount") or 0) / 3.0,
+        *_card_features(card),
         is_targeted,
         lethal,
         is_weakest,
         target_hp / 100.0,
         target_block / 30.0,
+        is_aoe,
+        num_targets / 5.0,
+        total_damage / 30.0,
+        kills / 5.0,
     ]
 
 
 def encode_options(state: dict[str, Any], options: list[dict[str, Any]]):
-    """Encode the legal options into fixed-width padded arrays.
-
-    Returns ``(dense, card_idx, mask)``:
-      * ``dense``    — ``float32[MAX_OPTIONS, OPTION_DIM]`` per-option features (padding rows are 0),
-      * ``card_idx`` — ``int32[MAX_OPTIONS]`` card embedding buckets (0 for no-card / padding),
-      * ``mask``     — ``bool[MAX_OPTIONS]`` True for a real, legal option.
-
-    Options beyond ``MAX_OPTIONS`` are dropped (measured combat max ~21, so this is slack).
-    """
+    """Encode the legal options into fixed-width padded arrays ``(dense, card_idx, mask)``. Options
+    beyond ``MAX_OPTIONS`` are dropped (measured combat max ~21, so this is slack)."""
     enemies_by_id = {e.get("combatId"): e for e in _enemies(state)}
     weakest_id = _weakest_id(state)
+    live = _live_enemies(state)
 
     dense = np.zeros((MAX_OPTIONS, OPTION_DIM), dtype=np.float32)
     card_idx = np.zeros(MAX_OPTIONS, dtype=np.int32)
     mask = np.zeros(MAX_OPTIONS, dtype=bool)
 
     for i, opt in enumerate(options[:MAX_OPTIONS]):
-        dense[i] = np.asarray(_option_scalars(opt, state, enemies_by_id, weakest_id), dtype=np.float32)
-        card_idx[i] = card_bucket(opt.get("card"))
+        dense[i] = np.asarray(_option_scalars(opt, state, enemies_by_id, weakest_id, live), dtype=np.float32)
+        card_idx[i] = card_index(opt.get("card"))
         mask[i] = True
+    np.clip(dense, -FEATURE_CLIP, FEATURE_CLIP, out=dense)
     return dense, card_idx, mask
 
 
+def encode(state: dict[str, Any], options: list[dict[str, Any]]) -> dict[str, np.ndarray]:
+    """All model inputs for one observation, keyed by :data:`MODEL_KEYS` (unbatched)."""
+    hand_dense, hand_idx, hand_mask = encode_hand(state)
+    dense, card_idx, mask = encode_options(state, options)
+    return {
+        "g": encode_state(state),
+        "hand_dense": hand_dense, "hand_idx": hand_idx, "hand_mask": hand_mask,
+        "dense": dense, "card_idx": card_idx, "mask": mask,
+    }
+
+
 # --- Derived dims (computed once from a canonical sample so they can never drift) -------------------
+
+CARD_FEAT_DIM = len(_card_features({}))
 
 _SAMPLE_STATE: dict[str, Any] = {
     "phase": "Combat",
@@ -237,4 +337,20 @@ _SAMPLE_STATE: dict[str, Any] = {
     "combat": {"enemies": []},
 }
 STATE_DIM = int(encode_state(_SAMPLE_STATE).shape[0])
-OPTION_DIM = len(_option_scalars({"kind": "EndTurn"}, _SAMPLE_STATE, {}, None))
+OPTION_DIM = len(_option_scalars({"kind": "EndTurn"}, _SAMPLE_STATE, {}, None, []))
+
+# Human-readable names for each column of a card / option feature vector (same order as the builders
+# above), so a decision can be inspected feature-by-feature.
+CARD_FEATURE_NAMES = [
+    "type_Attack", "type_Skill", "type_Power", "type_Status", "type_Curse", "type_Quest",
+    "cost", "costsX", "starCost", "upgraded", "replayCount",
+    "damage", "dmg_amp", "block", "blk_amp", "summon", "keywords", "enchant", "afflict",
+]
+OPTION_FEATURE_NAMES = [
+    "kind_PlayCard", "kind_EndTurn", "kind_UsePotion", "kind_DiscardPotion",
+    *CARD_FEATURE_NAMES,
+    "is_targeted", "lethal", "is_weakest", "target_hp", "target_block",
+    "is_aoe", "num_targets", "total_damage", "kills",
+]
+assert len(CARD_FEATURE_NAMES) == CARD_FEAT_DIM, (len(CARD_FEATURE_NAMES), CARD_FEAT_DIM)
+assert len(OPTION_FEATURE_NAMES) == OPTION_DIM, (len(OPTION_FEATURE_NAMES), OPTION_DIM)
