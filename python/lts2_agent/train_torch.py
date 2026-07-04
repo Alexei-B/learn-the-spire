@@ -86,7 +86,8 @@ def main() -> int:
             s = scenario_summary(outcomes)
             print(f"[it {it:04d}] steps={n} fights={s['n']} win={s['win_rate']:.2f} "
                   f"hpLost~{s['mean_hp_lost']:.1f} loss={metrics['loss']:.3f} "
-                  f"kl={metrics['approx_kl']:.4f} ent={metrics['entropy']:.3f} | "
+                  f"kl={metrics['approx_kl']:.4f} ent={metrics['entropy']:.3f} "
+                  f"maxRatio={metrics['max_ratio']:.1f} maxVal={metrics['max_val']:.1f} | "
                   f"collect={t_collect:.2f}s update={t_update:.2f}s sps={sps:.0f}", flush=True)
 
             if args.ckpt:

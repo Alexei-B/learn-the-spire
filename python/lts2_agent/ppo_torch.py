@@ -26,6 +26,12 @@ class PPOConfig:
     minibatch_size: int = 512
     max_grad_norm: float = 0.5
     return_clip: float = 10.0
+    # Stability guards (a run that trained cleanly for ~27 iters then diverged: KL spiked and the critic
+    # ran away to ~1e26). target_kl early-stops the update epochs once the policy has moved too far;
+    # value clipping bounds how much the critic can move per update (PPO's clipped value loss).
+    target_kl: float = 0.03
+    clip_vloss: bool = True
+    adv_clip: float = 10.0
 
 
 def make_optimizer(model: model_torch.ActorCritic, config: PPOConfig) -> torch.optim.Optimizer:
@@ -39,32 +45,53 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
 
     adv = batch["adv"].astype(np.float32)
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+    # Bound normalized advantages: as the policy improves, terminal-only rewards make advantages nearly
+    # uniform, adv.std() collapses, and normalization amplifies noise into oversized policy updates that
+    # blow up the logits. Clipping caps the policy-gradient magnitude.
+    adv = np.clip(adv, -config.adv_clip, config.adv_clip)
     ret = np.clip(batch["ret"], -config.return_clip, config.return_clip).astype(np.float32)
 
     # Whole batch to device once; minibatches are indexed on-device.
     feats = model_torch.to_tensors({k: batch[k] for k in features.MODEL_KEYS}, device)
     action = torch.as_tensor(batch["action"], dtype=torch.long, device=device)
     old_logp = torch.as_tensor(batch["logp"], dtype=torch.float32, device=device)
+    old_value = torch.as_tensor(batch["value"], dtype=torch.float32, device=device)
     adv_t = torch.as_tensor(adv, dtype=torch.float32, device=device)
     ret_t = torch.as_tensor(ret, dtype=torch.float32, device=device)
 
     mb_size = min(config.minibatch_size, n)
     acc: dict[str, float] = {}
     count = 0
+    max_ratio = 0.0
+    max_val = 0.0
 
     model.train()
+    stop = False
     for _ in range(config.epochs):
+        if stop:
+            break
         perm = torch.randperm(n, device=device)
+        epoch_kls: list[float] = []
         for start in range(0, n, mb_size):
             idx = perm[start:start + mb_size]
             logits, values = model(*(t[idx] for t in feats))
             new_logp = model_torch.log_prob(logits, action[idx])
-            ratio = (new_logp - old_logp[idx]).exp()
+            logratio = new_logp - old_logp[idx]
+            ratio = logratio.exp()
 
             adv_mb = adv_t[idx]
             pg_loss = -torch.min(ratio * adv_mb,
                                  ratio.clamp(1.0 - config.clip_eps, 1.0 + config.clip_eps) * adv_mb).mean()
-            v_loss = F.smooth_l1_loss(values, ret_t[idx], beta=1.0)   # Huber, delta=1
+
+            # Clipped value loss: also penalize the value moving more than clip_eps from its value at
+            # collection, so the critic can't run away in a single update.
+            if config.clip_vloss:
+                v_unclipped = F.smooth_l1_loss(values, ret_t[idx], beta=1.0, reduction="none")
+                v_clipped_pred = old_value[idx] + (values - old_value[idx]).clamp(-config.clip_eps, config.clip_eps)
+                v_clipped = F.smooth_l1_loss(v_clipped_pred, ret_t[idx], beta=1.0, reduction="none")
+                v_loss = torch.max(v_unclipped, v_clipped).mean()
+            else:
+                v_loss = F.smooth_l1_loss(values, ret_t[idx], beta=1.0)
             ent = model_torch.entropy(logits).mean()
             loss = pg_loss + config.vf_coef * v_loss - config.ent_coef * ent
 
@@ -75,12 +102,24 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
                 optimizer.step()
 
             with torch.no_grad():
-                approx_kl = (old_logp[idx] - new_logp).mean()
+                # Schulman's non-negative KL estimator (k3): stable, always >= 0, unlike (old-new).mean().
+                approx_kl = ((ratio - 1.0) - logratio).mean()
                 clip_frac = ((ratio - 1.0).abs() > config.clip_eps).float().mean()
+                if torch.isfinite(ratio).all():
+                    max_ratio = max(max_ratio, float(ratio.max()))
+                max_val = max(max_val, float(values.abs().max()))
+            epoch_kls.append(float(approx_kl))
             m = {"loss": loss, "pg_loss": pg_loss, "v_loss": v_loss, "entropy": ent,
                  "approx_kl": approx_kl, "clip_frac": clip_frac}
             for k, val in m.items():
                 acc[k] = acc.get(k, 0.0) + float(val)
             count += 1
 
-    return {k: v / count for k, v in acc.items()}
+        # Early-stop the remaining epochs once the policy has moved too far this update.
+        if config.target_kl is not None and epoch_kls and np.mean(epoch_kls) > config.target_kl:
+            stop = True
+
+    out = {k: v / count for k, v in acc.items()}
+    out["max_ratio"] = max_ratio
+    out["max_val"] = max_val
+    return out
