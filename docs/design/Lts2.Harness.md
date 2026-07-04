@@ -334,7 +334,12 @@ server's reset/step/close + error handling; the Python round-trip exercises the 
 
 It also carries a first **learned combat engine**: a per-option action-scoring actor-critic trained by
 **PPO** (JAX/Flax) against the env — combat only, with the scripted `navigator` driving non-combat so
-runs finish. A shared `features.py` encoder guarantees train/serve parity, and the checkpoint serves
+runs finish. The policy scores each legal option from the battlefield state, the option's own card
+features, **and a pooled encoding of the whole hand** (each held card's features + a learned card
+embedding), so it can see what else it is holding and learn card *synergies* — play a summon/buff before
+its payoff — rather than scoring options in isolation. Per-card features include amplification signals
+(`damage − baseDamage`) that expose circumstance/power amplifiers. A shared `features.py` encoder
+guarantees train/serve parity, and the checkpoint serves
 back into the TUI's Strategy menu via `policies/jax_policy.py` behind the same decision server
 (`LTS2_PPO_CKPT` + `LTS2_AGENT_*`, or a `lts2.agent.json` config so no env vars are needed). Training
 deps are isolated in `requirements-train.txt` (protocol/env stay stdlib-only). Vectorized training runs
@@ -347,11 +352,24 @@ damage + kills + floor/win). **Scenario mode** trains combat over a far wider sp
 visits: each episode is an isolated fight built by `CombatScenario` (`src/Lts2.Harness`) — a random
 character, a random 15-card deck from its pool, its starting relic + 5 random relics, at full HP, in a
 random act-1/2/3 encounter weighted by elite/boss rate — served over a new `reset_combat` command on the
-`TrainingEnvironmentServer`. Its observation reports the fight terminal (`done` when combat ends) plus
-`won`/`hpLost`, where HP lost adds back the character's end-of-combat starter heal (Ironclad's Burning
-Blood +6) so it scores real combat damage. Building an arbitrary deck required setting each cloned
-card's `Owner` (the run's hook iteration NREs otherwise); a few cards/relics still hit harness edge
-cases mid-fight, which the trainer's per-env resilience absorbs by abandoning that fight.
+`TrainingEnvironmentServer`. Its observation reports the fight terminal plus `won`/`hpLost`, where HP
+lost adds back the character's end-of-combat starter heal (Ironclad's Burning Blood +6) so it scores
+real combat damage. `done` is keyed off the *offered options* (no `PlayCard`/`EndTurn`/potion/mid-combat
+`SelectCards` left = fight over) rather than `host.InCombat`, which can linger true on the post-combat
+reward screen while the phase still reads `Combat`. Building an arbitrary deck required setting each
+cloned card's `Owner` (which also wires its `RunState`, or the run's hook iteration NREs). Mid-effect
+card choices (discover/scry, e.g. Discovery) resolve normally through the pending-choice seam — the
+scenario trainer routes `GamePhase.Choice` to the scripted navigator and masks the policy to combat
+moves, so those cards work. The residual failure is the occasional enemy-turn that deadlocks past the
+5 s combat-wait safety (specific enemy effects, pre-existing and also seen in run mode); the trainer's
+per-env resilience recreates that env process (killing the stuck task) and moves on — ~2% of fights.
+
+Training stability: a few features (block under Barricade, scaling damage, stacked powers) grow without
+bound in long fights; unclipped, one such outlier made the value head emit ~1e6, which blew up returns
+and — through the shared global grad-norm clip — starved the actor and stalled learning. The fix is in
+`features.py` (every feature is saturated to ±30) plus a Huber value loss, return clipping, and a
+non-finite-gradient skip in `ppo.py`. The feature change bumped `FEATURE_VERSION`, so pre-existing
+checkpoints are rejected on load and must be retrained.
 
 ## Determinism, snapshots & restore
 

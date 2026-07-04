@@ -28,3 +28,6 @@ runs/
 
 # Local TUI agent config (machine-specific paths); commit lts2.agent.example.json instead
 lts2.agent.json
+
+# Derived card-metadata dump (from sts2.dll via --dump-cards)
+python/lts2_agent/data/
