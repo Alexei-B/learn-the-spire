@@ -267,13 +267,13 @@ deck and fight).
       unordered multiset** — card tokens are sorted by content so shuffle order can't leak (unit-tested).
       `TOKENIZER_VERSION` (=1) + the four catalog signatures are exposed for corpus/checkpoint/protocol
       stamping (contract 6). `coverage_check`/`detokenize` + the `--check` CLI ran over the corpus with
-      **0 lost fields and 0 round-trip mismatches** across 160k states (80k records; the full-1M pass is
-      consistent). Waivers (in `tokens.WAIVERS`, reasons in code): non-combat room views
+      **0 lost fields and 0 round-trip mismatches** across 160k states (80k-record `--check` pass).
+      Waivers (in `tokens.WAIVERS`, reasons in code): non-combat room views
       (map/rewards/bundleChoice/event/shop/restSite/treasure/crystalSphere), `seed`/`netId`, run `deck`,
       static `poolId`; monster/character/orb/enchant/affliction ids + granted keywords are covered-lossy
-      (hashed). **Padded dims (measured max → cap):** cards 60→200, creatures 8→12, powers 24→96,
-      intents 7→32, orbs 8→16, relics 8→24, potions 5→8. README "Tokenizer" section documents the
-      contract. (2.2 PPO-on-tokens sanity pass not yet run.)
+      (hashed). **Padded dims (measured max over the full 1.0M-record corpus → cap):** cards 82→200,
+      creatures 8→12, powers 24→96, intents 7→32, orbs 9→16, relics 8→24, potions 5→8. README
+      "Tokenizer" section documents the contract. (2.2 PPO-on-tokens sanity pass not yet run.)
 - [ ] **2.2 PPO-on-tokens sanity pass** (optional but recommended): attention encoder under the
       existing PPO head, trained on the realistic regime. Banks the model-free upgrade
       (design §6.A) and shakes out the tokenizer end to end before anything depends on it.
