@@ -25,21 +25,24 @@ each emitted a second time tagged ``{"act": ...}`` for the dashboard's group-by.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import os
 import random
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
 
 from . import tokens
 from .metrics import MetricsWriter
+from .wm import cache as C
 from .wm import data as D
 from .wm import model as M
 from .wm import report
+from .wm import spec as S
 
 
 def _lr_lambda(warmup: int, total: int):
@@ -52,7 +55,7 @@ def _lr_lambda(warmup: int, total: int):
 
 
 @torch.no_grad()
-def run_val(model, sample_stacked, sample_acts, batch_size, device):
+def run_val(model, sample_stacked, sample_acts, batch_size, device, card_ce_weights=None):
     """Full pass over the fixed val sample -> (overall metrics, by-act metrics, mean losses)."""
     model.eval()
     accum: Dict[str, Any] = {}
@@ -60,7 +63,7 @@ def run_val(model, sample_stacked, sample_acts, batch_size, device):
     nb = 0
     for batch, acts in D.iter_fixed_batches(sample_stacked, sample_acts, batch_size, device):
         z, out = model(batch)
-        losses = M.compute_losses(batch, out)
+        losses = M.compute_losses(batch, out, card_ce_weights=card_ce_weights)
         for k in loss_sums:
             loss_sums[k] += float(losses[k])
         nb += 1
@@ -70,6 +73,61 @@ def run_val(model, sample_stacked, sample_acts, batch_size, device):
     mean_losses = {k: v / max(1, nb) for k, v in loss_sums.items()}
     model.train()
     return overall, by_act, mean_losses
+
+
+def _card_index_counts(args, n_states: int) -> np.ndarray:
+    """Occurrence counts of the card-identity index (card categorical column 0) over PRESENT card slots,
+    scanned from the train split until ``n_states`` states are seen. Uses the pre-tokenized cache when
+    present (fast), else featurizes the corpus stream (skipping the same failures the trainer does)."""
+    n_cards = S.TYPE_BY_NAME["card"].cat_cols[0][1]
+    counts = np.zeros(n_cards, dtype=np.int64)
+    seen = 0
+    cache_dir = args.cache or None
+    manifest = C.resolve_manifest(cache_dir)
+    if manifest is not None:
+        for path in C.shard_files(cache_dir, "train"):
+            stacked, acts = C.load_shard(path)
+            idx = stacked["card_idx"][..., 0]                       # [n, slots]
+            mask = stacked["card_mask"].astype(bool)                # [n, slots]
+            counts += np.bincount(idx[mask].astype(np.int64), minlength=n_cards)[:n_cards]
+            seen += len(acts)
+            if seen >= n_states:
+                break
+    else:
+        for state, _act in D.iter_states(args.corpus, "train"):
+            f = D._featurize_safe(state)
+            if f is None:
+                continue
+            idx = f["card_idx"][:, 0]
+            mask = f["card_mask"].astype(bool)
+            counts += np.bincount(idx[mask].astype(np.int64), minlength=n_cards)[:n_cards]
+            seen += 1
+            if seen >= n_states:
+                break
+    print(f"[train_encdec] card-CE: scanned {seen:,} states, {int(counts.sum()):,} card slots, "
+          f"{int((counts > 0).sum())}/{n_cards} card ids seen", flush=True)
+    return counts
+
+
+def _card_ce_weights(args, device) -> torch.Tensor:
+    """The class-balanced card-CE weight vector (1/sqrt(freq), freq-weighted-mean-normalized to 1),
+    cached to disk keyed by the tokenizer signature + scan size so restarts are cheap."""
+    sig = tokens.tokenizer_signature()
+    n = args.card_ce_states
+    key = hashlib.sha1(f"{sig}|N={n}".encode()).hexdigest()[:16]
+    cache_dir = args.card_ce_cache or (os.path.dirname(args.ckpt) or ".")
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, f"card_ce_w_{key}.npy")
+    if os.path.exists(path):
+        w = np.load(path)
+        print(f"[train_encdec] card-CE: loaded cached weights {path} (shape {w.shape})", flush=True)
+    else:
+        counts = _card_index_counts(args, n)
+        w = M.card_ce_weights_from_counts(counts)
+        np.save(path, w)
+        print(f"[train_encdec] card-CE: computed + cached weights -> {path} "
+              f"(min {w.min():.3f}, max {w.max():.3f})", flush=True)
+    return torch.tensor(w, device=device, dtype=torch.float32)
 
 
 def main() -> int:
@@ -109,6 +167,26 @@ def main() -> int:
                          "directly as decoder memory (no flatten/expand bottleneck).")
     ap.add_argument("--latent-k", type=int, default=16,
                     help="tokens-mode only: number of latent tokens kept by the Perceiver pool.")
+    # Loss/recipe probe flags (roadmap 3.1 experiment series — each default OFF, byte-identical when off,
+    # toggled independently for one-change-at-a-time 5k-step probes vs the tokens control curve).
+    ap.add_argument("--num-head", default="mse", choices=["mse", "twohot"],
+                    help="numeric decode: 'mse' (default) regresses the symlog block; 'twohot' is "
+                         "DreamerV3 two-hot classification over a 64-bin symlog grid per numeric column "
+                         "(CE loss; expectation-decoded, so reconstruction/report are unchanged). "
+                         "Stamped in checkpoint meta; --resume rejects a mismatch.")
+    ap.add_argument("--card-ce", default="plain", choices=["plain", "balanced"],
+                    help="card-identity (card column 0) cross-entropy weighting: 'plain' (default) or "
+                         "'balanced' = per-class 1/sqrt(freq), computed once from the corpus card-index "
+                         "distribution and cached to disk by tokenizer signature. Other columns unchanged.")
+    ap.add_argument("--card-ce-states", type=int, default=200000,
+                    help="states scanned from the train split to estimate the card-index distribution "
+                         "for --card-ce balanced.")
+    ap.add_argument("--card-ce-cache", default="",
+                    help="dir for the cached card-CE weight vector (default: the checkpoint's dir).")
+    ap.add_argument("--ema", type=float, default=0.0,
+                    help="EMA decay for a weight moving average (e.g. 0.999); 0 = off (default). Val "
+                         "passes evaluate the EMA weights; checkpoints save raw + EMA; --resume restores "
+                         "both.")
     # Plumbing.
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -144,13 +222,14 @@ def main() -> int:
                            dec_layers=args.dec_layers, n_pool_layers=args.pool_layers,
                            n_latents=args.latents, z_dim=args.z_dim, simnorm_group=args.simnorm_group,
                            cat_dim=args.cat_dim, n_mem=args.n_mem, latent_mode=args.latent_mode,
-                           latent_k=args.latent_k).to(device)
+                           latent_k=args.latent_k, num_head=args.num_head).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
 
     start_step = 0
     if args.resume and args.ckpt and os.path.exists(args.ckpt):
-        model, meta = M.load_checkpoint(args.ckpt, device, expect_latent_mode=args.latent_mode)
+        model, meta = M.load_checkpoint(args.ckpt, device, expect_latent_mode=args.latent_mode,
+                                        expect_num_head=args.num_head)
         model = model.to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
@@ -164,6 +243,29 @@ def main() -> int:
             for _ in range(start_step):
                 sched.step()
         print(f"[train_encdec] resumed from {args.ckpt} at step {start_step}")
+
+    # Class-balanced card CE (default OFF). Computed/cached once, then passed to every loss call.
+    card_ce_weights: Optional[torch.Tensor] = None
+    if args.card_ce == "balanced":
+        card_ce_weights = _card_ce_weights(args, device)
+
+    # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.
+    ema: Optional[M.EMA] = None
+    if args.ema and args.ema > 0.0:
+        ema = M.EMA(model, args.ema)
+        if args.resume and args.ckpt and os.path.exists(args.ckpt + ".ema"):
+            ema.load_state_dict(torch.load(args.ckpt + ".ema", map_location=device))
+            print(f"[train_encdec] restored EMA shadow (decay={args.ema})", flush=True)
+        else:
+            print(f"[train_encdec] EMA enabled (decay={args.ema})", flush=True)
+
+    def _ckpt_extra() -> Optional[Dict[str, Any]]:
+        extra: Dict[str, Any] = {}
+        if args.card_ce != "plain":
+            extra["card_ce"] = args.card_ce
+        if ema is not None:
+            extra["ema_decay"] = args.ema
+        return extra or None
 
     n_params = M.param_count(model)
     latent_desc = (f"tokens[{args.latent_k}x{args.d_model}]" if args.latent_mode == "tokens"
@@ -202,12 +304,14 @@ def main() -> int:
             batch, _acts = next(stream)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                 z, out = model(batch)
-                losses = M.compute_losses(batch, out)
+                losses = M.compute_losses(batch, out, card_ce_weights=card_ce_weights)
             opt.zero_grad(set_to_none=True)
             losses["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             sched.step()
+            if ema is not None:
+                ema.update(model)
 
             for k in win:
                 win[k] += float(losses[k])
@@ -233,7 +337,14 @@ def main() -> int:
                 win_t0 = time.perf_counter()
 
             if args.val_every > 0 and (step % args.val_every == 0 or step == start_step + 1):
-                overall, by_act, vloss = run_val(model, val_stacked, val_acts, args.val_batch, device)
+                # Val evaluates the EMA weights when EMA is on (swap in/out around the pass).
+                if ema is not None:
+                    ema.store(model)
+                    ema.copy_to(model)
+                overall, by_act, vloss = run_val(model, val_stacked, val_acts, args.val_batch, device,
+                                                 card_ce_weights=card_ce_weights)
+                if ema is not None:
+                    ema.restore(model)
                 print(f"         VAL[{len(val_acts)}] loss={vloss['loss']:.3f} "
                       f"card_id={overall['card_id_top1']:.3f} zone={overall['card_zone_acc']:.3f} "
                       f"pw_id={overall['power_id_top1']:.3f} hp_mae={overall['creature_hp_mae']:.2f} "
@@ -250,10 +361,12 @@ def main() -> int:
                 win_t0 = time.perf_counter()  # don't count val time against sps
 
             if args.ckpt and step % args.ckpt_every == 0:
-                M.save_checkpoint(args.ckpt, model, step=step, optimizer=opt)
+                M.save_checkpoint(args.ckpt, model, step=step, optimizer=opt, extra=_ckpt_extra(),
+                                  ema_state=ema.state_dict() if ema is not None else None)
     finally:
         if args.ckpt:
-            M.save_checkpoint(args.ckpt, model, step=step, optimizer=opt)
+            M.save_checkpoint(args.ckpt, model, step=step, optimizer=opt, extra=_ckpt_extra(),
+                              ema_state=ema.state_dict() if ema is not None else None)
         mw.close()
     return 0
 

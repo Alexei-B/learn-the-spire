@@ -458,6 +458,24 @@ Pick `flat` unless you are running the A/B; the checkpoint meta stamps `latent_m
 rejects a mode mismatch loudly (so `--resume` cannot cross a flat/tokens boundary). Which mode wins the
 CP4 latent-shape decision is settled by reconstruction quality at equal training budget.
 
+**Loss/recipe probe flags (3.1 experiment series).** Three independent switches feed the one-change-at-a-
+time 5k-step probes (each pairs with `--halt-step` to share the long cosine schedule); every one defaults
+OFF and is byte-identical to the tokens control when off. **`--num-head twohot`** (default `mse`) replaces
+the numeric regression heads with DreamerV3-style two-hot classification: each numeric column is predicted
+over a fixed 64-bin grid spanning the symlog clamp range `[-symlog(NUM_CLIP), +symlog(NUM_CLIP)]`, trained
+with cross-entropy against the two-hot (linear-interpolation) target and decoded as the softmax expectation
+over bins — so `reconstruct_arrays`/report consume the decoded symlog value exactly as before; the recipe is
+stamped in the checkpoint meta and `--resume` rejects an mse/twohot mismatch. **`--card-ce balanced`**
+(default `plain`) class-frequency-balances the cross-entropy of the card-identity column *only* (card
+categorical column 0): each class is weighted `1/sqrt(freq)` from the corpus card-index distribution
+(scanned once from `--card-ce-states` train states, cached to `card_ce_w_<sig>.npy` keyed by tokenizer
+signature so restarts are cheap), normalized so the frequency-weighted mean weight is 1 (loss scale
+unchanged); all other columns are untouched. **`--ema DECAY`** (default `0` = off, e.g. `0.999`) maintains
+an exponential moving average of the weights updated every step; **val passes evaluate the EMA weights**
+(swapped in and back out around each pass) and checkpoints save the EMA shadow in a `.pt.ema` sidecar
+(`ema_decay` in meta) that `--resume` restores alongside the raw state. The flags compose (e.g.
+`--num-head twohot --ema 0.999`).
+
 ```sh
 # Train (streams the train split; per-field reconstruction metrics stream live to the dashboard).
 python -m lts2_agent.train_encdec --steps 50000 --batch 384 --val-every 500 \

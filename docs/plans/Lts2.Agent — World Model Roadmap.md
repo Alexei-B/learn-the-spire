@@ -354,7 +354,10 @@ fixed-seed eval (expectation: ≥ baseline).
       `--halt-step` keeps the shared cosine-to-50k schedule): count-grouped card tokens (tokenizer v2),
       decoder-heavy scale, LR sweep + EMA, two-hot numeric heads, class-balanced card CE. Cross-tokenizer
       comparisons use `eval.action_snr` (footprint re-measured per tokenizer version), not raw
-      `state_dist`.
+      `state_dist`. **Probe flags shipped (default OFF, byte-identical when off, compose independently):
+      `--num-head twohot` (64-bin symlog two-hot numeric heads), `--card-ce balanced` (1/sqrt(freq)
+      card-identity CE, signature-cached), `--ema DECAY` (weight EMA; val + `.pt.ema` checkpoints);
+      tests in `tests/test_wm_encdec.py`.**
 - [x] **3.2 Decoded-state pretty-printer + diff view** — _done._ `lts2_agent.statefmt`:
       `format_state` renders any **canonical dict** (`tokens.detokenize` output — a decoder's output, or
       `detokenize(tokenize(raw wire))`) as compact text (player/Osty/enemies with hp/block/powers/intents,

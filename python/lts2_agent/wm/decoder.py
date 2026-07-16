@@ -34,14 +34,71 @@ from .. import tokens
 from . import spec as S
 
 
-class _TypeHeads(nn.Module):
-    """Per-slot heads for one token type: categorical columns, numeric block, presence, keywords."""
+# ==================================================================================================
+# Two-hot numeric encoding (roadmap 3.1 probe: --num-head twohot).
+#
+# DreamerV3-style two-hot classification over a fixed bin grid in *symlog space* (the tokenizer already
+# emits symlog values, so the grid lives in the same space the MSE head regresses). NUM_BINS bins span
+# the symlog clamp range [-symlog(NUM_CLIP), +symlog(NUM_CLIP)] symmetrically (NUM_CLIP is the
+# tokenizer's exact-round-trip magnitude bound). A scalar value is encoded as the linear-interpolation
+# weights on its two adjacent bins; the decode is the expectation over bins (softmax(logits)·centers),
+# which yields a single symlog value that the existing symexp+round downstream (reconstruct_arrays /
+# report) consumes unchanged — so the head swap is invisible to everything but the loss.
+# ==================================================================================================
 
-    def __init__(self, tspec: S.TypeSpec, d_model: int):
+NUM_BINS = 64
+_SYMLOG_LIMIT = float(np.log1p(tokens.NUM_CLIP))   # symlog(NUM_CLIP) ~= 11.51
+
+
+def symlog_bins(num_bins: int = NUM_BINS, device=None, dtype=torch.float32) -> torch.Tensor:
+    """The fixed bin-center grid (ascending) spanning the symlog clamp range."""
+    return torch.linspace(-_SYMLOG_LIMIT, _SYMLOG_LIMIT, num_bins, device=device, dtype=dtype)
+
+
+def twohot_targets(values: torch.Tensor, bins: torch.Tensor) -> torch.Tensor:
+    """Two-hot target distribution for ``values`` (``[...]`` symlog scalars) over ``bins`` (``[K]``):
+    ``[..., K]`` with the two adjacent bins carrying the linear-interpolation weights. By construction
+    ``twohot_expectation(twohot_targets(v)) == v`` for any ``v`` inside the grid (round-trip exact)."""
+    K = bins.shape[0]
+    v = values.clamp(bins[0], bins[-1])
+    above = torch.searchsorted(bins, v, right=True).clamp(1, K - 1)   # [...], in [1, K-1]
+    below = above - 1
+    b_below = bins[below]
+    b_above = bins[above]
+    w_above = (v - b_below) / (b_above - b_below)
+    w_below = 1.0 - w_above
+    target = torch.zeros(*v.shape, K, device=v.device, dtype=v.dtype)
+    target.scatter_(-1, below.unsqueeze(-1), w_below.unsqueeze(-1))
+    target.scatter_add_(-1, above.unsqueeze(-1), w_above.unsqueeze(-1))
+    return target
+
+
+def twohot_expectation(probs: torch.Tensor, bins: torch.Tensor) -> torch.Tensor:
+    """Expected symlog value under ``probs`` (``[..., K]``) over ``bins`` (``[K]``) -> ``[...]``."""
+    return (probs * bins).sum(dim=-1)
+
+
+class _TypeHeads(nn.Module):
+    """Per-slot heads for one token type: categorical columns, numeric block, presence, keywords.
+
+    ``num_head`` selects the numeric decode: ``"mse"`` (default) regresses the symlog block directly
+    (a ``Linear -> num_width``); ``"twohot"`` classifies each numeric column over ``num_bins`` symlog
+    bins (a ``Linear -> num_width*num_bins``) and exposes both the classification ``num_logits`` (for
+    the CE loss) and the expectation-decoded ``num`` (identical shape to the MSE head, so downstream is
+    unchanged)."""
+
+    def __init__(self, tspec: S.TypeSpec, d_model: int, num_head: str = "mse",
+                 num_bins: int = NUM_BINS):
         super().__init__()
         self.spec = tspec
+        self.num_mode = num_head
+        self.num_bins = num_bins
         self.cat_heads = nn.ModuleList(nn.Linear(d_model, v) for _, v in tspec.cat_cols)
-        self.num_head = nn.Linear(d_model, tspec.num_width) if tspec.num_width else None
+        if tspec.num_width:
+            out_dim = tspec.num_width * num_bins if num_head == "twohot" else tspec.num_width
+            self.num_head = nn.Linear(d_model, out_dim)
+        else:
+            self.num_head = None
         self.presence_head = nn.Linear(d_model, 1) if tspec.mask_key else None
         self.kw_head = nn.Linear(d_model, tokens.KW_BUCKETS) if tspec.has_kw else None
 
@@ -49,7 +106,15 @@ class _TypeHeads(nn.Module):
         out: Dict[str, torch.Tensor] = {}
         out["cat"] = [head(h) for head in self.cat_heads]           # list of [B, slots, vocab]
         if self.num_head is not None:
-            out["num"] = self.num_head(h)                            # [B, slots, num_width]
+            raw = self.num_head(h)
+            if self.num_mode == "twohot":
+                w = self.spec.num_width
+                logits = raw.reshape(*raw.shape[:-1], w, self.num_bins)   # [B, slots, w, bins]
+                bins = symlog_bins(self.num_bins, device=logits.device, dtype=logits.dtype)
+                out["num_logits"] = logits
+                out["num"] = twohot_expectation(logits.softmax(dim=-1), bins)  # [B, slots, w]
+            else:
+                out["num"] = raw                                     # [B, slots, num_width]
         if self.presence_head is not None:
             out["presence"] = self.presence_head(h).squeeze(-1)      # [B, slots]
         if self.kw_head is not None:
@@ -59,10 +124,13 @@ class _TypeHeads(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, z_dim: int = 512, d_model: int = 256, n_heads: int = 4, n_layers: int = 3,
-                 n_mem: int = 16, ff_mult: int = 2, latent_mode: str = "flat", latent_k: int = 16):
+                 n_mem: int = 16, ff_mult: int = 2, latent_mode: str = "flat", latent_k: int = 16,
+                 num_head: str = "mse"):
         super().__init__()
         if latent_mode not in ("flat", "tokens"):
             raise ValueError(f"latent_mode must be 'flat' or 'tokens', got {latent_mode!r}")
+        if num_head not in ("mse", "twohot"):
+            raise ValueError(f"num_head must be 'mse' or 'twohot', got {num_head!r}")
         self.d_model = d_model
         self.n_mem = n_mem
         self.latent_mode = latent_mode
@@ -85,7 +153,8 @@ class Decoder(nn.Module):
         layer = nn.TransformerDecoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
                                            batch_first=True, norm_first=True, activation="gelu")
         self.trunk = nn.TransformerDecoder(layer, n_layers)
-        self.heads = nn.ModuleDict({t.name: _TypeHeads(t, d_model) for t in S.TYPES})
+        self.heads = nn.ModuleDict({t.name: _TypeHeads(t, d_model, num_head=num_head)
+                                    for t in S.TYPES})
 
     def forward(self, z: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
         B = z.shape[0]

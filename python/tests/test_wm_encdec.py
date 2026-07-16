@@ -14,7 +14,8 @@ from lts2_agent import tokens
 from lts2_agent.wm import model as M
 from lts2_agent.wm import report
 from lts2_agent.wm import spec as S
-from lts2_agent.wm.decoder import reconstruct_arrays
+from lts2_agent.wm.decoder import (NUM_BINS, reconstruct_arrays, symlog_bins, twohot_expectation,
+                                   twohot_targets)
 from lts2_agent.wm.encoder import simnorm
 
 
@@ -65,6 +66,12 @@ def _small_tokens_model(latent_k=6):
     return M.WorldModelAE(d_model=64, n_heads=2, enc_layers=2, dec_layers=2, n_pool_layers=1,
                           n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8,
                           latent_mode="tokens", latent_k=latent_k)
+
+
+def _twohot_model():
+    return M.WorldModelAE(d_model=64, n_heads=2, enc_layers=2, dec_layers=2, n_pool_layers=1,
+                          n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8,
+                          num_head="twohot")
 
 
 def test_forward_shapes():
@@ -255,3 +262,182 @@ def test_checkpoint_latent_mode_mismatch_rejected(tmp_path):
     # Matching mode (or no expectation) loads fine.
     _loaded, meta = M.load_checkpoint(path, "cpu", expect_latent_mode="flat")
     assert meta["latent_mode"] == "flat"
+
+
+# ==================================================================================================
+# Probe flag 1: two-hot numeric head (--num-head twohot).
+# ==================================================================================================
+
+def test_twohot_target_roundtrip_and_shape():
+    bins = symlog_bins(NUM_BINS)
+    # Synthetic symlog values (incl. symlog'd integers), all inside the grid range.
+    vals = torch.tensor([[0.0, 1.234, -3.5, 5.0],
+                         [tokens.symlog(7), tokens.symlog(42), 0.1, -0.1]], dtype=torch.float32)
+    probs = twohot_targets(vals, bins)
+    assert probs.shape == (2, 4, NUM_BINS)
+    # A proper two-hot: non-negative, sums to 1, at most two nonzero bins.
+    assert torch.all(probs >= 0)
+    assert torch.allclose(probs.sum(-1), torch.ones(2, 4), atol=1e-6)
+    assert int((probs > 1e-8).sum(-1).max()) <= 2
+    # Expectation over the bins reconstructs the original value exactly (linear-interp round-trip).
+    rt = twohot_expectation(probs, bins)
+    assert torch.allclose(rt, vals, atol=1e-4)
+
+
+def test_twohot_head_shapes_and_downstream_handoff():
+    batch = _batch([_state(), _state(n_hand=3, n_enemies=2)])
+    model = _twohot_model()
+    z, out = model(batch)
+    for t in S.TYPES:
+        o = out[t.name]
+        if t.num_width:
+            # Decoded value has the SAME shape/role as the MSE head (downstream unchanged) ...
+            assert o["num"].shape == (2, t.max_slots, t.num_width)
+            # ... plus the per-column bin logits used only by the CE loss.
+            assert o["num_logits"].shape == (2, t.max_slots, t.num_width, NUM_BINS)
+    # The decoded numerics feed report_pairs + reconstruct_arrays + detokenize identically to mse mode.
+    pairs = report.report_pairs(batch, out)
+    assert set(pairs) == set(report.METRIC_NAMES)
+    canon = tokens.detokenize(reconstruct_arrays(out)[0])
+    assert set(canon) == {"global", "pending", "cards", "creatures", "orbs", "relics", "potions"}
+
+
+def test_twohot_loss_trains():
+    torch.manual_seed(0)
+    states = [_state(n_hand=i % 4 + 1, n_enemies=i % 2 + 1) for i in range(6)]
+    batch = _batch(states)
+    model = _twohot_model()
+    opt = torch.optim.AdamW(model.parameters(), lr=2e-3)
+    first = last = None
+    for i in range(40):
+        _z, out = model(batch)
+        assert "num_logits" in out["global"]      # two-hot path active
+        losses = M.compute_losses(batch, out)
+        opt.zero_grad()
+        losses["loss"].backward()
+        opt.step()
+        if i == 0:
+            first = float(losses["loss"])
+        last = float(losses["loss"])
+    assert last < first, f"twohot loss did not drop: {first:.3f} -> {last:.3f}"
+
+
+# ==================================================================================================
+# Probe flag 2: class-balanced card CE (--card-ce balanced).
+# ==================================================================================================
+
+def test_card_ce_weights_shape_and_normalization():
+    n = S.TYPE_BY_NAME["card"].cat_cols[0][1]
+    rng = np.random.default_rng(0)
+    counts = rng.integers(0, 1000, size=n).astype(np.int64)
+    counts[0] = 0  # an unseen class must still get a finite, bounded weight
+    w = M.card_ce_weights_from_counts(counts)
+    assert w.shape == (n,)
+    assert w.dtype == np.float32
+    assert np.all(np.isfinite(w)) and np.all(w > 0)
+    # Documented normalization: the FREQUENCY-weighted mean weight is 1 (loss scale ~ unchanged).
+    fw_mean = float((counts * w).sum() / counts.sum())
+    assert abs(fw_mean - 1.0) < 1e-4
+    # Rare classes weigh more than common ones (1/sqrt(freq)).
+    assert w[int(counts.argmin())] > w[int(counts.argmax())]
+
+
+def test_card_ce_plain_mode_unchanged_and_weight_only_hits_card_col():
+    batch = _batch([_state(n_hand=3), _state(n_hand=2, n_enemies=2)])
+    torch.manual_seed(1)
+    model = _small_model()
+    _z, out = model(batch)
+    base = M.compute_losses(batch, out)
+    # Passing weights=None is byte-identical to the default (plain) call.
+    same = M.compute_losses(batch, out, card_ce_weights=None)
+    assert float(same["loss"]) == float(base["loss"])
+    assert float(same["loss_categorical"]) == float(base["loss_categorical"])
+    # A non-uniform weight vector changes the categorical loss (via the card-id column only).
+    n = S.TYPE_BY_NAME["card"].cat_cols[0][1]
+    torch.manual_seed(2)
+    w = torch.rand(n) + 0.5
+    weighted = M.compute_losses(batch, out, card_ce_weights=w)
+    assert float(weighted["loss_categorical"]) != float(base["loss_categorical"])
+    # Numeric/presence terms are untouched by the card weighting.
+    assert float(weighted["loss_numeric"]) == float(base["loss_numeric"])
+    assert float(weighted["loss_presence"]) == float(base["loss_presence"])
+
+
+# ==================================================================================================
+# Probe flag 3: weight EMA (--ema DECAY).
+# ==================================================================================================
+
+def test_ema_update_math_and_val_swap():
+    torch.manual_seed(0)
+    model = _small_model()
+    ema = M.EMA(model, decay=0.9)
+    name = next(n for n, p in model.named_parameters() if torch.is_floating_point(p))
+    shadow_old = ema.shadow[name].clone()
+    assert torch.allclose(shadow_old, model.state_dict()[name])   # shadow starts == live weights
+    # Perturb the live weights, then step the EMA.
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p))
+    new = model.state_dict()[name].clone()
+    ema.update(model)
+    assert torch.allclose(ema.shadow[name], 0.9 * shadow_old + 0.1 * new, atol=1e-6)
+    # store -> copy_to swaps the EMA weights into the live model (what the val pass evaluates) ...
+    ema.store(model)
+    ema.copy_to(model)
+    assert torch.allclose(model.state_dict()[name], 0.9 * shadow_old + 0.1 * new, atol=1e-6)
+    # ... and restore puts the training weights back untouched.
+    ema.restore(model)
+    assert torch.equal(model.state_dict()[name], new)
+
+
+def test_ema_checkpoint_roundtrip(tmp_path):
+    model = _small_model()
+    ema = M.EMA(model, decay=0.5)
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p))
+    ema.update(model)
+    path = str(tmp_path / "wm_ema.pt")
+    M.save_checkpoint(path, model, step=3, extra={"ema_decay": 0.5}, ema_state=ema.state_dict())
+    import os
+    assert os.path.exists(path + ".ema")
+    loaded, meta = M.load_checkpoint(path, "cpu")
+    assert meta["ema_decay"] == 0.5
+    ema2 = M.EMA(loaded, decay=0.5)
+    ema2.load_state_dict(torch.load(path + ".ema", map_location="cpu"))
+    name = next(n for n, p in model.named_parameters() if torch.is_floating_point(p))
+    assert torch.allclose(ema2.shadow[name], ema.shadow[name], atol=1e-6)
+
+
+# ==================================================================================================
+# Regression guard: every flag OFF => byte-identical model + loss to the pre-flag baseline.
+# ==================================================================================================
+
+def test_num_head_default_off_is_mse_and_state_dict_identical():
+    torch.manual_seed(0)
+    default = _small_model()                                   # no num_head arg -> default
+    torch.manual_seed(0)
+    explicit = M.WorldModelAE(d_model=64, n_heads=2, enc_layers=2, dec_layers=2, n_pool_layers=1,
+                              n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8,
+                              num_head="mse")
+    assert default.cfg["num_head"] == "mse"
+    ka, kb = default.state_dict(), explicit.state_dict()
+    assert ka.keys() == kb.keys()                              # no twohot-only tensors leak in
+    for k in ka:
+        assert ka[k].shape == kb[k].shape and torch.equal(ka[k], kb[k])
+    # And the mse forward never produces bin logits.
+    _z, out = default(_batch([_state()]))
+    assert "num_logits" not in out["global"]
+    assert "num" in out["global"]
+
+
+def test_all_flags_off_loss_matches_baseline():
+    # With num_head=mse and no card weights (the defaults), compute_losses is the base loss verbatim.
+    batch = _batch([_state(), _state(n_hand=3, n_enemies=2)])
+    torch.manual_seed(3)
+    model = _small_model()
+    _z, out = model(batch)
+    base = M.compute_losses(batch, out)
+    again = M.compute_losses(batch, out, card_ce_weights=None)
+    for k in base:
+        assert float(base[k]) == float(again[k])
