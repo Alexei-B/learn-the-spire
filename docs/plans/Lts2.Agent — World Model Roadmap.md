@@ -1,0 +1,299 @@
+# Lts2.Agent — World-Model Roadmap (implementation backlog)
+
+Status: **backlog — nothing started.** This is the implementation plan for
+`docs/design/Lts2.Agent — World Model.md` (read that first; this doc assumes its vocabulary:
+tokenizer, encoder/decoder, predictor, afterstate/chance step, value/policy, planner).
+
+Scope: container-level architecture, the contracts between containers, milestone ordering, and the
+QA process — **not** class/file-level design. The "how" inside each container is the implementor's
+to decide per item, following the repo's usual loop (read docs → grep `refsrc/` for game APIs →
+implement one shippable slice → seeded tests → update docs → commit).
+
+Conventions here match the harness roadmap: work top-to-bottom, the next task is the next
+unchecked item; flip items to _done_ with a note when they land; keep this doc honest.
+
+---
+
+## Goals (from the product owner, condensed)
+
+1. **Model:** implement the world-model architecture in the design doc's phases; decide the open
+   analysis questions (flat vs token latents, codebook shape, …) empirically, not up front.
+2. **TUI as agent debugger:** the TUI's job for this effort is *manual analysis of agent
+   behaviour* — show the full action ranking (not just the Tab pick) and, once the predictor
+   exists, each action's predicted next state; make failure scenarios findable by hand.
+3. **Precision training monitoring:** a local web dashboard over live + historical training runs.
+   Per-phase metrics (reconstruction accuracy, prediction accuracy, value calibration) alongside
+   win %/HP-lost, with **breakdowns by act and by monster/elite/boss**. Must work in real time for
+   any training run, including ones Claude launches in the background.
+4. **Realistic training distribution:** keep broad-random states for *model* (encoder/predictor)
+   training, but train the *decision* components on decks resembling real act-1 play: the
+   character's starter deck with 0–3 random removals and 0–3 random additions, additions weighted
+   **60% own-character pool / 25% colorless / 12% curses / 3% off-character**, never status cards.
+   Explicitly **no** scripted fights or fixed hands in training — probe/closed-eval sets are
+   evaluation-only, excluded from all training data. Randomized inputs are the overfitting guard.
+
+## Guiding principles (the ordering logic)
+
+- **Tooling before model.** The dashboard, the metric breakdowns, and the TUI ranking view all
+  work against the *existing* PPO stack (the decision protocol already carries per-option
+  `score`/`rationale`; the trainer already knows act/room per outcome). Building them first (M0)
+  means they are debugged against a known system before the new model needs them — and every
+  later milestone lands with its instruments already on.
+- **Everything observable.** Rule: a learning component may not start training until its metrics
+  are flowing to the dashboard. No more judging runs by stdout.
+- **Two data regimes, one pipeline.** Scenario generation gains a `deckSpec` (broad-random |
+  realistic | explicit). Model-corpus collection uses mostly broad; RL phases use mostly
+  realistic; both flow through the same collector, corpus format, and metrics.
+- **Seeded determinism end to end.** Same seed + same spec ⇒ same deck, same fight, same corpus
+  shard. Train/val/test splits by seed-hash so leakage is structurally impossible.
+- **Manual checkpoints (CP1–CP7).** Each milestone ends with a hands-on review gate: a concrete
+  thing to run, look at, and judge before the next milestone starts.
+
+## Container view (C4-ish)
+
+```
+┌───────────────────────────── C# (.NET 9) ─────────────────────────────┐
+│                                                                       │
+│  Lts2.Harness ──────────── Lts2.AgentHost                             │
+│  (game logic, GameHost,    (env server: reset/step/reset_combat;      │
+│   CombatScenario)          + NEW deckSpec scenario gen;               │
+│        │                   + catalog dumps: cards, NEW powers)        │
+│        │                          ▲ env protocol (JSONL/stdio)        │
+│  Lts2.Tui ── Lts2.Agent ──────────┼───────────────────────────────┐   │
+│  (debug views:  (ProcessDecision  │                               │   │
+│   NEW ranking    Engine, protocol │                               │   │
+│   panel, NEW     v1 → NEW v2)     │                               │   │
+│   prediction     │ decision protocol (JSONL/stdio)                │   │
+│   inspector)     ▼                │                               │   │
+└──────────────────┼────────────────┼───────────────────────────────┼───┘
+                   │                │                               │
+┌──────────────────┼──── Python ────┼───────────────────────────────┼───┐
+│  decision_server (serves policy   │   collectors (broad/realistic │   │
+│   + NEW explanations/predictions) │    regimes, mixed policies) ──┘   │
+│        ▲                          │        │                          │
+│        │                          │        ▼                          │
+│  world-model stack: tokenizer → encoder/decoder → predictor →         │
+│   value/policy → planner   (trainers per phase, checkpoints)          │
+│        │                  ▲                                           │
+│        │                  │ reads                                     │
+│        │           corpus store (sharded transitions, split by seed)  │
+│        │           oracle prober (replay-based ground truth, eval-only│
+│        ▼                                                              │
+│  metrics events (JSONL per run) ──► dashboard web app (separate       │
+│                                     process; run list, live charts,   │
+│                                     tag breakdowns, run compare)      │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+Container responsibilities:
+
+- **Lts2.AgentHost (C#)** — unchanged role (environment server), extended with: `deckSpec`
+  scenario generation (single source of truth for deck construction, seeded), a power catalog
+  dump, and whatever card-pool metadata (`character pool / colorless / curse`) the weighted
+  sampler needs in `cards.json`.
+- **Lts2.Agent + Lts2.Tui (C#)** — decision protocol v2 (backward compatible) and the two debug
+  views. The TUI stays a *consumer* of agent output; no model code in C#.
+- **Python collectors + corpus store** — turn env rollouts (any policy, any regime) into
+  append-only transition shards with scenario metadata; own the train/val/test split discipline.
+- **Python world-model stack** — the design doc's modules, one trainer per phase, shared
+  checkpoint/versioning conventions (tokenizer version supersedes `FEATURE_VERSION` as the
+  parity contract).
+- **Metrics store + dashboard** — trainer writes JSONL events; the dashboard is a separate local
+  web process that only reads files. That decoupling is what makes "watch a run Claude started"
+  work with zero coordination, live or after the fact.
+- **Oracle prober** — replay-based ground truth (fixed seeds, replayed prefixes) for predictor
+  scoring and planner regret. Evaluation-only by construction.
+
+## Contracts (the API design that must be agreed before the milestones that use it)
+
+**1. Metrics event stream** (M0). One JSONL file per run under `checkpoints/runs/<run_id>/`:
+`events.jsonl` — `{ts, phase, step, name, value, tags?}` where `tags` carries at least
+`{act, room, character}` on outcome events — plus `manifest.json` (full CLI/config, git SHA,
+tokenizer/feature version, start time). The dashboard treats the directory as the database:
+list runs = list dirs; live = tail the file. Nothing in the trainer knows the dashboard exists.
+
+**2. Dashboard API** (M0). Local HTTP server: `GET /runs` (manifests), `GET /runs/{id}/series?
+name=…&group_by=<tag>` (downsampled series), one static single-page UI (no external CDNs; it must
+work offline). Auto-refresh by polling; overlay multiple runs on one chart for comparison.
+
+**3. Scenario `deckSpec`** (M1). A field on `reset_combat`, implemented C#-side:
+
+```json
+{"kind": "random",    "cards": 15}                             // today's behavior, explicit
+{"kind": "realistic", "removals": [0,3], "additions": [0,3],
+ "weights": {"own": 0.60, "colorless": 0.25, "curse": 0.12, "offCharacter": 0.03}}
+{"kind": "explicit",  "cards": ["StrikeIronclad", "..."]}      // closed-eval only
+```
+
+Status cards are never dealt into decks. All sampling from the fight seed. The observation's
+`info` block gains the scenario metadata (deckSpec kind, act, room class) so collectors and
+metrics tag outcomes without re-deriving.
+
+**4. Corpus schema** (M1). Sharded compressed JSONL: one record per decision =
+`{seed, scenarioMeta, t, state, options, actionTaken, nextState, nextOptions, rewardComponents,
+done, info}`. Records are exactly the wire observations (lossless, replayable through the
+tokenizer forever). Split assignment = hash(fight seed) → train/val/test.
+
+**5. Decision protocol v2** (M4). Backward compatible: request gains `"explain": true`; reply
+entries may add `probability`, `value`, and `prediction` — a *decoded, compact* next-state summary
+(per-entity fields, not latents) plus, for stochastic actions, top-k chance outcomes with
+probabilities. `protocolVersion: 2`; a v1 agent or a reply without `prediction` degrades to
+today's behavior. Payload size is a watch-item (predictions for ~20 options × decoded states).
+
+**6. Versioning.** `TOKENIZER_VERSION` (+ catalog signatures) stamps corpora, checkpoints, and
+protocol-v2 explanations; any mismatch rejects loudly, exactly like `FEATURE_VERSION` today.
+
+---
+
+## Milestones
+
+### M0 — Instruments first (works entirely against the current PPO stack)
+
+- [ ] **0.1 Metrics events**: `train_torch` (and the eval loops) emit the event stream (contract 1)
+      alongside the existing stdout/CSV; outcome events tagged act/room/character.
+- [ ] **0.2 Dashboard MVP**: run list, live charts, run overlay/compare (contract 2).
+- [ ] **0.3 Breakdown views**: win % and HP-lost grouped by act and monster/elite/boss, both for
+      training outcomes and the fixed-seed eval; sample counts shown next to every rate (a 0.6
+      win-rate over 5 boss fights must look as thin as it is).
+- [ ] **0.4 TUI ranking panel**: render the decision reply's full scored ranking (already in
+      protocol v1) — sorted options with scores, the Tab pick highlighted, declines explicit.
+      Works with the current PPO checkpoint and the heuristic immediately.
+- [ ] **0.5 Baseline capture**: one PPO training run + fixed-seed eval recorded through the new
+      pipeline, kept as the comparison baseline for M5/M6.
+
+**CP1 (manual review):** start a PPO training run; open the dashboard; watch it live; inspect the
+act/room breakdowns; drive a TUI fight with the ranking panel against the PPO agent. Judge: is
+this the debugging experience you wanted? Anything missing gets fixed *now*, while iteration is
+cheap and the system under observation is well-understood.
+
+### M1 — Data foundation: scenario generator + corpus (design P0)
+
+- [ ] **1.1 `deckSpec` scenario generation** (contract 3) in C#, seeded; grep `refsrc/` for the
+      real card-pool/rarity/color APIs — never hand-maintain card lists in Python.
+- [ ] **1.2 Catalogs**: power catalog dump (`--dump-powers`, mirroring `--dump-cards`); extend
+      `cards.json` with pool membership (character/colorless/curse/status) if absent.
+- [ ] **1.3 Transition collector + corpus store** (contract 4): mixed policies (random, heuristic,
+      current PPO) × mixed regimes (broad + realistic) × all characters × acts; target ~1M
+      transitions to start. Collection progress/composition visible on the dashboard.
+- [ ] **1.4 Oracle prober**: freeze a probe set (a few hundred positions spanning acts/rooms);
+      replay-based ground-truth next states for every legal action at each probe. Eval-only.
+
+**CP2 (manual review):** a dashboard page (or report) showing generated-deck distributions —
+removals/additions histograms, pool-weight realization, a sample of 20 decks to eyeball for
+"looks like act 1"; corpus composition stats; determinism spot-check (same seed twice ⇒ identical
+deck and fight).
+
+### M2 — Tokenizer (design P1)
+
+- [ ] **2.1 Entity tokenizer** (design §4.1) with a round-trip validator run over the whole
+      corpus: every wire field either tokenized or explicitly waived (waivers listed in code).
+      `TOKENIZER_VERSION` wired into checkpoints/corpus/protocol (contract 6). Draw pile
+      tokenized as an unordered multiset (no shuffle leakage).
+- [ ] **2.2 PPO-on-tokens sanity pass** (optional but recommended): attention encoder under the
+      existing PPO head, trained on the realistic regime. Banks the model-free upgrade
+      (design §6.A) and shakes out the tokenizer end to end before anything depends on it.
+
+**CP3 (manual review):** round-trip/coverage report over the corpus (target: 100% of fields
+accounted for); if 2.2 ran — dashboard comparison of PPO-on-tokens vs the M0.5 baseline on the
+fixed-seed eval (expectation: ≥ baseline).
+
+### M3 — Encoder + decoder (design P2)
+
+- [ ] **3.1 Encoder/decoder training** on the corpus (broad regime dominant), with per-field
+      reconstruction metrics (card-id top-1, HP MAE, power amounts, pile sizes, …) streaming to
+      new dashboard panels.
+- [ ] **3.2 Decoded-state pretty-printer + diff view**: render any decoded state, and a
+      field-level diff between two states — the debugging primitive the TUI inspector (4.4) and
+      the report card (4.3) both reuse.
+- [ ] **3.3 Legal-action derivation** from decoded states, scored as set-F1 vs real
+      `ListOptions` on held-out data.
+
+**CP4 (manual review):** held-out reconstruction dashboard (~exact expected); a session with the
+pretty-printer on random held-out states — do decoded states read as *the same fight* to a human?
+
+### M4 — Predictor (design P3) — the heart, and the main research risk
+
+- [ ] **4.1 Afterstate step**: K-step unrolled training with latent-consistency loss + SimNorm,
+      reward-component and terminal heads (design §4.4 incl. the §11 deltas).
+- [ ] **4.2 Chance step**: discrete codebook; End-Turn semi-supervision from logged draws;
+      per-code perplexity and calibration metrics.
+- [ ] **4.3 Prediction report card**: per-field accuracy × per-action-kind × K∈{1,3,5}, held-out
+      corpus + oracle probes; dashboard panels + a printable per-run summary. This is the
+      milestone's *product* — it must localize failures ("EndTurn intent prediction is weak in
+      act 2 elites"), not just average them away.
+- [ ] **4.4 TUI prediction inspector** (protocol v2, contract 5): select any option → decoded
+      predicted next state (as a diff vs current); for stochastic actions, top-k outcomes with
+      probabilities; after the action resolves, show predicted-vs-actual as a diff. This is the
+      "watch the model think" feature and the fastest path to spotting rule misunderstandings.
+- [ ] **4.5 Unleash/Osty acceptance set**: extend `closed_eval` scenarios to prediction checks
+      (does the predicted damage of Unleash track Osty's HP? does Bodyguard's predicted state
+      show the summon?). Evaluation-only, as always.
+
+**CP5 (manual review):** the report card, plus a TUI session with the prediction inspector —
+deliberately try to fool the model (multi-hit intents, AoE lethal, Discovery, X-costs) and file
+what breaks. **Decision gate:** if deterministic-step accuracy is weak and un-fixable here, stop
+and keep M0–M3 (design §9's fallback) rather than building planning on sand.
+
+### M5 — Value head + greedy afterstate agent (design P4)
+
+- [ ] **5.1 Value training** (TD on real fights, realistic regime; bounded HP-fraction target)
+      with calibration panels (predicted vs realized final-HP-fraction).
+- [ ] **5.2 Greedy/sampled afterstate policy** served through the decision server (v2 explanations
+      include per-option values); collection switches to this agent on the realistic regime;
+      corpus keeps growing (the predictor keeps training on the new data).
+- [ ] **5.3 Comparative eval**: fixed-seed protocol vs the M0.5 PPO baseline and the heuristic,
+      with act/room breakdowns.
+
+**CP6 (manual review):** dashboard comparison (expectation: beats PPO baseline and heuristic on
+fixed-seed eval, and the act/room breakdown shows *where* the wins come from); a TUI session
+sanity-checking that ranked values agree with intuition on obvious spots (free lethal, lethal vs
+overkill-block).
+
+### M6 — Intra-turn planner (design P5)
+
+- [ ] **6.1 Beam search** over deterministic card chains to the end-turn boundary; chance-action
+      leaves by expectation/top-k codes; latency measured against the decision-server budget.
+- [ ] **6.2 Policy prior + distillation** from planner output; sampled variant for collection.
+- [ ] **6.3 Planner metrics**: regret vs oracle on the probe set; win-rate vs beam width
+      (the scaling curve that says whether deeper search is worth it); TUI shows the planned
+      line ("intends: Defend → Bodyguard → Unleash → End Turn").
+
+**CP7 (manual review):** beats CP6 numbers; the scaling curve; TUI sessions on fights the M5
+agent lost — does the plan view make the improvement (or remaining failures) legible?
+
+### M7 — Contingent extensions (design P6)
+
+- [ ] Gumbel chance-node MCTS across turns; Reanalyse; imagination training — **only** where
+      CP7's scaling curves and the report card say the model supports it. Evaluate LightZero as
+      a base/reference before writing MCTS from scratch (design §11).
+
+---
+
+## QA process (cross-cutting)
+
+- **Automated, per landing** (the repo's normal bar): seeded deterministic tests on both sides
+  (C# `dotnet test --filter`, Python unit tests); tokenizer round-trip tests; corpus split-hygiene
+  test (no fight seed in two splits); protocol v2 golden-message tests; the fixed-seed eval
+  runnable as one command for any agent (heuristic/PPO/world-model) so numbers stay comparable
+  across the whole effort.
+- **Continuous**: the dashboard *is* the QA surface for training — every learning component
+  ships its metrics panel in the same PR that makes it train (the M0 rule). Training-side
+  regressions are judged against recorded baseline runs, not memory.
+- **Manual checkpoints CP1–CP7**: as specified per milestone — each names what to run, what to
+  look at, and what "good" looks like. CP5 is additionally a go/no-go decision gate.
+- **Anti-overfit discipline** (goal 4): probe sets, closed-eval scenarios, and oracle labels are
+  evaluation-only and never enter a training corpus; training inputs are always sampled
+  distributions (broad or realistic), never fixed instances. Enforced structurally: collectors
+  refuse `explicit` deckSpecs.
+
+## Sequencing notes & watch-items
+
+- M0 and M1 are independent and can interleave; M2+ is strictly ordered. The TUI prediction
+  inspector (4.4) can start as soon as M3's pretty-printer exists, against a stub predictor.
+- Protocol-v2 payload size and decision latency need measuring at M4/M6 (predictions × ~20
+  options; search inside the TUI timeout) — both have easy mitigations (summarized diffs,
+  explain-on-demand for a single option) if they bite.
+- The realistic-deck weights (60/25/12/3) and removal/addition ranges are product decisions, not
+  constants of nature — put them in the `deckSpec`, surface them in run manifests, and expect to
+  tune after CP2.
+- Keep the PPO baseline runnable (don't break `train_torch`) until M5 has beaten it on record.
