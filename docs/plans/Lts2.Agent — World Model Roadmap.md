@@ -1,6 +1,8 @@
 # Lts2.Agent — World-Model Roadmap (implementation backlog)
 
-Status: **M0 in progress — 0.1–0.4 done, 0.5 baseline running, CP1 pending review.** This is the implementation plan for
+Status: **M0 done (CP1 approved). M1 done — 1.1–1.4 plus realistic relics/potions/starter-relic
+states; corpus-v1 (1.0M transitions) and the 300-probe oracle set are built; CP2 pending review.**
+This is the implementation plan for
 `docs/design/Lts2.Agent — World Model.md` (read that first; this doc assumes its vocabulary:
 tokenizer, encoder/decoder, predictor, afterstate/chance step, value/policy, planner).
 
