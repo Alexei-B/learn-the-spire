@@ -139,11 +139,93 @@ def test_null_potion_slot_round_trips():
 
 def test_version_and_signature_stable():
     assert isinstance(tokens.TOKENIZER_VERSION, int)
+    assert tokens.TOKENIZER_VERSION == 2  # v2 = count-grouped card tokens
     sig = tokens.tokenizer_signature()
     assert sig == tokens.tokenizer_signature()
     assert sig.startswith("tok-v" + str(tokens.TOKENIZER_VERSION))
     for kind in ("cards", "powers", "relics", "potions"):
         assert kind in tokens.CATALOG_SIGNATURES
+
+
+# --------------------------------------------------------------------------------------------------
+# v2: count-grouped card tokens.
+# --------------------------------------------------------------------------------------------------
+
+def _count_col():
+    return tokens.CARD_NUM.index("count")
+
+
+def _token_counts(tok):
+    """(count-column value) for each present card token."""
+    cc = _count_col()
+    return [tokens._int(tok["card_num"][i, cc]) for i in range(tokens.MAX_CARDS)
+            if tok["card_mask"][i]]
+
+
+def test_count_column_exists():
+    assert "count" in tokens.CARD_NUM
+    # v2 numeric block is exactly the v1 block + one count column.
+    assert tokens.CARD_NUM[-1] == "count"
+
+
+def test_identical_cards_group_into_one_token_with_count():
+    draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(5)]
+    st = _state(draw=draw, enemies=[_enemy("JawWorm", 40)])
+    tok = tokens.tokenize(st)
+    # Five identical strikes collapse to ONE token carrying count 5.
+    assert int(tok["card_mask"].sum()) == 1
+    assert _token_counts(tok) == [5]
+
+
+def test_mixed_upgrades_stay_separate_tokens():
+    # 5 plain strikes + 2 upgraded strikes (different content) -> two grouped tokens, counts 5 and 2.
+    draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(5)]
+    draw += [_card("StrikeIronclad", damage=9, baseDamage=6, upgraded=True) for _ in range(2)]
+    st = _state(draw=draw, enemies=[_enemy("JawWorm", 40)])
+    tok = tokens.tokenize(st)
+    assert int(tok["card_mask"].sum()) == 2
+    assert sorted(_token_counts(tok)) == [2, 5]
+
+
+def test_same_card_in_different_zones_stays_separate():
+    # Zone is part of the grouping key: identical strikes in hand vs draw are distinct tokens.
+    st = _state(hand=[_card("StrikeIronclad", damage=6, baseDamage=6)],
+                draw=[_card("StrikeIronclad", damage=6, baseDamage=6)],
+                enemies=[_enemy("JawWorm", 40)])
+    tok = tokens.tokenize(st)
+    assert int(tok["card_mask"].sum()) == 2
+    assert _token_counts(tok) == [1, 1]
+
+
+def test_detokenize_expands_counts_exactly():
+    # A pile of duplicates + a couple of variants round-trips exactly through count expansion.
+    draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(7)]
+    draw += [_card("DefendIronclad", type="Skill", targetType="Self", block=5, baseBlock=5)
+             for _ in range(4)]
+    discard = [_card("Bash", damage=8, baseDamage=8) for _ in range(3)]
+    st = _state(draw=draw, discard=discard, enemies=[_enemy("JawWorm", 40)])
+    ok, diff = tokens.round_trip(st)
+    assert ok, "round-trip mismatch at " + str(diff)
+    got = tokens.detokenize(tokens.tokenize(st))
+    # Instance counts restored per zone (expansion is exact), even though tokens were grouped.
+    assert len(got["cards"]["draw"]) == 11
+    assert len(got["cards"]["discard"]) == 3
+    # And the grouped token count is far below the instance count (the sequence-length win).
+    assert int(tokens.tokenize(st)["card_mask"].sum()) == 3
+
+
+def test_grouping_preserves_shuffle_invariance():
+    # Grouping does not reintroduce order sensitivity: any shuffle of a duplicate-heavy pile is identical.
+    draw = ([_card("StrikeIronclad", damage=6, baseDamage=6)] * 4
+            + [_card("DefendIronclad", type="Skill", targetType="Self", block=5, baseBlock=5)] * 3
+            + [_card("Bash", damage=8, baseDamage=8)] * 2)
+    base = tokens.tokenize(_state(draw=list(draw), enemies=[_enemy("JawWorm", 40)]))
+    for seed in range(6):
+        shuffled = list(draw)
+        random.Random(seed).shuffle(shuffled)
+        t = tokens.tokenize(_state(draw=shuffled, enemies=[_enemy("JawWorm", 40)]))
+        for k in ("card_idx", "card_num", "card_kw", "card_mask"):
+            assert np.array_equal(base[k], t[k]), (k, seed)
 
 
 def test_catalog_hash_fallback():

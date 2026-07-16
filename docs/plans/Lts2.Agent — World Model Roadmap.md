@@ -276,6 +276,14 @@ deck and fight).
       (hashed). **Padded dims (measured max over the full 1.0M-record corpus → cap):** cards 82→200,
       creatures 8→12, powers 24→96, intents 7→32, orbs 9→16, relics 8→24, potions 5→8. README
       "Tokenizer" section documents the contract. (2.2 PPO-on-tokens sanity pass now landed.)
+      **v2 (2026-07, `TOKENIZER_VERSION=2`) — count-grouped card tokens:** identical-content card
+      instances within a zone collapse to one token carrying an integer `count` (symlog; trailing
+      `CARD_NUM` column), cards differing in any field stay separate; `detokenize` expands counts so the
+      canonical dict (and every `statefmt`/`legal_actions`/report consumer) is byte-unchanged. Re-measured
+      over the full 2.0M-state corpus: grouped card max **42** (v1 instance max 82), mean 14.11 instances →
+      10.85 grouped tokens (1.30× shorter sequence); cards padded cap **200→64** (>3× smaller). Round-trip/
+      coverage contract still 0 lost / 0 mismatches over the `--check` pass. Report footprint re-measured for
+      v2 (`ACTION_FOOTPRINT` 0.1303→**0.1704**; `python -m lts2_agent.wm.footprint`).
 - [x] **2.2 PPO-on-tokens sanity pass** — _done (CP3: comparison overlapped baseline; stopped early
       by product decision — encoding parity confirmed)._ `lts2_agent.model_tokens`
       is a set-transformer actor-critic over the tokenizer (per-token-type embedders with a **shared card
@@ -354,7 +362,11 @@ fixed-seed eval (expectation: ≥ baseline).
       `--halt-step` keeps the shared cosine-to-50k schedule): count-grouped card tokens (tokenizer v2),
       decoder-heavy scale, LR sweep + EMA, two-hot numeric heads, class-balanced card CE. Cross-tokenizer
       comparisons use `eval.action_snr` (footprint re-measured per tokenizer version), not raw
-      `state_dist`. **Probe flags shipped (default OFF, byte-identical when off, compose independently):
+      `state_dist`. **Tokenizer v2 (count-grouped cards) shipped** (`TOKENIZER_VERSION=2`): card `MAX_CARDS`
+      200→64, `CARD_NUM` gains a symlog `count` column, canonical dict byte-unchanged (all consumers
+      untouched), and `ACTION_FOOTPRINT` re-measured 0.1303→0.1704 via `python -m lts2_agent.wm.footprint`.
+      A v2 cache is a fresh dir (`--out data/corpus_tok_v2`); the v1 cache/checkpoints reject on the
+      signature bump (correct). **Probe flags shipped (default OFF, byte-identical when off, compose independently):
       `--num-head twohot` (64-bin symlog two-hot numeric heads), `--card-ce balanced` (1/sqrt(freq)
       card-identity CE, signature-cached), `--ema DECAY` (weight EMA; val + `.pt.ema` checkpoints);
       tests in `tests/test_wm_encdec.py`.**

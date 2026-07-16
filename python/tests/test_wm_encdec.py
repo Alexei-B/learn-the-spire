@@ -158,6 +158,37 @@ def test_overfit_one_batch_decreases_loss():
     assert last < 0.5 * first, f"loss did not drop enough: {first:.3f} -> {last:.3f}"
 
 
+def test_card_spec_num_width_includes_count():
+    # v2: the card numeric block grew by the count column; the spec follows tokens.CARD_NUM
+    # mechanically, so the decoder's card num head widens automatically.
+    card = S.TYPE_BY_NAME["card"]
+    assert card.num_width == len(tokens.CARD_NUM)
+    assert "count" in tokens.CARD_NUM
+    # The decoder emits a num vector of exactly that width for the card type.
+    batch = _batch([_state()])
+    model = _small_model()
+    _z, out = model(batch)
+    assert out["card"]["num"].shape[-1] == len(tokens.CARD_NUM)
+
+
+def test_grouped_cards_reduce_token_count_through_model_path():
+    # A duplicate-heavy hand tokenizes to fewer card tokens than instances; the batch/model path and
+    # the reconstruct->detokenize handoff still work with grouped tokens.
+    st = _state(n_hand=1)
+    cs = st["players"][0]["combatState"]
+    cs["drawPile"] = [_card(damage=6, baseDamage=6) for _ in range(6)]  # 6 identical strikes
+    tok = tokens.tokenize(st)
+    n_draw_instances = 6
+    n_tokens = int(tok["card_mask"].sum())
+    assert n_tokens < n_draw_instances + len(cs["hand"])  # grouping happened
+    batch = _batch([st])
+    model = _small_model()
+    _z, out = model(batch)
+    arrays = reconstruct_arrays(out)
+    canon = tokens.detokenize(arrays[0])
+    assert set(canon) == {"global", "pending", "cards", "creatures", "orbs", "relics", "potions"}
+
+
 def test_report_card_contract_and_detokenize_handoff():
     batch = _batch([_state(), _state(n_hand=3, n_enemies=2)])
     model = _small_model()

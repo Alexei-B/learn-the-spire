@@ -34,10 +34,13 @@ METRIC_NAMES = [
 
 
 # Median fraction of token-fields changed by ONE real action (state -> nextState, the same
-# _state_dist metric): measured 2026-07-16 over 3,000 val-split transitions of corpus-v1
-# (PlayCard median 0.108, EndTurn 0.213, overall median 0.1303). Re-measure if the tokenizer
-# layout or corpus changes materially.
-ACTION_FOOTPRINT = 0.1303
+# _state_dist metric). Re-measure with `python -m lts2_agent.wm.footprint` if the tokenizer layout or
+# corpus changes materially (the field universe sets both the numerator and denominator).
+#   v2 (tokenizer count-grouped cards, 2026-07-16, 3,000 val transitions): PlayCard median 0.1409,
+#      EndTurn 0.2684, SelectCards 0.2343, overall median 0.1704. Grouping shrinks the card-field
+#      count, so each changed field is a larger share -> the footprint rose vs v1.
+#   v1 (per-instance card tokens): PlayCard 0.108, EndTurn 0.213, overall 0.1303.
+ACTION_FOOTPRINT = 0.1704
 
 
 def _symexp_np(y: np.ndarray) -> np.ndarray:

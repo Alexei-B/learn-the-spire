@@ -47,7 +47,11 @@ from . import catalog
 # ==================================================================================================
 
 # Bump whenever the token layout / vocab semantics change so stale artifacts reject loudly.
-TOKENIZER_VERSION = 1
+# v2 (2026-07): **count-grouped card tokens** — identical-content card instances within a zone collapse
+# to ONE token carrying an integer `count` (symlog) numeric; detokenize expands counts back to instances
+# so the canonical dict is byte-identical to v1's. Shrinks the card-token count ~2-3x and removes
+# duplicate-permutation ambiguity from pile reconstruction (roadmap 3.1 experiment series).
+TOKENIZER_VERSION = 2
 
 _CARDS = catalog.load("cards")
 _POWERS = catalog.load("powers")
@@ -119,9 +123,14 @@ def _enum_name(idx: int, table: List[str]) -> str:
 # Measured corpus maxima (200k-record scan, July 2026) + generous slack -> fixed padded dims.
 # Scan: hand<=10, draw<=44, discard<=46, exhaust<=40, offered<=29 (sum<=169); enemies<=6; powers
 # player<=13 / enemy<=7 each / osty<=1; intents<=3/enemy; orbs<=8; relics<=8; potions(slots)<=5.
+#
+# v2: cards are the count-GROUPED token count, not raw instances. Re-measured over the FULL 2.0M-state
+# corpus with the grouping applied (`python -m lts2_agent.tokens --check data/corpus`): grouped cards
+# max 42 (v1 instance max 82); mean 14.11 instances/state -> 10.85 grouped tokens (1.30x shorter). Cap 64
+# keeps generous slack over the grouped worst case while cutting the padded card-token dim to <1/3 of v1's.
 # ==================================================================================================
 
-MAX_CARDS = 200        # all zones pooled (measured worst-case ~169)
+MAX_CARDS = 64         # all zones pooled, count-grouped (full-corpus grouped max 42; v1 instance cap 200)
 MAX_CREATURES = 12     # player + osty + <=6 enemies (measured <=8)
 MAX_POWERS = 96        # across all creatures (measured <=56)
 MAX_INTENTS = 32       # across all enemies (measured <=18)
@@ -138,9 +147,11 @@ GLOBAL_NUM = ["act", "floor", "ascension", "score", "isGameOver", "isVictory", "
 PENDING_NUM = ["present", "minSelect", "maxSelect", "isUpgradeSelection"]
 
 CARD_IDX = ["cardIndex", "zone", "type", "rarity", "targetType", "enchant", "afflict"]
+# v2: trailing `count` = how many identical-content instances this grouped token stands for (symlog;
+# always >= 1). detokenize expands it back into `count` copies so the canonical dict is unchanged.
 CARD_NUM = ["energyCost", "costsX", "starCost", "upgraded", "canPlay", "replayCount",
             "hasDamage", "damage", "baseDamage", "hasBlock", "block", "baseBlock",
-            "hasSummon", "summon"]
+            "hasSummon", "summon", "count"]
 
 CREATURE_IDX = ["kind", "identity"]
 CREATURE_NUM = ["currentHp", "maxHp", "block", "active", "combatId"]
@@ -265,6 +276,25 @@ def _card_sort_key(c: Dict[str, Any]) -> Tuple:
             c["afflict"], c["energyCost"], c["costsX"], c["starCost"], c["upgraded"], c["canPlay"],
             c["replayCount"], c["hasDamage"], c["damage"], c["baseDamage"], c["hasBlock"], c["block"],
             c["baseBlock"], c["hasSummon"], c["summon"], tuple(c["keywords"]))
+
+
+def _group_cards(cv: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v2: pool all zones (in ZONES order) and collapse runs of identical-content cards into ONE grouped
+    token carrying a ``count``. Each zone list in ``cv["cards"]`` is already content-sorted (by
+    :func:`_card_sort_key`), so identical instances are adjacent — grouping is exact and order-stable.
+    Zone is part of the content key, so groups never span zones. Returns representative canonical card
+    dicts each with an added ``count`` (>= 1); the underlying per-instance dicts are left untouched."""
+    grouped: List[Dict[str, Any]] = []
+    for z in ZONES:
+        prev_key = None
+        for c in cv["cards"][z]:
+            key = _card_sort_key(c)
+            if prev_key is not None and key == prev_key:
+                grouped[-1]["count"] += 1
+            else:
+                grouped.append({**c, "count": 1})
+                prev_key = key
+    return grouped
 
 
 def _power_canonical(p: Dict[str, Any]) -> Dict[str, Any]:
@@ -428,10 +458,9 @@ def tokenize(state: Dict[str, Any], *, strict: bool = True) -> Dict[str, np.ndar
                                     float(p["isUpgradeSelection"])]], dtype=np.float32)
     out["token_type_global"] = np.int32(TOKEN_TYPE_ID["global"])
 
-    # Cards (all zones pooled, already sorted per-zone; zone order = ZONES order).
-    all_cards: List[Dict] = []
-    for z in ZONES:
-        all_cards.extend(cv["cards"][z])
+    # Cards (all zones pooled, already sorted per-zone; zone order = ZONES order). v2: identical-content
+    # instances within a zone collapse to one grouped token carrying `count`.
+    all_cards: List[Dict] = _group_cards(cv)
     _check("cards", len(all_cards), MAX_CARDS)
     card_idx = np.zeros((MAX_CARDS, len(CARD_IDX)), dtype=np.int32)
     card_num = np.zeros((MAX_CARDS, len(CARD_NUM)), dtype=np.float32)
@@ -527,9 +556,12 @@ def tokenize(state: Dict[str, Any], *, strict: bool = True) -> Dict[str, np.ndar
 
 
 def _num_field(c: Dict[str, Any], key: str) -> float:
-    """symlog for numeric card fields, pass-through 0/1 for the boolean/presence flags."""
+    """symlog for numeric card fields, pass-through 0/1 for the boolean/presence flags. ``count`` (v2)
+    defaults to 1 for an ungrouped single card (e.g. an option-card featurization)."""
     if key in ("costsX", "upgraded", "canPlay", "hasDamage", "hasBlock", "hasSummon"):
         return float(c[key])
+    if key == "count":
+        return symlog(float(c.get("count", 1)))
     return symlog(c[key])
 
 
@@ -557,11 +589,20 @@ def detokenize(tok: Dict[str, np.ndarray]) -> Dict[str, Any]:
         if not cm[i]:
             continue
         c: Dict[str, Any] = {CARD_IDX[j]: int(ci[i, j]) for j in range(len(CARD_IDX))}
+        count = 1
         for j, k in enumerate(CARD_NUM):
+            if k == "count":
+                # v2: this grouped token stands for `count` identical instances (clamp >= 1).
+                count = max(1, _int(cn[i, j]))
+                continue
             c[k] = int(round(cn[i, j])) if k in ("costsX", "upgraded", "canPlay",
                                                  "hasDamage", "hasBlock", "hasSummon") else _int(cn[i, j])
         c["keywords"] = sorted(int(b) for b in np.nonzero(ckw[i])[0])
-        cards[ZONES[c["zone"]] if 0 <= c["zone"] < len(ZONES) else "hand"].append(c)
+        zone = ZONES[c["zone"]] if 0 <= c["zone"] < len(ZONES) else "hand"
+        # Expand the count back into `count` per-instance canonical dicts (each an independent copy so
+        # the canonical shape is byte-identical to v1's per-instance list).
+        for _ in range(count):
+            cards[zone].append({**c, "keywords": list(c["keywords"])})
     for z in ZONES:
         cards[z].sort(key=_card_sort_key)
 
@@ -831,6 +872,10 @@ def _check(root: str, limit: Optional[int]) -> int:
     n_records = 0
     rt_fail = 0
     rt_examples: List[str] = []
+    # v2 sequence-length saving: card INSTANCES (v1 token count) vs GROUPED tokens (v2 token count).
+    sum_instances = 0
+    sum_grouped = 0
+    max_instances = 0
 
     for ridx, which, st in _iter_states(root, limit):
         n_records = ridx + 1
@@ -844,8 +889,12 @@ def _check(root: str, limit: Optional[int]) -> int:
             lost_seen[p] = lost_seen.get(p, 0) + 1
 
         cv = _canonical_from_state(st)
-        allc = sum(len(cv["cards"][z]) for z in ZONES)
-        maxima["cards"] = max(maxima["cards"], allc)
+        instances = sum(len(cv["cards"][z]) for z in ZONES)
+        grouped = len(_group_cards(cv))
+        sum_instances += instances
+        sum_grouped += grouped
+        max_instances = max(max_instances, instances)
+        maxima["cards"] = max(maxima["cards"], grouped)
         maxima["creatures"] = max(maxima["creatures"], len(cv["creatures"]))
         maxima["powers"] = max(maxima["powers"], sum(len(c["powers"]) for c in cv["creatures"]))
         maxima["intents"] = max(maxima["intents"], sum(len(c["intents"]) for c in cv["creatures"]))
@@ -870,7 +919,12 @@ def _check(root: str, limit: Optional[int]) -> int:
     print("Measured token maxima (this scan) vs padded caps:")
     for k in ("cards", "creatures", "powers", "intents", "orbs", "relics", "potions"):
         flag = "  !! OVER CAP" if maxima[k] > caps[k] else ""
-        print(f"  {k:10s} max {maxima[k]:4d}   cap {caps[k]:4d}{flag}")
+        note = "  (count-GROUPED tokens; v1 instance max %d)" % max_instances if k == "cards" else ""
+        print(f"  {k:10s} max {maxima[k]:4d}   cap {caps[k]:4d}{flag}{note}")
+    if n_states:
+        print(f"  card tokens/state — mean instances (v1) {sum_instances / n_states:6.2f}  ->  "
+              f"mean grouped (v2) {sum_grouped / n_states:6.2f}  "
+              f"({sum_instances / max(1, sum_grouped):.2f}x shorter)")
     print()
     print(f"COVERED fields ({len(covered_seen)}):")
     for p in sorted(covered_seen):

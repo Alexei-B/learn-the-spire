@@ -7,6 +7,11 @@ split, tokenizes states with a **multiprocessing pool** (the tokenizer is pure n
 and writes fixed-size compressed ``.npz`` array shards under ``<out>/<split>/`` plus a ``manifest.json``
 carrying the tokenizer signature so a stale cache rejects loudly.
 
+A tokenizer/catalog signature bump (e.g. tokenizer **v2** — count-grouped card tokens) invalidates an
+old cache; build a NEW cache dir rather than overwriting the old one::
+
+    python -m lts2_agent.wm.cache build --corpus data/corpus --out data/corpus_tok_v2 --workers 8
+
 Dedup decision — **both states kept (no dedup)**
 ------------------------------------------------
 Within a fight, record ``t``'s ``nextState`` equals record ``t+1``'s ``state``, so the corpus is ~2x
@@ -281,7 +286,13 @@ def verify(root: str, cache_dir: str, split: str, n_sample: int = 200,
 # ==================================================================================================
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Pre-tokenized corpus cache builder (roadmap 3.1 speedup).")
+    ap = argparse.ArgumentParser(
+        description="Pre-tokenized corpus cache builder (roadmap 3.1 speedup).",
+        epilog="Tokenizer v2 (count-grouped card tokens) needs a fresh cache dir — the v1 cache at "
+               "data/corpus_tok rejects loudly on a signature mismatch. Build v2 with:\n"
+               "    python -m lts2_agent.wm.cache build --corpus data/corpus --out data/corpus_tok_v2 "
+               "--workers 8",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build", help="tokenize a corpus into pre-tokenized array shards")

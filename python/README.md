@@ -364,6 +364,16 @@ python -m lts2_agent.tokens --check python/data/corpus            # add --limit 
 - **The draw pile (and every card zone) is an unordered MULTISET.** Card tokens within a zone are sorted
   by their full content tuple, so the wire's shuffle order can *never* leak. Two shuffles of the same pile
   produce byte-identical tokens (`test_tokens.test_draw_pile_is_unordered_multiset`).
+- **`TOKENIZER_VERSION = 2` — count-grouped card tokens.** Identical-content card instances within a zone
+  (e.g. 5× Strike in the draw pile) collapse to **one** card token carrying an integer `count` (symlog,
+  the trailing `CARD_NUM` column). Cards differing in any field — upgraded, enchanted, a different live
+  cost/damage preview — stay separate tokens (grouping is by the full content tuple, zone included).
+  `detokenize` expands each token back into `count` per-instance dicts, so the **canonical dict is
+  byte-identical to v1's** and every canonical-dict consumer (`statefmt`, `legal_actions`, the report
+  card) is untouched. Measured over the full 2.0M-state corpus: mean 14.1 instances → 10.9 grouped tokens
+  (1.30× shorter), grouped worst case 42 vs v1 instance max 82, so `MAX_CARDS` drops 200→64 — faster attention, fewer slots,
+  and it removes duplicate-permutation ambiguity from pile reconstruction (the decoder regresses "how many
+  Strikes" as one small integer). Round-trip/coverage contract is unchanged: 0 lost fields, 0 mismatches.
 - **Numerics use symlog** (`sign(x)·log1p|x|`, DreamerV3-style) with a ±`NUM_CLIP` (1e5) clamp — bounded
   (no encoder blow-ups) and **exactly invertible** for integer game quantities, which is what makes the
   round-trip validator exact. The clamp only saturates the game's `999999999` "no maximum" select sentinel
@@ -504,7 +514,11 @@ states/s single-thread on-the-fly), so training is now fully GPU-bound — the e
 forward+backward itself caps this box at **~470 states/s** (fp32, no flash-attention on the Windows torch
 build), i.e. ~11-12 h for a 50k×384 run. **Rebuild the cache whenever the corpus changes or the
 tokenizer/catalog signature bumps** (`TOKENIZER_VERSION` or any catalog); it is gitignored
-(`python/data/corpus_tok/`).
+(`python/data/corpus_tok/`). Build into a **new** dir on a version bump rather than overwriting the old
+one — e.g. **tokenizer v2** (count-grouped card tokens) needs
+`python -m lts2_agent.wm.cache build --corpus data/corpus --out data/corpus_tok_v2 --workers 8`
+(then `train_encdec --cache data/corpus_tok_v2`). The old `data/corpus_tok` (v1) stays intact and rejects
+loudly if a v2 run points at it.
 
 Metrics land as a `kind="wm-encdec"` run under `checkpoints/runs/`. **Per train step-window**
 (phase=`train`): `train.loss`, `train.loss_categorical`, `train.loss_numeric`, `train.loss_presence`,
@@ -519,6 +533,14 @@ dashboard's group-by works. Note: per-slot metrics (card-id, power-id) are measu
 tokenizer's content-sorted target order; because that order is a deterministic function of content the
 decoder can learn it, but the slot-assignment ambiguity makes these a conservative floor — `exact_state_rate`
 (set-based, order-invariant via `detokenize`) is the honest aggregate.
+
+`eval.action_snr` = `report.ACTION_FOOTPRINT` / `state_dist` — how many median-actions' worth of change
+the decoder can still resolve. The footprint is measured in `state_dist` token-field units, which the
+tokenizer's field universe defines, so it is **re-measured per tokenizer version** (cross-tokenizer
+comparisons use `action_snr`, not raw `state_dist`): `python -m lts2_agent.wm.footprint --corpus
+data/corpus --n 3000` prints per-kind medians and the constant to set. Current `ACTION_FOOTPRINT = 0.1704`
+(tokenizer v2; v1 was 0.1303 — grouping shrinks the card-field count so each changed field is a larger
+share).
 
 ## Decoded-state printer + diff (roadmap 3.2)
 
