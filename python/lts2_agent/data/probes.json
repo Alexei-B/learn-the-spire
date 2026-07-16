@@ -1,10 +1,10 @@
 {
   "header": {
-    "createdAt": "2026-07-16T10:08:14.876246+00:00",
-    "count": 40,
+    "createdAt": "2026-07-16T10:56:42.630300+00:00",
+    "count": 300,
     "generator": {
-      "n": 40,
-      "built": 40,
+      "n": 300,
+      "built": 300,
       "masterSeed": "PROBE-BUILD-0",
       "characters": null,
       "maxAttemptsFactor": 12,
@@ -1129,6 +1129,7280 @@
         "roomType": "Monster",
         "character": "DEFECT",
         "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00055",
+      "resetParams": {
+        "seed": "PROBE-00055",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        2,
+        0,
+        8,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00056",
+      "resetParams": {
+        "seed": "PROBE-00056",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        5
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00057",
+      "resetParams": {
+        "seed": "PROBE-00057",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        1,
+        0,
+        3,
+        3,
+        3,
+        0,
+        1,
+        4,
+        3,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00058",
+      "resetParams": {
+        "seed": "PROBE-00058",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 14
+      }
+    },
+    {
+      "probeId": "probe-00059",
+      "resetParams": {
+        "seed": "PROBE-00059",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        4,
+        4,
+        5,
+        3,
+        2,
+        1,
+        2,
+        2,
+        2,
+        5
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00061",
+      "resetParams": {
+        "seed": "PROBE-00061",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        5,
+        4,
+        0,
+        2,
+        5,
+        3,
+        0,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00062",
+      "resetParams": {
+        "seed": "PROBE-00062",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        1,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00063",
+      "resetParams": {
+        "seed": "PROBE-00063",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        2,
+        2,
+        5,
+        0,
+        1,
+        0,
+        0,
+        2,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00066",
+      "resetParams": {
+        "seed": "PROBE-00066",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        7,
+        1,
+        5,
+        3,
+        1,
+        3,
+        0,
+        1,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00067",
+      "resetParams": {
+        "seed": "PROBE-00067",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5,
+        10,
+        6,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00068",
+      "resetParams": {
+        "seed": "PROBE-00068",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        2,
+        4,
+        3,
+        2,
+        1,
+        13,
+        2,
+        5,
+        5
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00069",
+      "resetParams": {
+        "seed": "PROBE-00069",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5,
+        5,
+        8,
+        2,
+        6,
+        4,
+        2,
+        0,
+        4,
+        8,
+        2,
+        1,
+        2,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00070",
+      "resetParams": {
+        "seed": "PROBE-00070",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        7,
+        1,
+        4,
+        0,
+        2,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00071",
+      "resetParams": {
+        "seed": "PROBE-00071",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00073",
+      "resetParams": {
+        "seed": "PROBE-00073",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        5,
+        0,
+        2,
+        2,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00076",
+      "resetParams": {
+        "seed": "PROBE-00076",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        2,
+        1,
+        1,
+        0,
+        5,
+        3,
+        1,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00077",
+      "resetParams": {
+        "seed": "PROBE-00077",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        9,
+        6,
+        1,
+        3,
+        4,
+        0,
+        0,
+        0,
+        3,
+        1,
+        0,
+        1,
+        0,
+        2,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00080",
+      "resetParams": {
+        "seed": "PROBE-00080",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        0,
+        0,
+        0,
+        4,
+        2,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00083",
+      "resetParams": {
+        "seed": "PROBE-00083",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00084",
+      "resetParams": {
+        "seed": "PROBE-00084",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        3,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00085",
+      "resetParams": {
+        "seed": "PROBE-00085",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00086",
+      "resetParams": {
+        "seed": "PROBE-00086",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        5,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00088",
+      "resetParams": {
+        "seed": "PROBE-00088",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        3,
+        6,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00089",
+      "resetParams": {
+        "seed": "PROBE-00089",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        2,
+        2,
+        1,
+        0,
+        0,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00091",
+      "resetParams": {
+        "seed": "PROBE-00091",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        1,
+        1,
+        0,
+        5,
+        3,
+        0,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00092",
+      "resetParams": {
+        "seed": "PROBE-00092",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        2,
+        3,
+        0,
+        3,
+        3,
+        0,
+        5,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 15
+      }
+    },
+    {
+      "probeId": "probe-00093",
+      "resetParams": {
+        "seed": "PROBE-00093",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00096",
+      "resetParams": {
+        "seed": "PROBE-00096",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        2,
+        5,
+        1,
+        0,
+        1,
+        2,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00097",
+      "resetParams": {
+        "seed": "PROBE-00097",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        3,
+        5,
+        1,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00098",
+      "resetParams": {
+        "seed": "PROBE-00098",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00099",
+      "resetParams": {
+        "seed": "PROBE-00099",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        9,
+        3,
+        3,
+        1,
+        0,
+        3,
+        3,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00100",
+      "resetParams": {
+        "seed": "PROBE-00100",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        11,
+        10,
+        7,
+        0,
+        2,
+        2,
+        1,
+        3,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00106",
+      "resetParams": {
+        "seed": "PROBE-00106",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        1,
+        2,
+        0,
+        0,
+        0,
+        3,
+        2,
+        1,
+        1,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00107",
+      "resetParams": {
+        "seed": "PROBE-00107",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        11,
+        8,
+        3,
+        0,
+        7,
+        4,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00109",
+      "resetParams": {
+        "seed": "PROBE-00109",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        6,
+        6,
+        0,
+        0,
+        0,
+        4,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00110",
+      "resetParams": {
+        "seed": "PROBE-00110",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        7
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00111",
+      "resetParams": {
+        "seed": "PROBE-00111",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        1,
+        0,
+        0,
+        2,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00113",
+      "resetParams": {
+        "seed": "PROBE-00113",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        1,
+        0,
+        4,
+        0,
+        0,
+        0,
+        6,
+        3,
+        1,
+        2,
+        6,
+        6,
+        0,
+        7
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00114",
+      "resetParams": {
+        "seed": "PROBE-00114",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5,
+        3,
+        2,
+        0,
+        0,
+        2,
+        0,
+        2,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00116",
+      "resetParams": {
+        "seed": "PROBE-00116",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        6,
+        0,
+        5,
+        0,
+        1,
+        3,
+        2,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00117",
+      "resetParams": {
+        "seed": "PROBE-00117",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        7,
+        3,
+        4,
+        2,
+        2,
+        2,
+        3,
+        1,
+        3,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00118",
+      "resetParams": {
+        "seed": "PROBE-00118",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        4,
+        2,
+        3,
+        2,
+        0,
+        0,
+        4,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00119",
+      "resetParams": {
+        "seed": "PROBE-00119",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        7,
+        8,
+        3,
+        0,
+        0,
+        7,
+        0,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 12
+      }
+    },
+    {
+      "probeId": "probe-00120",
+      "resetParams": {
+        "seed": "PROBE-00120",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00121",
+      "resetParams": {
+        "seed": "PROBE-00121",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        7,
+        5,
+        6,
+        6
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00122",
+      "resetParams": {
+        "seed": "PROBE-00122",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00123",
+      "resetParams": {
+        "seed": "PROBE-00123",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        2,
+        2,
+        0,
+        1,
+        3,
+        2,
+        0,
+        0,
+        4,
+        4,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00124",
+      "resetParams": {
+        "seed": "PROBE-00124",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        6,
+        3,
+        0,
+        2,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00125",
+      "resetParams": {
+        "seed": "PROBE-00125",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        2,
+        2,
+        0,
+        0,
+        6,
+        0,
+        0,
+        0,
+        2,
+        2,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00127",
+      "resetParams": {
+        "seed": "PROBE-00127",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        4,
+        1,
+        7,
+        2,
+        5
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00128",
+      "resetParams": {
+        "seed": "PROBE-00128",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        1,
+        2,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00129",
+      "resetParams": {
+        "seed": "PROBE-00129",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00130",
+      "resetParams": {
+        "seed": "PROBE-00130",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        11,
+        3,
+        1,
+        6,
+        5,
+        7,
+        5,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00131",
+      "resetParams": {
+        "seed": "PROBE-00131",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        1,
+        2,
+        2,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00132",
+      "resetParams": {
+        "seed": "PROBE-00132",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        8,
+        4,
+        4
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00133",
+      "resetParams": {
+        "seed": "PROBE-00133",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        2,
+        1,
+        4,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00134",
+      "resetParams": {
+        "seed": "PROBE-00134",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        3,
+        3,
+        4,
+        1,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00135",
+      "resetParams": {
+        "seed": "PROBE-00135",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00136",
+      "resetParams": {
+        "seed": "PROBE-00136",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        8,
+        8,
+        6
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00137",
+      "resetParams": {
+        "seed": "PROBE-00137",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00138",
+      "resetParams": {
+        "seed": "PROBE-00138",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        8,
+        8,
+        2,
+        4,
+        2,
+        0,
+        4,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00139",
+      "resetParams": {
+        "seed": "PROBE-00139",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        1,
+        0,
+        0,
+        2,
+        4,
+        4,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00141",
+      "resetParams": {
+        "seed": "PROBE-00141",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        2,
+        0,
+        0,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00142",
+      "resetParams": {
+        "seed": "PROBE-00142",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        8,
+        8,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00143",
+      "resetParams": {
+        "seed": "PROBE-00143",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00144",
+      "resetParams": {
+        "seed": "PROBE-00144",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        1,
+        2,
+        4,
+        1,
+        4,
+        3,
+        1,
+        0,
+        5,
+        1,
+        0,
+        0,
+        0,
+        4
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00145",
+      "resetParams": {
+        "seed": "PROBE-00145",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        7,
+        1,
+        1,
+        2,
+        0,
+        4,
+        4,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00147",
+      "resetParams": {
+        "seed": "PROBE-00147",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00148",
+      "resetParams": {
+        "seed": "PROBE-00148",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        4,
+        1,
+        4,
+        1,
+        5,
+        0,
+        3,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00149",
+      "resetParams": {
+        "seed": "PROBE-00149",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        6,
+        4,
+        2,
+        0,
+        1,
+        0,
+        5,
+        0,
+        0,
+        6,
+        0,
+        2,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00150",
+      "resetParams": {
+        "seed": "PROBE-00150",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        11,
+        6,
+        0,
+        3,
+        0,
+        2,
+        1,
+        6,
+        3,
+        0,
+        3,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00152",
+      "resetParams": {
+        "seed": "PROBE-00152",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        1,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00153",
+      "resetParams": {
+        "seed": "PROBE-00153",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        3,
+        0,
+        1,
+        0,
+        4,
+        3,
+        3,
+        5,
+        5,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00154",
+      "resetParams": {
+        "seed": "PROBE-00154",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        3,
+        1,
+        0,
+        0,
+        2,
+        2,
+        4,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00155",
+      "resetParams": {
+        "seed": "PROBE-00155",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        1,
+        1,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00156",
+      "resetParams": {
+        "seed": "PROBE-00156",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        4,
+        5,
+        1,
+        3,
+        0,
+        1,
+        3,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00158",
+      "resetParams": {
+        "seed": "PROBE-00158",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        6,
+        4,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00159",
+      "resetParams": {
+        "seed": "PROBE-00159",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        10,
+        2,
+        2,
+        2,
+        0,
+        3,
+        0,
+        0,
+        0,
+        3,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00160",
+      "resetParams": {
+        "seed": "PROBE-00160",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        3,
+        3,
+        4,
+        3,
+        5
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00161",
+      "resetParams": {
+        "seed": "PROBE-00161",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00162",
+      "resetParams": {
+        "seed": "PROBE-00162",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00163",
+      "resetParams": {
+        "seed": "PROBE-00163",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00165",
+      "resetParams": {
+        "seed": "PROBE-00165",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        3,
+        1,
+        0,
+        0,
+        4,
+        3,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00166",
+      "resetParams": {
+        "seed": "PROBE-00166",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        1,
+        2,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00168",
+      "resetParams": {
+        "seed": "PROBE-00168",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        6,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00169",
+      "resetParams": {
+        "seed": "PROBE-00169",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        6,
+        4,
+        1,
+        3,
+        4,
+        2,
+        3,
+        1,
+        0,
+        5
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00170",
+      "resetParams": {
+        "seed": "PROBE-00170",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        1,
+        0,
+        0,
+        5,
+        1,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00171",
+      "resetParams": {
+        "seed": "PROBE-00171",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        8,
+        4
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00172",
+      "resetParams": {
+        "seed": "PROBE-00172",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        5
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00175",
+      "resetParams": {
+        "seed": "PROBE-00175",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00176",
+      "resetParams": {
+        "seed": "PROBE-00176",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Choice",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00177",
+      "resetParams": {
+        "seed": "PROBE-00177",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        0,
+        0,
+        4
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00178",
+      "resetParams": {
+        "seed": "PROBE-00178",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        7,
+        8,
+        0,
+        7
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00179",
+      "resetParams": {
+        "seed": "PROBE-00179",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00180",
+      "resetParams": {
+        "seed": "PROBE-00180",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        1,
+        1,
+        1,
+        6,
+        1,
+        0,
+        3,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00183",
+      "resetParams": {
+        "seed": "PROBE-00183",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00185",
+      "resetParams": {
+        "seed": "PROBE-00185",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        0,
+        0,
+        3,
+        0,
+        0,
+        0,
+        3,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00186",
+      "resetParams": {
+        "seed": "PROBE-00186",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00187",
+      "resetParams": {
+        "seed": "PROBE-00187",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00189",
+      "resetParams": {
+        "seed": "PROBE-00189",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        3,
+        0,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00190",
+      "resetParams": {
+        "seed": "PROBE-00190",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        4,
+        10,
+        1,
+        2,
+        6,
+        1,
+        4,
+        5,
+        4,
+        3,
+        2,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Choice",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00191",
+      "resetParams": {
+        "seed": "PROBE-00191",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00192",
+      "resetParams": {
+        "seed": "PROBE-00192",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5,
+        4,
+        3,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00194",
+      "resetParams": {
+        "seed": "PROBE-00194",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        9,
+        9,
+        4,
+        4,
+        5,
+        2,
+        9,
+        9
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00196",
+      "resetParams": {
+        "seed": "PROBE-00196",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        5,
+        5,
+        0,
+        4,
+        1,
+        7,
+        5,
+        1,
+        0,
+        2,
+        4,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00198",
+      "resetParams": {
+        "seed": "PROBE-00198",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        8,
+        4,
+        2,
+        6,
+        2,
+        0,
+        0,
+        0,
+        2,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00199",
+      "resetParams": {
+        "seed": "PROBE-00199",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        1,
+        3,
+        1,
+        1,
+        6,
+        6,
+        10,
+        6,
+        5,
+        0,
+        1,
+        2,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00201",
+      "resetParams": {
+        "seed": "PROBE-00201",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        5,
+        2,
+        0,
+        0,
+        0,
+        2,
+        1,
+        3,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00202",
+      "resetParams": {
+        "seed": "PROBE-00202",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        10
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00203",
+      "resetParams": {
+        "seed": "PROBE-00203",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        11,
+        8,
+        3,
+        6,
+        3,
+        0,
+        3,
+        8,
+        3,
+        6,
+        1,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00204",
+      "resetParams": {
+        "seed": "PROBE-00204",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        4,
+        4,
+        0,
+        4,
+        5,
+        0,
+        0,
+        3,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00205",
+      "resetParams": {
+        "seed": "PROBE-00205",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        4,
+        2,
+        4,
+        0,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00207",
+      "resetParams": {
+        "seed": "PROBE-00207",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        1,
+        3,
+        1,
+        0,
+        0,
+        1,
+        1,
+        2,
+        0,
+        3,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00211",
+      "resetParams": {
+        "seed": "PROBE-00211",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        0,
+        2,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00213",
+      "resetParams": {
+        "seed": "PROBE-00213",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00214",
+      "resetParams": {
+        "seed": "PROBE-00214",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        3,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00215",
+      "resetParams": {
+        "seed": "PROBE-00215",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        1,
+        5,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00216",
+      "resetParams": {
+        "seed": "PROBE-00216",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        5,
+        5,
+        6,
+        8,
+        8,
+        5,
+        3,
+        1,
+        4,
+        2,
+        4,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 7,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00217",
+      "resetParams": {
+        "seed": "PROBE-00217",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        4
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00219",
+      "resetParams": {
+        "seed": "PROBE-00219",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        6,
+        13,
+        0,
+        2,
+        1,
+        9,
+        0,
+        4,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00220",
+      "resetParams": {
+        "seed": "PROBE-00220",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        6,
+        5,
+        2,
+        4,
+        3,
+        5,
+        0,
+        1,
+        2,
+        0,
+        3,
+        0,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00221",
+      "resetParams": {
+        "seed": "PROBE-00221",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5,
+        7,
+        1,
+        8,
+        12,
+        3,
+        2,
+        5,
+        3,
+        0,
+        2,
+        1,
+        7
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00222",
+      "resetParams": {
+        "seed": "PROBE-00222",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        2,
+        3,
+        5,
+        1,
+        2,
+        3,
+        4,
+        4,
+        3,
+        0,
+        0,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00223",
+      "resetParams": {
+        "seed": "PROBE-00223",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        1,
+        2,
+        1,
+        1,
+        0,
+        1,
+        1,
+        0,
+        2,
+        1,
+        0,
+        0,
+        1,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00225",
+      "resetParams": {
+        "seed": "PROBE-00225",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        3,
+        2,
+        0,
+        0,
+        3,
+        1,
+        1,
+        0,
+        1,
+        0,
+        2,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00226",
+      "resetParams": {
+        "seed": "PROBE-00226",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        0,
+        2,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00227",
+      "resetParams": {
+        "seed": "PROBE-00227",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00228",
+      "resetParams": {
+        "seed": "PROBE-00228",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        7,
+        3,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00229",
+      "resetParams": {
+        "seed": "PROBE-00229",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        5,
+        1,
+        1,
+        3,
+        1,
+        0,
+        3,
+        4,
+        3,
+        1,
+        1,
+        3,
+        4,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00230",
+      "resetParams": {
+        "seed": "PROBE-00230",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        0,
+        3,
+        0,
+        1,
+        1,
+        0,
+        1,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00233",
+      "resetParams": {
+        "seed": "PROBE-00233",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00234",
+      "resetParams": {
+        "seed": "PROBE-00234",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        2,
+        1,
+        0,
+        3,
+        0,
+        0,
+        5,
+        4,
+        4,
+        0,
+        4,
+        1,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 7,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00236",
+      "resetParams": {
+        "seed": "PROBE-00236",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        6,
+        2,
+        0,
+        3,
+        4,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00238",
+      "resetParams": {
+        "seed": "PROBE-00238",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 12
+      }
+    },
+    {
+      "probeId": "probe-00240",
+      "resetParams": {
+        "seed": "PROBE-00240",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        13
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 12
+      }
+    },
+    {
+      "probeId": "probe-00241",
+      "resetParams": {
+        "seed": "PROBE-00241",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        4,
+        1,
+        0,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00242",
+      "resetParams": {
+        "seed": "PROBE-00242",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        5,
+        0,
+        0,
+        3,
+        5,
+        0,
+        1,
+        3,
+        6,
+        4,
+        5
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Choice",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00243",
+      "resetParams": {
+        "seed": "PROBE-00243",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        4,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4,
+        4,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00245",
+      "resetParams": {
+        "seed": "PROBE-00245",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        0,
+        0,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00250",
+      "resetParams": {
+        "seed": "PROBE-00250",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        2,
+        0,
+        0,
+        0,
+        4,
+        2,
+        0,
+        2,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00252",
+      "resetParams": {
+        "seed": "PROBE-00252",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        9,
+        0,
+        8,
+        7,
+        4,
+        3,
+        2,
+        8,
+        1,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00254",
+      "resetParams": {
+        "seed": "PROBE-00254",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        2,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00255",
+      "resetParams": {
+        "seed": "PROBE-00255",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        18,
+        28,
+        3,
+        5,
+        23,
+        14,
+        2,
+        22
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 15
+      }
+    },
+    {
+      "probeId": "probe-00256",
+      "resetParams": {
+        "seed": "PROBE-00256",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        6,
+        4,
+        3,
+        1,
+        0,
+        0,
+        6,
+        3,
+        4,
+        3,
+        2,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00257",
+      "resetParams": {
+        "seed": "PROBE-00257",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        2,
+        4,
+        5
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00260",
+      "resetParams": {
+        "seed": "PROBE-00260",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00262",
+      "resetParams": {
+        "seed": "PROBE-00262",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00264",
+      "resetParams": {
+        "seed": "PROBE-00264",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        2,
+        1,
+        1,
+        0,
+        0,
+        1,
+        2,
+        4,
+        0,
+        1,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00265",
+      "resetParams": {
+        "seed": "PROBE-00265",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        6,
+        0,
+        5,
+        3,
+        1,
+        2,
+        2,
+        3,
+        0,
+        1,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00267",
+      "resetParams": {
+        "seed": "PROBE-00267",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        0,
+        0,
+        7,
+        7,
+        2,
+        3,
+        0,
+        0,
+        0,
+        5,
+        0,
+        1,
+        0,
+        4
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00268",
+      "resetParams": {
+        "seed": "PROBE-00268",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        2,
+        2,
+        1,
+        2,
+        2,
+        0,
+        5,
+        4,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00269",
+      "resetParams": {
+        "seed": "PROBE-00269",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        9,
+        2,
+        1,
+        1,
+        0,
+        5,
+        0,
+        1,
+        0,
+        1,
+        3,
+        3,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00273",
+      "resetParams": {
+        "seed": "PROBE-00273",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        1,
+        1,
+        2,
+        1,
+        3,
+        5,
+        0,
+        2,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00274",
+      "resetParams": {
+        "seed": "PROBE-00274",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        0,
+        2,
+        0,
+        4,
+        2,
+        3,
+        2,
+        1,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00275",
+      "resetParams": {
+        "seed": "PROBE-00275",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        5,
+        1,
+        1,
+        5,
+        1,
+        4,
+        2,
+        0,
+        6
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00276",
+      "resetParams": {
+        "seed": "PROBE-00276",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        6,
+        2,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00277",
+      "resetParams": {
+        "seed": "PROBE-00277",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        9,
+        2,
+        0,
+        11,
+        9,
+        2,
+        1,
+        0,
+        1,
+        7,
+        2,
+        5,
+        6,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00278",
+      "resetParams": {
+        "seed": "PROBE-00278",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        9
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00279",
+      "resetParams": {
+        "seed": "PROBE-00279",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        5,
+        4,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00282",
+      "resetParams": {
+        "seed": "PROBE-00282",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        8,
+        3,
+        4,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00283",
+      "resetParams": {
+        "seed": "PROBE-00283",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00284",
+      "resetParams": {
+        "seed": "PROBE-00284",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        3,
+        1,
+        1,
+        1,
+        1,
+        0,
+        1,
+        5
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00285",
+      "resetParams": {
+        "seed": "PROBE-00285",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00286",
+      "resetParams": {
+        "seed": "PROBE-00286",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00287",
+      "resetParams": {
+        "seed": "PROBE-00287",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        0,
+        3,
+        8,
+        9
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00289",
+      "resetParams": {
+        "seed": "PROBE-00289",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        4,
+        0,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00291",
+      "resetParams": {
+        "seed": "PROBE-00291",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        0,
+        0,
+        0,
+        5,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00294",
+      "resetParams": {
+        "seed": "PROBE-00294",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        7,
+        1,
+        7,
+        4,
+        2,
+        5,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00295",
+      "resetParams": {
+        "seed": "PROBE-00295",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00296",
+      "resetParams": {
+        "seed": "PROBE-00296",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        2,
+        0,
+        1,
+        0,
+        3,
+        4,
+        5,
+        0,
+        1,
+        2,
+        2,
+        2,
+        2,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00297",
+      "resetParams": {
+        "seed": "PROBE-00297",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        4,
+        5,
+        6,
+        5,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00298",
+      "resetParams": {
+        "seed": "PROBE-00298",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        4,
+        2,
+        7,
+        3,
+        1,
+        0,
+        6,
+        0,
+        0,
+        0,
+        3,
+        5,
+        6
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00300",
+      "resetParams": {
+        "seed": "PROBE-00300",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        2,
+        0,
+        2,
+        0,
+        2,
+        2,
+        0,
+        4,
+        3,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00301",
+      "resetParams": {
+        "seed": "PROBE-00301",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        2,
+        2,
+        3,
+        1,
+        0,
+        0,
+        0,
+        2,
+        2,
+        3,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00302",
+      "resetParams": {
+        "seed": "PROBE-00302",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        11,
+        9,
+        7,
+        3,
+        5,
+        1,
+        1,
+        0,
+        5,
+        4,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00303",
+      "resetParams": {
+        "seed": "PROBE-00303",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        3,
+        1,
+        1,
+        0,
+        0,
+        3,
+        2,
+        5,
+        5,
+        0,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00304",
+      "resetParams": {
+        "seed": "PROBE-00304",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        2,
+        0,
+        0,
+        0,
+        4,
+        1,
+        0,
+        1,
+        4,
+        0,
+        0,
+        4,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 4,
+        "phase": "Choice",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00305",
+      "resetParams": {
+        "seed": "PROBE-00305",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        1,
+        0,
+        3,
+        1,
+        0,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00306",
+      "resetParams": {
+        "seed": "PROBE-00306",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        5,
+        2,
+        0,
+        0,
+        1,
+        4,
+        0,
+        0,
+        10,
+        1,
+        6,
+        10,
+        11
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00307",
+      "resetParams": {
+        "seed": "PROBE-00307",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 14
+      }
+    },
+    {
+      "probeId": "probe-00308",
+      "resetParams": {
+        "seed": "PROBE-00308",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        0,
+        3,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00309",
+      "resetParams": {
+        "seed": "PROBE-00309",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        2,
+        7,
+        5,
+        5,
+        2,
+        3,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00311",
+      "resetParams": {
+        "seed": "PROBE-00311",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        11,
+        3,
+        2,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00312",
+      "resetParams": {
+        "seed": "PROBE-00312",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00315",
+      "resetParams": {
+        "seed": "PROBE-00315",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00316",
+      "resetParams": {
+        "seed": "PROBE-00316",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        14,
+        2,
+        1,
+        1,
+        0,
+        0,
+        7,
+        5,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00317",
+      "resetParams": {
+        "seed": "PROBE-00317",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        8,
+        3,
+        1,
+        0,
+        9,
+        7,
+        4,
+        0,
+        0,
+        5,
+        3,
+        2,
+        0,
+        8
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00318",
+      "resetParams": {
+        "seed": "PROBE-00318",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00319",
+      "resetParams": {
+        "seed": "PROBE-00319",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        6,
+        1,
+        4
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00320",
+      "resetParams": {
+        "seed": "PROBE-00320",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00322",
+      "resetParams": {
+        "seed": "PROBE-00322",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        3,
+        0,
+        0,
+        0,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00324",
+      "resetParams": {
+        "seed": "PROBE-00324",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        10,
+        3,
+        10,
+        0,
+        1,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00325",
+      "resetParams": {
+        "seed": "PROBE-00325",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        10,
+        4,
+        0,
+        0,
+        6,
+        1,
+        4,
+        1,
+        0,
+        10,
+        7,
+        1,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 12
+      }
+    },
+    {
+      "probeId": "probe-00326",
+      "resetParams": {
+        "seed": "PROBE-00326",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 17
+      }
+    },
+    {
+      "probeId": "probe-00327",
+      "resetParams": {
+        "seed": "PROBE-00327",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00328",
+      "resetParams": {
+        "seed": "PROBE-00328",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        8,
+        8,
+        8,
+        4,
+        2,
+        2,
+        2,
+        7,
+        5,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00329",
+      "resetParams": {
+        "seed": "PROBE-00329",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        1,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00333",
+      "resetParams": {
+        "seed": "PROBE-00333",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        4,
+        0,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00335",
+      "resetParams": {
+        "seed": "PROBE-00335",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00336",
+      "resetParams": {
+        "seed": "PROBE-00336",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00339",
+      "resetParams": {
+        "seed": "PROBE-00339",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00340",
+      "resetParams": {
+        "seed": "PROBE-00340",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        0,
+        4,
+        0,
+        5,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00341",
+      "resetParams": {
+        "seed": "PROBE-00341",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        0,
+        1,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00343",
+      "resetParams": {
+        "seed": "PROBE-00343",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        4,
+        0,
+        0,
+        6,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00344",
+      "resetParams": {
+        "seed": "PROBE-00344",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        1,
+        0,
+        0,
+        0,
+        1,
+        3,
+        1,
+        0,
+        1,
+        5,
+        6,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00346",
+      "resetParams": {
+        "seed": "PROBE-00346",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        0,
+        3,
+        0,
+        3,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00347",
+      "resetParams": {
+        "seed": "PROBE-00347",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        3,
+        3,
+        2,
+        0,
+        3,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00348",
+      "resetParams": {
+        "seed": "PROBE-00348",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        7
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00349",
+      "resetParams": {
+        "seed": "PROBE-00349",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        0,
+        0,
+        4,
+        3,
+        1,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00351",
+      "resetParams": {
+        "seed": "PROBE-00351",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        4,
+        3,
+        0,
+        7,
+        5,
+        0,
+        2,
+        5,
+        3,
+        1,
+        0,
+        0,
+        6,
+        2,
+        7
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 7
+      }
+    },
+    {
+      "probeId": "probe-00352",
+      "resetParams": {
+        "seed": "PROBE-00352",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00354",
+      "resetParams": {
+        "seed": "PROBE-00354",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        2,
+        3,
+        0,
+        0,
+        0,
+        8,
+        13,
+        1,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00355",
+      "resetParams": {
+        "seed": "PROBE-00355",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        7,
+        4,
+        2,
+        3,
+        2,
+        2,
+        0,
+        0,
+        2,
+        5
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00356",
+      "resetParams": {
+        "seed": "PROBE-00356",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        1,
+        2,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 15
+      }
+    },
+    {
+      "probeId": "probe-00357",
+      "resetParams": {
+        "seed": "PROBE-00357",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00359",
+      "resetParams": {
+        "seed": "PROBE-00359",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        0,
+        4,
+        2,
+        0,
+        0,
+        2,
+        0,
+        1,
+        0,
+        4,
+        5,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 5,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00360",
+      "resetParams": {
+        "seed": "PROBE-00360",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        0,
+        2,
+        1,
+        0,
+        3,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Choice",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00361",
+      "resetParams": {
+        "seed": "PROBE-00361",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        4,
+        5,
+        11,
+        7,
+        2,
+        0,
+        2,
+        2,
+        0,
+        2,
+        0,
+        6,
+        0,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00362",
+      "resetParams": {
+        "seed": "PROBE-00362",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00363",
+      "resetParams": {
+        "seed": "PROBE-00363",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        2,
+        2,
+        2,
+        0,
+        5
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00366",
+      "resetParams": {
+        "seed": "PROBE-00366",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        7,
+        0,
+        7,
+        0,
+        3,
+        2,
+        0,
+        0,
+        0,
+        4,
+        1,
+        0,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00367",
+      "resetParams": {
+        "seed": "PROBE-00367",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        9,
+        5,
+        0,
+        0,
+        2,
+        0,
+        0,
+        3,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00368",
+      "resetParams": {
+        "seed": "PROBE-00368",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        2,
+        1,
+        2,
+        1,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00369",
+      "resetParams": {
+        "seed": "PROBE-00369",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00370",
+      "resetParams": {
+        "seed": "PROBE-00370",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        3,
+        6,
+        4
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00371",
+      "resetParams": {
+        "seed": "PROBE-00371",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        1,
+        2,
+        3,
+        0,
+        2,
+        2,
+        2,
+        0,
+        0,
+        2,
+        6,
+        7
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 11
+      }
+    },
+    {
+      "probeId": "probe-00372",
+      "resetParams": {
+        "seed": "PROBE-00372",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 10
+      }
+    },
+    {
+      "probeId": "probe-00373",
+      "resetParams": {
+        "seed": "PROBE-00373",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        7,
+        8,
+        5,
+        6,
+        0,
+        3,
+        0,
+        9,
+        3,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00375",
+      "resetParams": {
+        "seed": "PROBE-00375",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        0,
+        0,
+        1,
+        3
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00376",
+      "resetParams": {
+        "seed": "PROBE-00376",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        5,
+        1,
+        1,
+        2,
+        2,
+        0,
+        1,
+        3,
+        3,
+        2,
+        2,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00377",
+      "resetParams": {
+        "seed": "PROBE-00377",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        6,
+        8,
+        2,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00378",
+      "resetParams": {
+        "seed": "PROBE-00378",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00379",
+      "resetParams": {
+        "seed": "PROBE-00379",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        5,
+        2,
+        5,
+        5,
+        4,
+        3,
+        1,
+        1,
+        0,
+        2,
+        6
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 5,
+        "phase": "Choice",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00380",
+      "resetParams": {
+        "seed": "PROBE-00380",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00384",
+      "resetParams": {
+        "seed": "PROBE-00384",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        7,
+        1,
+        3,
+        0,
+        0,
+        0,
+        3,
+        3,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00385",
+      "resetParams": {
+        "seed": "PROBE-00385",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        0,
+        2,
+        2,
+        0,
+        1,
+        3,
+        1,
+        0,
+        0,
+        1,
+        0,
+        4
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00386",
+      "resetParams": {
+        "seed": "PROBE-00386",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        7,
+        0,
+        2,
+        2,
+        2,
+        2,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00388",
+      "resetParams": {
+        "seed": "PROBE-00388",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        5,
+        0,
+        2,
+        0,
+        1,
+        12,
+        3,
+        0,
+        2,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 16
+      }
+    },
+    {
+      "probeId": "probe-00389",
+      "resetParams": {
+        "seed": "PROBE-00389",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        1,
+        1,
+        2,
+        3,
+        3,
+        3,
+        1,
+        2,
+        0,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00390",
+      "resetParams": {
+        "seed": "PROBE-00390",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        5,
+        1,
+        0,
+        3,
+        3,
+        4
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00391",
+      "resetParams": {
+        "seed": "PROBE-00391",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        6,
+        6,
+        0
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00392",
+      "resetParams": {
+        "seed": "PROBE-00392",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        6,
+        0,
+        4,
+        3,
+        0,
+        1,
+        1,
+        0,
+        4,
+        3
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 6
+      }
+    },
+    {
+      "probeId": "probe-00393",
+      "resetParams": {
+        "seed": "PROBE-00393",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        2,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00395",
+      "resetParams": {
+        "seed": "PROBE-00395",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "DEFECT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00398",
+      "resetParams": {
+        "seed": "PROBE-00398",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        4,
+        5,
+        5,
+        4,
+        4,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "REGENT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00400",
+      "resetParams": {
+        "seed": "PROBE-00400",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        1,
+        0,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00401",
+      "resetParams": {
+        "seed": "PROBE-00401",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [],
+      "meta": {
+        "act": 2,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00405",
+      "resetParams": {
+        "seed": "PROBE-00405",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        7,
+        0,
+        1,
+        0,
+        5,
+        9,
+        1,
+        14,
+        7
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 8
+      }
+    },
+    {
+      "probeId": "probe-00406",
+      "resetParams": {
+        "seed": "PROBE-00406",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        4,
+        0,
+        3,
+        1,
+        2,
+        0,
+        2,
+        0,
+        2
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00407",
+      "resetParams": {
+        "seed": "PROBE-00407",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        6,
+        6,
+        3,
+        3,
+        0,
+        6,
+        7
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "SILENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00408",
+      "resetParams": {
+        "seed": "PROBE-00408",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 2
+      },
+      "actionPrefix": [
+        11,
+        1,
+        5,
+        0,
+        2,
+        5,
+        0,
+        0,
+        8
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Elite",
+        "character": "NECROBINDER",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00409",
+      "resetParams": {
+        "seed": "PROBE-00409",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        7,
+        0,
+        1,
+        0,
+        1,
+        1,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00411",
+      "resetParams": {
+        "seed": "PROBE-00411",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        3,
+        1,
+        1,
+        0,
+        2,
+        0,
+        0,
+        1,
+        5,
+        5,
+        4
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "SILENT",
+        "turn": 3,
+        "phase": "Combat",
+        "optionCount": 5
+      }
+    },
+    {
+      "probeId": "probe-00413",
+      "resetParams": {
+        "seed": "PROBE-00413",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        6,
+        1,
+        1,
+        2,
+        0,
+        0,
+        4,
+        2,
+        3,
+        3,
+        5,
+        6,
+        4,
+        2
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "SILENT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00415",
+      "resetParams": {
+        "seed": "PROBE-00415",
+        "character": null,
+        "elitePct": 1.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        8,
+        5,
+        7,
+        1,
+        3,
+        1,
+        5,
+        1,
+        4,
+        5,
+        1,
+        2,
+        2,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Elite",
+        "character": "REGENT",
+        "turn": 6,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00416",
+      "resetParams": {
+        "seed": "PROBE-00416",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": false,
+        "act": 0
+      },
+      "actionPrefix": [
+        2,
+        2,
+        2,
+        3
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Boss",
+        "character": "DEFECT",
+        "turn": 2,
+        "phase": "Combat",
+        "optionCount": 4
+      }
+    },
+    {
+      "probeId": "probe-00419",
+      "resetParams": {
+        "seed": "PROBE-00419",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        9,
+        1,
+        2,
+        0,
+        1,
+        14,
+        6,
+        0,
+        0
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 4,
+        "phase": "Combat",
+        "optionCount": 9
+      }
+    },
+    {
+      "probeId": "probe-00420",
+      "resetParams": {
+        "seed": "PROBE-00420",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 1.0,
+        "starterDeck": true,
+        "act": 1
+      },
+      "actionPrefix": [
+        3,
+        1
+      ],
+      "meta": {
+        "act": 1,
+        "roomType": "Boss",
+        "character": "IRONCLAD",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 3
+      }
+    },
+    {
+      "probeId": "probe-00421",
+      "resetParams": {
+        "seed": "PROBE-00421",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": false,
+        "act": 2
+      },
+      "actionPrefix": [
+        2,
+        1
+      ],
+      "meta": {
+        "act": 2,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 1,
+        "phase": "Combat",
+        "optionCount": 2
+      }
+    },
+    {
+      "probeId": "probe-00423",
+      "resetParams": {
+        "seed": "PROBE-00423",
+        "character": null,
+        "elitePct": 0.0,
+        "bossPct": 0.0,
+        "starterDeck": true,
+        "act": 0
+      },
+      "actionPrefix": [
+        1,
+        2,
+        3,
+        1,
+        2,
+        3,
+        1
+      ],
+      "meta": {
+        "act": 0,
+        "roomType": "Monster",
+        "character": "REGENT",
+        "turn": 3,
         "phase": "Combat",
         "optionCount": 5
       }
