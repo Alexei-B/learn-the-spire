@@ -336,6 +336,54 @@ python -m lts2_agent.corpus_report --corpus python/data/corpus        # add --js
   `collect.transitions_total/fights_total/errors_total/transitions_per_s` plus per-fight `fight.won`/
   `fight.hp_lost` tagged `{act, room, character, regime, policy}`.
 
+## Tokenizer — the world-model parity contract
+
+`lts2_agent.tokens` is the **successor to `features.py`** for the world-model stack (design §4.1). Where
+`features.py` hand-crafts a fixed scalar vector — the "feature treadmill" where every unmodelled mechanic
+is invisible until someone adds a feature and bumps `FEATURE_VERSION` — the tokenizer encodes a state as a
+**set of typed entity tokens**. Rule: *if the wire exposes it, tokenize it.* New mechanics arrive as new
+catalog ids + generic numeric fields, never as bespoke features. `TOKENIZER_VERSION` (+ the four catalog
+signatures) is the new train/serve parity stamp, playing the role `FEATURE_VERSION` plays for the PPO
+model. NumPy-only (no torch/jax), so it imports everywhere. The PPO baseline still uses `features.py`.
+
+```sh
+# CP3 artifact: coverage + round-trip report over the corpus (every state AND nextState).
+python -m lts2_agent.tokens --check python/data/corpus            # add --limit N to sample
+# Exits nonzero on any lost field or any round-trip mismatch.
+```
+
+- **Token types** (each token carries a token-type id): a **global** token (phase/side/turn-phase +
+  act/floor/ascension/score/energy/stars/turn/gold/…); one **card** token per card in hand, draw, discard,
+  exhaust, and the offered cards of a pending choice (zone id + card-catalog index + the live `CardView`
+  dynamic fields: cost/costsX/starCost/damage/baseDamage/block/baseBlock/summon/upgraded/canPlay/
+  replayCount/enchant/affliction + a hashed multi-hot of `addedKeywords`); one **creature** token per
+  player/Osty/enemy (hp/maxHp/block/active + identity); **power** tokens (power-catalog index + amount,
+  parented to a creature); **intent** tokens (type/damage/hits, parented to an enemy); **orb**, **relic**
+  (relic-catalog index), **potion** (potion-catalog index, per belt slot incl. empty), and a **pending-
+  choice** token (min/max select + upgrade flag). Fixed-shape padded arrays + boolean masks batch cleanly.
+- **The draw pile (and every card zone) is an unordered MULTISET.** Card tokens within a zone are sorted
+  by their full content tuple, so the wire's shuffle order can *never* leak. Two shuffles of the same pile
+  produce byte-identical tokens (`test_tokens.test_draw_pile_is_unordered_multiset`).
+- **Numerics use symlog** (`sign(x)·log1p|x|`, DreamerV3-style) with a ±`NUM_CLIP` (1e5) clamp — bounded
+  (no encoder blow-ups) and **exactly invertible** for integer game quantities, which is what makes the
+  round-trip validator exact. The clamp only saturates the game's `999999999` "no maximum" select sentinel
+  and any pathological scaling outlier. Every categorical is a **catalog index** (cards/powers/relics/
+  potions — exact inverse) or a small **fixed enum** (zones, token/intent/target/card types, phases —
+  enumerated from `GameState.cs`).
+- **Catalogs** (`lts2_agent.catalog`, generalizing `card_catalog`): each of cards/powers/relics/potions
+  gets a stable dense id→index (0 = none/unknown), a static multi-hot table (categorical one-hots ++ flags
+  ++ tags/keywords/var-keys), and a content signature. Null-tolerant: on a fresh clone with no dump, falls
+  back to CRC32 hashing into a fixed vocab. Regenerate the dumps with
+  `Lts2.AgentHost --dump-{cards,powers,relics,potions} > python/lts2_agent/data/<kind>.json`.
+- **Coverage contract**: `coverage_check(state)` walks the raw wire dict and classifies **every** field as
+  covered / waived / lost; `lost` must stay empty over the corpus. Waivers (in `tokens.WAIVERS`, each with
+  a reason): non-combat room views (`map`/`rewards`/`bundleChoice`/`event`/`shop`/`restSite`/`treasure`/
+  `crystalSphere` — the tokenizer is a *combat* world-model), `seed`/`netId` (identifiers), `deck` (the
+  persistent run deck; in combat the live cards are the four piles), and per-card `poolId` (static, already
+  in the card-catalog row). A handful of open string ids with no catalog dump (monster/character/orb/
+  enchant/affliction ids, granted keywords) are **covered-lossy** — hashed into fixed vocabs (`LOSSY_FIELDS`
+  documents each); they are tokenized but do not round-trip back to a string.
+
 ## Protocol
 
 The full wire spec lives in `docs/design/Lts2.Agent — Protocol.md`.

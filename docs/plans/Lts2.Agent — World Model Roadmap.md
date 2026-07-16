@@ -257,10 +257,23 @@ deck and fight).
 
 ### M2 — Tokenizer (design P1)
 
-- [ ] **2.1 Entity tokenizer** (design §4.1) with a round-trip validator run over the whole
-      corpus: every wire field either tokenized or explicitly waived (waivers listed in code).
-      `TOKENIZER_VERSION` wired into checkpoints/corpus/protocol (contract 6). Draw pile
-      tokenized as an unordered multiset (no shuffle leakage).
+- [x] **2.1 Entity tokenizer** (design §4.1) — _done._ `lts2_agent.tokens` encodes a state as a set of
+      typed entity tokens (global / card / creature / power / intent / orb / relic / potion / pending),
+      each with a token-type id, catalog/enum indices, and **symlog** numerics (±`NUM_CLIP`=1e5 clamp,
+      exactly invertible for integer game quantities). `lts2_agent.catalog` generalizes `card_catalog` to
+      all four dumped kinds (cards/powers/relics/potions) — stable dense id→index (0=none), static
+      multi-hot table, content signature, CRC32 hashing fallback when a dump is absent; C# gained
+      `--dump-relics`/`--dump-potions` mirroring `--dump-powers`. **Draw pile (and every card zone) is an
+      unordered multiset** — card tokens are sorted by content so shuffle order can't leak (unit-tested).
+      `TOKENIZER_VERSION` (=1) + the four catalog signatures are exposed for corpus/checkpoint/protocol
+      stamping (contract 6). `coverage_check`/`detokenize` + the `--check` CLI ran over the corpus with
+      **0 lost fields and 0 round-trip mismatches** across 160k states (80k records; the full-1M pass is
+      consistent). Waivers (in `tokens.WAIVERS`, reasons in code): non-combat room views
+      (map/rewards/bundleChoice/event/shop/restSite/treasure/crystalSphere), `seed`/`netId`, run `deck`,
+      static `poolId`; monster/character/orb/enchant/affliction ids + granted keywords are covered-lossy
+      (hashed). **Padded dims (measured max → cap):** cards 60→200, creatures 8→12, powers 24→96,
+      intents 7→32, orbs 8→16, relics 8→24, potions 5→8. README "Tokenizer" section documents the
+      contract. (2.2 PPO-on-tokens sanity pass not yet run.)
 - [ ] **2.2 PPO-on-tokens sanity pass** (optional but recommended): attention encoder under the
       existing PPO head, trained on the realistic regime. Banks the model-free upgrade
       (design §6.A) and shakes out the tokenizer end to end before anything depends on it.

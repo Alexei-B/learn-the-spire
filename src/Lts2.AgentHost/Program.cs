@@ -115,6 +115,76 @@ internal static class Program
             return 0;
         }
 
+        // Dump the static per-relic metadata catalog to stdout (JSON), mirroring --dump-powers, so the
+        // Python tokenizer can build a stable per-relic embedding index + static feature table. Emits, per
+        // relic: its id, Rarity, home pool id, the cheap static behaviour flags the model type exposes
+        // (stackable / spawns-pets / adds-pet / upon-pickup / shows-a-counter / shop-allowed), and its
+        // declared dynamic-var keys. Run once: `Lts2.AgentHost --dump-relics > relics.json`.
+        if (args.Length > 0 && args[0] == "--dump-relics")
+        {
+            Lts2.Harness.GameRuntime.EnsureInitialized();
+            var rows = new System.Collections.Generic.List<object>();
+            foreach (var r in System.Linq.Enumerable.OrderBy(
+                         MegaCrit.Sts2.Core.Models.ModelDb.AllRelics, r => r.Id.Entry, System.StringComparer.Ordinal))
+            {
+                T Safe<T>(System.Func<T> f, T fallback)
+                {
+                    try { return f(); } catch { return fallback; }
+                }
+                rows.Add(new
+                {
+                    id = r.Id.Entry,
+                    rarity = r.Rarity.ToString(),
+                    // Home pool id (e.g. IRONCLAD_RELIC_POOL / a shared pool). "" for a relic in no pool
+                    // (e.g. a character starting relic), which throws in the Pool getter — hence Safe.
+                    pool = Safe(() => r.Pool.Id.Entry, ""),
+                    stackable = Safe(() => r.IsStackable, false),
+                    spawnsPets = Safe(() => r.SpawnsPets, false),
+                    addsPet = Safe(() => r.AddsPet, false),
+                    uponPickup = Safe(() => r.HasUponPickupEffect, false),
+                    showCounter = Safe(() => r.ShowCounter, false),
+                    allowedInShops = Safe(() => r.IsAllowedInShops, true),
+                    varKeys = Safe(() => System.Linq.Enumerable.ToArray(r.DynamicVars.Keys), System.Array.Empty<string>()),
+                });
+            }
+            Console.Out.Write(System.Text.Json.JsonSerializer.Serialize(rows, AgentJson.Options));
+            Console.Out.Flush();
+            return 0;
+        }
+
+        // Dump the static per-potion metadata catalog to stdout (JSON), mirroring --dump-powers, so the
+        // Python tokenizer can build a stable per-potion embedding index + static feature table. Emits, per
+        // potion: its id, Rarity, Usage (CombatOnly/AnyTime/…), TargetType, home pool id, the
+        // CanBeGeneratedInCombat flag (the game's own "safe to hand out mid-combat" marker the realistic
+        // sampler already reads), and its declared dynamic-var keys.
+        // Run once: `Lts2.AgentHost --dump-potions > potions.json`.
+        if (args.Length > 0 && args[0] == "--dump-potions")
+        {
+            Lts2.Harness.GameRuntime.EnsureInitialized();
+            var rows = new System.Collections.Generic.List<object>();
+            foreach (var p in System.Linq.Enumerable.OrderBy(
+                         MegaCrit.Sts2.Core.Models.ModelDb.AllPotions, p => p.Id.Entry, System.StringComparer.Ordinal))
+            {
+                T Safe<T>(System.Func<T> f, T fallback)
+                {
+                    try { return f(); } catch { return fallback; }
+                }
+                rows.Add(new
+                {
+                    id = p.Id.Entry,
+                    rarity = p.Rarity.ToString(),
+                    usage = p.Usage.ToString(),
+                    targetType = p.TargetType.ToString(),
+                    pool = Safe(() => p.Pool.Id.Entry, ""),
+                    canBeGeneratedInCombat = Safe(() => p.CanBeGeneratedInCombat, true),
+                    varKeys = Safe(() => System.Linq.Enumerable.ToArray(p.DynamicVars.Keys), System.Array.Empty<string>()),
+                });
+            }
+            Console.Out.Write(System.Text.Json.JsonSerializer.Serialize(rows, AgentJson.Options));
+            Console.Out.Flush();
+            return 0;
+        }
+
         // Fuzz combat to surface the intermittent errors/timeouts that random-character/random-encounter
         // rollouts hit (reward-sync, NRE, EndTurn timeouts): build many random scenarios and play each to
         // combat end with a random legal policy, catching every failure with its full stack + the
