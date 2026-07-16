@@ -28,7 +28,7 @@ METRIC_NAMES = [
     "card_id_top1", "card_zone_acc", "power_id_top1", "power_amount_mae",
     "creature_hp_mae", "creature_block_mae", "intent_damage_mae", "energy_acc",
     "relic_set_f1", "potion_set_f1", "hand_size_acc", "pile_size_acc",
-    "pending_choice_acc", "exact_state_rate", "state_dist",
+    "pending_choice_acc", "exact_state_rate", "exact_mech_rate", "state_dist",
 ]
 
 
@@ -149,6 +149,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     relic_f1 = np.zeros(B, np.float32); potion_f1 = np.zeros(B, np.float32)
     hand_ok = np.zeros(B, np.float32); pile_num = np.zeros(B, np.float32); pile_den = np.zeros(B, np.float32)
     pend_ok = np.zeros(B, np.float32); exact = np.zeros(B, np.float32)
+    exact_mech = np.zeros(B, np.float32)
     dist_num = np.zeros(B, np.float32); dist_den = np.zeros(B, np.float32)
     for b in range(B):
         dist_num[b], dist_den[b] = _state_dist(pred_arrays[b], tgt_arrays[b])
@@ -164,6 +165,14 @@ def report_pairs(batch: Dict[str, torch.Tensor],
         pend_ok[b] = 1.0 if (pc["pending"] is None) == (tc["pending"] is None) else 0.0
         ok, _ = tokens._deep_diff("", tc, pc)
         exact[b] = 1.0 if ok else 0.0
+        # Mechanical exactness: strict minus the run-bookkeeping integers (score/gold), which are
+        # high-entropy, combat-irrelevant, and by far the hardest fields to regress to the exact
+        # integer — they gate the strict metric long after the fight itself reconstructs perfectly.
+        tm = dict(tc); pm = dict(pc)
+        tm["global"] = {k: v for k, v in tc["global"].items() if k not in ("score", "gold")}
+        pm["global"] = {k: v for k, v in pc["global"].items() if k not in ("score", "gold")}
+        ok_m, _ = tokens._deep_diff("", tm, pm)
+        exact_mech[b] = 1.0 if ok_m else 0.0
 
     ones = np.ones(B, np.float32)
     pairs["relic_set_f1"] = (relic_f1, ones)
@@ -172,6 +181,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     pairs["pile_size_acc"] = (pile_num, pile_den)
     pairs["pending_choice_acc"] = (pend_ok, ones)
     pairs["exact_state_rate"] = (exact, ones)
+    pairs["exact_mech_rate"] = (exact_mech, ones)
     pairs["state_dist"] = (dist_num, dist_den)
     return pairs
 

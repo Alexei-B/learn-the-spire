@@ -333,6 +333,7 @@ const METRIC_LABELS = {
   "eval.pending_choice_acc": "Decoder: pending-choice accuracy",
   "eval.exact_state_rate": "Decoder: exact full-state reconstruction rate",
   "eval.state_dist": "Decoder: mean state distance (per-token-field mismatch, 0=perfect)",
+  "eval.exact_mech_rate": "Decoder: exact mechanical-state rate (strict minus score/gold)",
 };
 function metricLabel(name) {
   const d = METRIC_LABELS[name];
@@ -363,7 +364,7 @@ const BOUNDED_01 = new Set([
   "eval.greedy.win", "eval.sampled.win", "eval.greedy.endturn", "eval.sampled.endturn",
   "eval.card_id_top1", "eval.card_zone_acc", "eval.power_id_top1", "eval.energy_acc",
   "eval.relic_set_f1", "eval.potion_set_f1", "eval.hand_size_acc", "eval.pile_size_acc",
-  "eval.pending_choice_acc", "eval.exact_state_rate", "eval.state_dist",
+  "eval.pending_choice_acc", "eval.exact_state_rate", "eval.exact_mech_rate", "eval.state_dist",
 ]);
 function isBounded01(name) {
   if (BOUNDED_01.has(name)) return true;
