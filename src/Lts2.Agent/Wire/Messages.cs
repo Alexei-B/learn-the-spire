@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json;
 using Lts2.Harness;
 
 namespace Lts2.Agent.Wire;
@@ -63,6 +64,12 @@ public sealed record EnvCommand
     public double? BossPct { get; init; }
     public bool? StarterDeck { get; init; }   // use the character's fixed starting deck + starter relic
     public int? Act { get; init; }            // restrict a random encounter to this act (0/1/2)
+
+    // reset_combat: an optional deck spec selecting how the deck is built (see CombatScenario.DeckSpec):
+    //   {"kind":"random","cards":15} | {"kind":"realistic",...} | {"kind":"explicit","cards":[...]}.
+    // Left as a raw element and parsed by the server (the `cards` field is an int for "random" but an
+    // array for "explicit", so it can't bind to one typed property). Absent = today's behavior.
+    public JsonElement? DeckSpec { get; init; }
 
     // reset_combat, explicit form (closed evals): an exact deck (card ids) + named encounter, and
     // optionally extra relics + per-enemy HP overrides (for unambiguous situations like a free lethal).
@@ -145,6 +152,14 @@ public sealed record ObservationInfo
     public int? HpLost { get; init; }
     public string? Encounter { get; init; }
     public string? RoomType { get; init; }
+
+    // Scenario deck metadata (reset_combat only), so collectors can tag outcomes and report deck
+    // distributions without re-deriving them. DeckSpec is the resolved kind ("random"/"realistic"/
+    // "explicit"/"starter"); RemovedCards/AddedCards are the realistic sampler's actual picks (card ids),
+    // null for other deck kinds.
+    public string? DeckSpec { get; init; }
+    public IReadOnlyList<string>? RemovedCards { get; init; }
+    public IReadOnlyList<string>? AddedCards { get; init; }
 }
 
 /// <summary>Per-player reward scalars in an <see cref="ObservationInfo"/>.</summary>

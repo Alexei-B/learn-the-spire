@@ -122,12 +122,21 @@ class Lts2Env:
         enemy_hp: Optional[Sequence[int]] = None,
         starter_deck: bool = False,
         act: Optional[int] = None,
+        deck_spec: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Start a fresh isolated **combat scenario** and return its opening observation. By default the
         scenario is random (character/deck/relics/encounter). Pass ``cards`` (a deck of card ids) +
         ``encounter`` (an encounter type name) for a fully-specified *closed* scenario, reproducible for
         eval. The episode is a single fight: ``obs['done']`` marks the end and ``obs['info']`` carries
-        ``won``/``hpLost`` (see the C# ``CombatScenario``)."""
+        ``won``/``hpLost`` (see the C# ``CombatScenario``).
+
+        ``deck_spec`` (optional) selects how the deck is built, passed straight through as the ``deckSpec``
+        wire field (see ``docs/design/Lts2.Agent — Protocol.md``). Examples:
+        ``{"kind": "random", "cards": 15}``, ``{"kind": "realistic"}`` (starter deck with 0-3 random
+        removals/additions, additions weighted 60/25/12/3 own/colorless/curse/off-character),
+        ``{"kind": "explicit", "cards": [...]}``. Absent = today's behavior. All sampling is deterministic
+        from the fight seed. For realistic decks, ``obs['info']`` also carries the resolved ``removedCards``
+        and ``addedCards`` (card ids)."""
         if seed is not None:
             self.seed = seed
         if character is not None:
@@ -143,6 +152,8 @@ class Lts2Env:
             message["starterDeck"] = True
         if act is not None:
             message["act"] = act
+        if deck_spec is not None:
+            message["deckSpec"] = deck_spec
         if cards is not None:
             message["cards"] = list(cards)
             message["encounter"] = encounter

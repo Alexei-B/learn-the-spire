@@ -60,13 +60,54 @@ internal static class Program
                 {
                     try { return System.Linq.Enumerable.ToArray(f()); } catch { return System.Array.Empty<string>(); }
                 }
+                CardCatalog.PoolCategory category = CardCatalog.CategoryOf(c);
                 rows.Add(new
                 {
                     id = c.Id.Entry,
                     type = c.Type.ToString(),
+                    rarity = c.Rarity.ToString(),
+                    // Pool membership the realistic sampler and the deck-distribution report need. `pool` is
+                    // the card's home-pool title (character name / "colorless" / "curse" / "status" / …);
+                    // `category` is the coarse class; the flags are the ones the tokenizer keys off.
+                    pool = CardCatalog.PoolTitle(c),
+                    category = category.ToString(),
+                    colorless = category == CardCatalog.PoolCategory.Colorless,
+                    curse = category == CardCatalog.PoolCategory.Curse,
+                    status = category == CardCatalog.PoolCategory.Status,
                     tags = Safe(() => System.Linq.Enumerable.Select(c.Tags, t => t.ToString())),
                     keywords = Safe(() => System.Linq.Enumerable.Select(c.CanonicalKeywords, k => k.ToString())),
                     varKeys = Safe(() => c.DynamicVars.Keys),
+                });
+            }
+            Console.Out.Write(System.Text.Json.JsonSerializer.Serialize(rows, AgentJson.Options));
+            Console.Out.Flush();
+            return 0;
+        }
+
+        // Dump the static per-power metadata catalog to stdout (JSON), mirroring --dump-cards, so the Python
+        // trainer can build a stable per-power embedding index + static feature table. Emits, per power: its
+        // id, PowerType (Buff/Debuff), stack/instance type, and the negative-amount flag — the cheap static
+        // metadata the model type exposes. Run once: `Lts2.AgentHost --dump-powers > powers.json`.
+        if (args.Length > 0 && args[0] == "--dump-powers")
+        {
+            Lts2.Harness.GameRuntime.EnsureInitialized();
+            var rows = new System.Collections.Generic.List<object>();
+            foreach (var p in System.Linq.Enumerable.OrderBy(
+                         MegaCrit.Sts2.Core.Models.ModelDb.AllPowers, p => p.Id.Entry, System.StringComparer.Ordinal))
+            {
+                string[] SafeVarKeys()
+                {
+                    try { return System.Linq.Enumerable.ToArray(p.DynamicVars.Keys); }
+                    catch { return System.Array.Empty<string>(); }
+                }
+                rows.Add(new
+                {
+                    id = p.Id.Entry,
+                    type = p.Type.ToString(),
+                    stackType = p.StackType.ToString(),
+                    instanceType = p.InstanceType.ToString(),
+                    allowNegative = p.AllowNegative,
+                    varKeys = SafeVarKeys(),
                 });
             }
             Console.Out.Write(System.Text.Json.JsonSerializer.Serialize(rows, AgentJson.Options));

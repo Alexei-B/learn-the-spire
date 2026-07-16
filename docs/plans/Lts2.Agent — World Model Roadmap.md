@@ -188,15 +188,40 @@ cheap and the system under observation is well-understood.
 
 ### M1 — Data foundation: scenario generator + corpus (design P0)
 
-- [ ] **1.1 `deckSpec` scenario generation** (contract 3) in C#, seeded; grep `refsrc/` for the
-      real card-pool/rarity/color APIs — never hand-maintain card lists in Python.
-- [ ] **1.2 Catalogs**: power catalog dump (`--dump-powers`, mirroring `--dump-cards`); extend
-      `cards.json` with pool membership (character/colorless/curse/status) if absent.
+- [x] **1.1 `deckSpec` scenario generation** (contract 3) in C# — _done._ `CombatScenario.DeckSpec`
+      (`Random`/`Realistic`/`Explicit`) is the single seeded source of truth for deck construction, driven
+      by an optional `deckSpec` field on `reset_combat` (parsed in `TrainingEnvironmentServer`); absent =
+      the prior behavior byte-for-byte. Realistic = starter deck ± random removals/additions (inclusive
+      ranges), additions weighted 60/25/12/3 own/colorless/curse/off-character via `CardCatalog` (reads the
+      game's real `ModelDb`/`CardPoolModel` pools — no hand-maintained lists); never deals status; added
+      cards unupgraded; starter relic only (deck-only regime) so decks are deterministic. Observation `info`
+      gains `deckSpec` kind + realistic `removedCards`/`addedCards`. Python `Lts2Env.reset_combat` takes a
+      pass-through `deck_spec` dict (stdlib-only). Seeded determinism + bounds + no-status + explicit/absent
+      parity covered by `DeckSpecTests`.
+- [x] **1.2 Catalogs** — _done._ `--dump-powers` mirrors `--dump-cards` (per power: id, Buff/Debuff type,
+      stack/instance type, allowNegative, varKeys). `--dump-cards` extended with `rarity`, `pool` title,
+      `category`, and `colorless`/`curse`/`status` flags (from the shared `CardCatalog` classifier the
+      realistic sampler uses).
 - [ ] **1.3 Transition collector + corpus store** (contract 4): mixed policies (random, heuristic,
       current PPO) × mixed regimes (broad + realistic) × all characters × acts; target ~1M
       transitions to start. Collection progress/composition visible on the dashboard.
-- [ ] **1.4 Oracle prober**: freeze a probe set (a few hundred positions spanning acts/rooms);
-      replay-based ground-truth next states for every legal action at each probe. Eval-only.
+- [x] **1.4 Oracle prober** — _done_ (`python/lts2_agent/oracle.py` + `tests/test_oracle.py`). A
+      **probe** freezes a reproducible combat position — `{probeId, resetParams, actionPrefix, meta}`
+      reached by replaying an action prefix from a seeded `reset_combat` (no mid-combat snapshots exist).
+      Three CLI commands: `build` (freeze a probe set, reproducible from `--master-seed`, spanning acts
+      0-2 / monster-elite-boss room mix via the pct knobs / all characters / 0-15 step depth), `run`
+      (replay each probe → ground-truth next observation for **every** legal action; gzip-JSONL shard,
+      one record per probe; `--envs N` parallel over host processes), and `verify` (double-replay
+      determinism spot-check — doubles as CP2's check). **Eval-only by construction:** every probe seed
+      is `PROBE-`-prefixed, a reserved namespace training collectors must never use (`validate_probe_seed`
+      / `assert_not_probe_seed` enforce it). **Reproducibility gate:** ~5% of deep-replay fights are
+      genuinely non-reproducible (unreseeded RNG / async-pump ordering), including *flaky* ones that only
+      diverge occasionally; the builder replays each candidate 8× on a second independent host and keeps
+      only byte-identical ones, so every committed probe is a stable cross-process position. Committed
+      `data/probes.json` is a light 40-probe set; the few-hundred-probe set is built at CP2. Env errors
+      (per-action, per-probe, host crashes) are tolerated and recorded, never fatal. Original item: freeze
+      a probe set (a few hundred positions spanning acts/rooms); replay-based ground-truth next states for
+      every legal action at each probe. Eval-only.
 
 **CP2 (manual review):** a dashboard page (or report) showing generated-deck distributions —
 removals/additions histograms, pool-weight realization, a sample of 20 decks to eyeball for

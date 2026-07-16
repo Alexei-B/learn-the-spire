@@ -31,7 +31,53 @@ public static class CombatScenario
         int Act,
         string RoomType,
         int StartHp,
-        int StarterHeal);
+        int StarterHeal)
+    {
+        /// <summary>The deck spec kind that built this fight's deck (<c>"random"</c>, <c>"realistic"</c>,
+        /// <c>"explicit"</c>, or <c>"starter"</c>) — surfaced in the observation info so collectors can tag
+        /// outcomes by deck regime without re-deriving it.</summary>
+        public string DeckKind { get; init; } = "random";
+
+        /// <summary>For a realistic deck: the card ids removed from the character's starter deck. Null for
+        /// other deck kinds.</summary>
+        public IReadOnlyList<string>? RemovedCards { get; init; }
+
+        /// <summary>For a realistic deck: the card ids added to the character's starter deck (unupgraded).
+        /// Null for other deck kinds.</summary>
+        public IReadOnlyList<string>? AddedCards { get; init; }
+    }
+
+    /// <summary>
+    /// How a scenario's deck is built. Deterministic from the fight seed: same seed + same spec ⇒
+    /// byte-identical deck. Added cards are always unupgraded (upgrade realism is a later knob).
+    /// </summary>
+    public abstract record DeckSpec
+    {
+        private DeckSpec() { }
+
+        /// <summary>A flat random deck of <see cref="Cards"/> cards drawn uniformly from the character's own
+        /// pool (the pre-existing random-deck behavior, now explicitly nameable).</summary>
+        public sealed record Random(int Cards) : DeckSpec;
+
+        /// <summary>The character's starter deck with <c>N</c> random removals and <c>M</c> random additions
+        /// (each range inclusive), additions drawn from a pool chosen by <see cref="Weights"/> then uniformly
+        /// within that pool. Status cards are never added.</summary>
+        public sealed record Realistic(
+            int RemovalsMin, int RemovalsMax, int AdditionsMin, int AdditionsMax, PoolWeights Weights) : DeckSpec;
+
+        /// <summary>An exact list of card ids (closed-eval only).</summary>
+        public sealed record Explicit(IReadOnlyList<string> CardIds) : DeckSpec;
+
+        /// <summary>The product-owner default weights for a realistic deck's additions.</summary>
+        public static readonly PoolWeights DefaultWeights = new(Own: 0.60, Colorless: 0.25, Curse: 0.12, OffCharacter: 0.03);
+
+        /// <summary><c>{"kind":"realistic"}</c> with all defaults: 0–3 removals, 0–3 additions, 60/25/12/3 weights.</summary>
+        public static Realistic DefaultRealistic() => new(0, 3, 0, 3, DefaultWeights);
+    }
+
+    /// <summary>The pool-selection weights for a realistic deck's additions. Not required to sum to 1 —
+    /// they are normalized at sampling time.</summary>
+    public readonly record struct PoolWeights(double Own, double Colorless, double Curse, double OffCharacter);
 
     /// <summary>
     /// The HP a character's <em>starting relic</em> restores at end of combat, which must be added back
@@ -53,9 +99,12 @@ public static class CombatScenario
     /// <param name="useStarterDeck">Use the character's fixed starting deck + starting relic only
     /// (no random deck/relics) — a low-noise regime for focused training on one character's basics.</param>
     /// <param name="act">Restrict the random encounter to this act index (0/1/2); -1 = any.</param>
+    /// <param name="deckSpec">How to build the deck (random / realistic). Null = today's behavior: the
+    /// character's starter deck when <paramref name="useStarterDeck"/> is set, otherwise a random 15-card
+    /// deck. When non-null it overrides <paramref name="useStarterDeck"/>.</param>
     public static (GameHost Host, Spec Spec) Create(
         string seed, Random rng, string? characterName, double elitePct, double bossPct,
-        bool useStarterDeck = false, int act = -1)
+        bool useStarterDeck = false, int act = -1, DeckSpec? deckSpec = null)
     {
         long t = System.Diagnostics.Stopwatch.GetTimestamp();
         CharacterModel character = PickCharacter(rng, characterName);
@@ -81,25 +130,7 @@ public static class CombatScenario
 
         Player player = host.Run.Players[0];
         NormalizeRelics(player, character);
-        if (useStarterDeck)
-        {
-            SetStarterDeck(player, character);   // fixed starting deck; starter relic only, no randoms
-        }
-        else
-        {
-            List<CardModel> pool = ModelDb.AllCards
-                .Where(c => c.VisualCardPool != null && c.VisualCardPool.Id.Entry == character.CardPool.Id.Entry)
-                .ToList();
-            NormalizeDeck(player, pool, rng);
-            // Grant 5 distinct random relics that don't spawn a pickup reward (which would derail setup).
-            var starterIds = character.StartingRelics.Select(r => r.Id.Entry).ToHashSet();
-            foreach (RelicModel relic in ModelDb.AllRelics
-                         .Where(r => !r.HasUponPickupEffect && !starterIds.Contains(r.Id.Entry))
-                         .OrderBy(_ => rng.Next()).Take(RelicCount))
-            {
-                host.ObtainRelicDebug(relic);
-            }
-        }
+        DeckOutcome deck = ApplyDeckAndRelics(host, player, character, rng, deckSpec, useStarterDeck);
 
         // Full HP last, so relic on-obtain max-HP changes don't leave us off a clean start.
         int startHp = character.StartingHp;
@@ -114,7 +145,12 @@ public static class CombatScenario
 
         var spec = new Spec(
             character.Id.Entry, encounter.GetType().Name, actIndex, roomType.ToString(),
-            startHp, StarterHealFor(character.Id.Entry));
+            startHp, StarterHealFor(character.Id.Entry))
+        {
+            DeckKind = deck.Kind,
+            RemovedCards = deck.Removed,
+            AddedCards = deck.Added,
+        };
         return (host, spec);
     }
 
@@ -129,7 +165,7 @@ public static class CombatScenario
     /// </summary>
     public static Spec Reenter(
         GameHost host, Random rng, double elitePct, double bossPct,
-        bool useStarterDeck = false, int act = -1)
+        bool useStarterDeck = false, int act = -1, DeckSpec? deckSpec = null)
     {
         Player player = host.Run.Players[0];
         CharacterModel character = player.Character;
@@ -139,24 +175,7 @@ public static class CombatScenario
         host.PrepareForSoftReenter();
 
         NormalizeRelics(player, character);
-        if (useStarterDeck)
-        {
-            SetStarterDeck(player, character);
-        }
-        else
-        {
-            List<CardModel> pool = ModelDb.AllCards
-                .Where(c => c.VisualCardPool != null && c.VisualCardPool.Id.Entry == character.CardPool.Id.Entry)
-                .ToList();
-            NormalizeDeck(player, pool, rng);
-            var starterIds = character.StartingRelics.Select(r => r.Id.Entry).ToHashSet();
-            foreach (RelicModel relic in ModelDb.AllRelics
-                         .Where(r => !r.HasUponPickupEffect && !starterIds.Contains(r.Id.Entry))
-                         .OrderBy(_ => rng.Next()).Take(RelicCount))
-            {
-                host.ObtainRelicDebug(relic);
-            }
-        }
+        DeckOutcome deck = ApplyDeckAndRelics(host, player, character, rng, deckSpec, useStarterDeck);
 
         int startHp = character.StartingHp;
         player.Creature.SetMaxHpInternal(startHp);
@@ -167,7 +186,168 @@ public static class CombatScenario
 
         return new Spec(
             character.Id.Entry, encounter.GetType().Name, actIndex, roomType.ToString(),
-            startHp, StarterHealFor(character.Id.Entry));
+            startHp, StarterHealFor(character.Id.Entry))
+        {
+            DeckKind = deck.Kind,
+            RemovedCards = deck.Removed,
+            AddedCards = deck.Added,
+        };
+    }
+
+    /// <summary>What a deck build resolved to, for the observation's scenario metadata.</summary>
+    private readonly record struct DeckOutcome(
+        string Kind, IReadOnlyList<string>? Removed, IReadOnlyList<string>? Added);
+
+    /// <summary>
+    /// Build the deck (and, for non-starter decks, grant the random relics) according to
+    /// <paramref name="deckSpec"/>. Null spec preserves the legacy behavior exactly, including the RNG call
+    /// order, so a run with no <c>deckSpec</c> is byte-identical to before: starter deck when
+    /// <paramref name="useStarterDeck"/>, else a random 15-card deck plus 5 random relics.
+    /// </summary>
+    private static DeckOutcome ApplyDeckAndRelics(
+        GameHost host, Player player, CharacterModel character, Random rng, DeckSpec? deckSpec, bool useStarterDeck)
+    {
+        switch (deckSpec)
+        {
+            case DeckSpec.Realistic real:
+            {
+                // Realistic is a deck-only regime (the roadmap frames it purely in deck terms), so the deck
+                // is the sole variable: starter relic only, no random relics. This keeps the built deck the
+                // exact, deterministic set the spec describes (random relics can inject status/combat cards at
+                // combat start and would perturb both the deck and the seed stream).
+                (IReadOnlyList<string> removed, IReadOnlyList<string> added) =
+                    BuildRealisticDeck(player, character, real, rng);
+                return new DeckOutcome("realistic", removed, added);
+            }
+            case DeckSpec.Random rnd:
+                BuildRandomDeck(player, character, Math.Max(0, rnd.Cards), rng);
+                GrantRandomRelics(host, character, rng);
+                return new DeckOutcome("random", null, null);
+            case null when useStarterDeck:
+                SetStarterDeck(player, character);   // fixed starting deck; starter relic only, no randoms
+                return new DeckOutcome("starter", null, null);
+            case null:
+                BuildRandomDeck(player, character, DeckSize, rng);
+                GrantRandomRelics(host, character, rng);
+                return new DeckOutcome("random", null, null);
+            default:
+                throw new InvalidOperationException(
+                    $"Unsupported deck spec {deckSpec.GetType().Name} for a scenario build (explicit decks go through CreateExplicit).");
+        }
+    }
+
+    /// <summary>Grant 5 distinct random relics that don't spawn a pickup reward (which would derail setup).
+    /// Preserves the legacy RNG order so the default random-scenario composition is unchanged.</summary>
+    private static void GrantRandomRelics(GameHost host, CharacterModel character, Random rng)
+    {
+        var starterIds = character.StartingRelics.Select(r => r.Id.Entry).ToHashSet();
+        foreach (RelicModel relic in ModelDb.AllRelics
+                     .Where(r => !r.HasUponPickupEffect && !starterIds.Contains(r.Id.Entry))
+                     .OrderBy(_ => rng.Next()).Take(RelicCount))
+        {
+            host.ObtainRelicDebug(relic);
+        }
+    }
+
+    /// <summary>Fill the deck with <paramref name="size"/> cards drawn uniformly from the character's own
+    /// visual pool — the legacy random-deck query (kept exactly so default runs stay byte-identical).</summary>
+    private static void BuildRandomDeck(Player player, CharacterModel character, int size, Random rng)
+    {
+        List<CardModel> pool = ModelDb.AllCards
+            .Where(c => c.VisualCardPool != null && c.VisualCardPool.Id.Entry == character.CardPool.Id.Entry)
+            .ToList();
+        NormalizeDeck(player, pool, size, rng);
+    }
+
+    /// <summary>
+    /// Build a "looks like act 1" deck: the character's starter deck, minus N random removals, plus M random
+    /// additions (each range inclusive), each addition drawn from a pool chosen by the spec weights then
+    /// uniformly within that pool. Status cards are never added; additions are unupgraded. Deterministic in
+    /// <paramref name="rng"/>. Returns the removed / added card ids for the observation metadata.
+    /// </summary>
+    private static (IReadOnlyList<string> Removed, IReadOnlyList<string> Added) BuildRealisticDeck(
+        Player player, CharacterModel character, DeckSpec.Realistic spec, Random rng)
+    {
+        var working = character.StartingDeck.ToList();
+
+        int removeMax = Math.Clamp(spec.RemovalsMax, 0, working.Count);
+        int removeMin = Math.Clamp(spec.RemovalsMin, 0, removeMax);
+        int removals = removeMin == removeMax ? removeMin : rng.Next(removeMin, removeMax + 1);
+        var removed = new List<string>(removals);
+        for (int i = 0; i < removals && working.Count > 0; i++)
+        {
+            int idx = rng.Next(working.Count);
+            removed.Add(working[idx].Id.Entry);
+            working.RemoveAt(idx);
+        }
+
+        int addMin = Math.Max(0, spec.AdditionsMin);
+        int addMax = Math.Max(addMin, spec.AdditionsMax);
+        int additions = addMin == addMax ? addMin : rng.Next(addMin, addMax + 1);
+
+        IReadOnlyList<CardModel> own = CardCatalog.OwnPool(character);
+        IReadOnlyList<CardModel> colorless = CardCatalog.ColorlessPool();
+        IReadOnlyList<CardModel> curse = CardCatalog.CursePool();
+        IReadOnlyList<CardModel> offCharacter = CardCatalog.OffCharacterPool(character);
+
+        var added = new List<string>(additions);
+        var addedCards = new List<CardModel>(additions);
+        for (int i = 0; i < additions; i++)
+        {
+            IReadOnlyList<CardModel> pool = PickAdditionPool(spec.Weights, own, colorless, curse, offCharacter, rng);
+            if (pool.Count == 0)
+            {
+                pool = own;   // a weighted pool can be empty (e.g. a character with no curses configured)
+            }
+            if (pool.Count == 0)
+            {
+                continue;
+            }
+            CardModel card = pool[rng.Next(pool.Count)];
+            added.Add(card.Id.Entry);
+            addedCards.Add(card);
+        }
+
+        CardPile deck = player.Deck;
+        foreach (CardModel c in deck.Cards.ToList())
+        {
+            deck.RemoveInternal(c, silent: true);
+        }
+        foreach (CardModel canon in working.Concat(addedCards))
+        {
+            CardModel card = canon.ToMutable();
+            card.Owner = player;   // required: the run's hook iteration NREs on a card with no owner
+            deck.AddInternal(card, deck.Cards.Count, silent: true);
+        }
+
+        return (removed, added);
+    }
+
+    /// <summary>Choose an addition pool by weight (normalized on the fly), consuming exactly one
+    /// <see cref="Random.NextDouble"/>.</summary>
+    private static IReadOnlyList<CardModel> PickAdditionPool(
+        PoolWeights w, IReadOnlyList<CardModel> own, IReadOnlyList<CardModel> colorless,
+        IReadOnlyList<CardModel> curse, IReadOnlyList<CardModel> offCharacter, Random rng)
+    {
+        double total = w.Own + w.Colorless + w.Curse + w.OffCharacter;
+        if (total <= 0)
+        {
+            return own;
+        }
+        double roll = rng.NextDouble() * total;
+        if ((roll -= w.Own) < 0)
+        {
+            return own;
+        }
+        if ((roll -= w.Colorless) < 0)
+        {
+            return colorless;
+        }
+        if ((roll -= w.Curse) < 0)
+        {
+            return curse;
+        }
+        return offCharacter;
     }
 
     private static void SetStarterDeck(Player player, CharacterModel character)
@@ -309,14 +489,14 @@ public static class CombatScenario
         }
     }
 
-    private static void NormalizeDeck(Player player, List<CardModel> pool, Random rng)
+    private static void NormalizeDeck(Player player, List<CardModel> pool, int size, Random rng)
     {
         CardPile deck = player.Deck;
         foreach (CardModel c in deck.Cards.ToList())
         {
             deck.RemoveInternal(c, silent: true);
         }
-        for (int i = 0; i < DeckSize; i++)
+        for (int i = 0; i < size; i++)
         {
             CardModel card = pool[rng.Next(pool.Count)].ToMutable();
             card.Owner = player;   // required: the run's hook iteration NREs on a card with no owner

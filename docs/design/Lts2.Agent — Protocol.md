@@ -75,12 +75,52 @@ is the environment. Commands (agent → C#), each answered with one observation:
 | Command | Fields | Reply |
 |---|---|---|
 | `reset` | `seed` (default `"AGENT"`), `character` (substring match on a character id; default first), `ascension` (default 0) | observation |
+| `reset_combat` | `seed`, `character`, `elitePct` (0.2), `bossPct` (0.05), `act` (0/1/2; default any), `starterDeck` (bool), `deckSpec` (see below); explicit closed-eval form: `cards`+`encounter` (+`relics`, `enemyHp`) | observation (dropped straight into one isolated fight) |
 | `step`  | `index` **or** `cardIndices` | observation (state advanced to the next decision point) |
 | `close` | — | `{ "ok": true }`, then the server exits |
 
 A malformed or failed command replies `{ "error": "..." }` **without** stopping the server (so a bad
 step index is recoverable). **One run per process** — the game keeps run/combat state in process-wide
 singletons; `reset` tears down and restarts the single run. Run N processes for parallelism.
+
+### `reset_combat` scenarios and `deckSpec`
+
+`reset_combat` builds an **isolated combat** (random character/relics/encounter, full HP) — the training
+regime for the combat policy. Its deck is chosen by the optional `deckSpec` field (single source of truth
+for deck construction, all sampling derived deterministically from the fight seed — **same seed + same
+spec ⇒ byte-identical deck**):
+
+```json
+{"kind": "random",    "cards": 15}                             // random deck from the character's pool
+{"kind": "realistic", "removals": [0,3], "additions": [0,3],   // "looks like act 1"
+ "weights": {"own": 0.60, "colorless": 0.25, "curse": 0.12, "offCharacter": 0.03}}
+{"kind": "explicit",  "cards": ["STRIKE_IRONCLAD", "..."]}     // closed-eval only (needs `encounter`)
+```
+
+- **`random`** — `cards` cards drawn uniformly from the character's own pool (the pre-existing behavior).
+- **`realistic`** — the character's **starter deck**, minus `N` random cards (`N` uniform in the inclusive
+  `removals` range) and plus `M` random cards (`M` uniform in `additions`); each addition draws a pool by
+  `weights` (own-character / colorless / curse / off-character) then a card uniformly within it. Added
+  cards are **unupgraded** (upgrade realism is a later knob). Only the **starter relic** is granted (no
+  random relics), so the built deck is the exact, deterministic set the spec describes. Every field
+  defaults exactly as shown, so `{"kind": "realistic"}` alone works.
+- **`explicit`** — an exact list of card ids (mirrors the legacy top-level `cards` field); requires
+  `encounter`. Collectors must refuse this kind (eval-only).
+- **Absent `deckSpec`** = exactly the prior behavior: the character's starter deck when `starterDeck` is
+  set, otherwise a random 15-card deck (both plus 5 random relics).
+
+**Status-type cards are never dealt into a deck by any spec.** The observation's `info` block gains the
+resolved scenario metadata — `deckSpec` (the resolved kind: `"random"`/`"realistic"`/`"explicit"`/
+`"starter"`), and for realistic decks `removedCards` / `addedCards` (card-id lists) — so collectors and
+the deck-distribution report can tag outcomes without re-deriving them. `info` already carries
+`encounter`/`roomType`/`act`/`won`/`hpLost` for scenario fights.
+
+### Catalog dumps
+
+`Lts2.AgentHost` also has two one-shot catalog dumps (stdout JSON) for building Python-side static feature
+tables / embedding indices: `--dump-cards` (per card: `id`, `type`, `rarity`, `pool` title, `category`,
+`colorless`/`curse`/`status` flags, `tags`, `keywords`, `varKeys`) and `--dump-powers` (per power: `id`,
+`type` Buff/Debuff, `stackType`, `instanceType`, `allowNegative`, `varKeys`).
 
 ## Decision protocol (evaluation)
 

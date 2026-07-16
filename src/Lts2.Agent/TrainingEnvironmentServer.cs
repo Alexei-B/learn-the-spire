@@ -115,17 +115,22 @@ public sealed class TrainingEnvironmentServer
     private string ResetCombat(EnvCommand command)
     {
         string seed = string.IsNullOrEmpty(command.Seed) ? "AGENT" : command.Seed!;
+        CombatScenario.DeckSpec? deckSpec = ParseDeckSpec(command.DeckSpec);
 
-        if (command.Cards is { Count: > 0 })
+        // Explicit deck (closed evals): the deckSpec "explicit" form, or the legacy top-level `cards`.
+        IReadOnlyList<string>? explicitCards =
+            (deckSpec as CombatScenario.DeckSpec.Explicit)?.CardIds
+            ?? (command.Cards is { Count: > 0 } ? command.Cards : null);
+        if (explicitCards is { Count: > 0 })
         {
             // Fully-specified closed-eval scenario: exact character + deck + encounter (always full build).
             string character = string.IsNullOrEmpty(command.Character) ? "IRONCLAD" : command.Character!;
             string encounter = command.Encounter
-                ?? throw new InvalidOperationException("reset_combat with explicit 'cards' also needs an 'encounter'.");
+                ?? throw new InvalidOperationException("reset_combat with an explicit deck also needs an 'encounter'.");
             (GameHost host, CombatScenario.Spec spec) = CombatScenario.CreateExplicit(
-                seed, character, command.Cards, command.Relics, encounter, command.EnemyHp);
+                seed, character, explicitCards, command.Relics, encounter, command.EnemyHp);
             _host = host;
-            _scenario = spec;
+            _scenario = spec with { DeckKind = "explicit" };
             return Observe();
         }
 
@@ -139,15 +144,90 @@ public sealed class TrainingEnvironmentServer
         // env pinned to one character and gets character diversity by spreading them across env processes.
         if (_host is { } live && CanSoftReset(live, command.Character) && live.IsReadyForSoftReenter)
         {
-            _scenario = CombatScenario.Reenter(live, rng, elite, boss, starter, act);
+            _scenario = CombatScenario.Reenter(live, rng, elite, boss, starter, act, deckSpec);
             return Observe();
         }
 
         (GameHost created, CombatScenario.Spec createdSpec) = CombatScenario.Create(
-            seed, rng, command.Character, elite, boss, starter, act);
+            seed, rng, command.Character, elite, boss, starter, act, deckSpec);
         _host = created;
         _scenario = createdSpec;
         return Observe();
+    }
+
+    /// <summary>Parse the optional <c>deckSpec</c> wire object into a <see cref="CombatScenario.DeckSpec"/>.
+    /// The <c>cards</c> field is an int for <c>"random"</c> but an array for <c>"explicit"</c>, so it is read
+    /// element-by-element rather than bound to a typed property. All realistic defaults match the roadmap
+    /// contract, so <c>{"kind":"realistic"}</c> alone is valid.</summary>
+    private static CombatScenario.DeckSpec? ParseDeckSpec(JsonElement? element)
+    {
+        if (element is not { } e || e.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+        string kind = e.TryGetProperty("kind", out JsonElement k) ? k.GetString() ?? "" : "";
+        switch (kind.ToLowerInvariant())
+        {
+            case "random":
+            {
+                int cards = e.TryGetProperty("cards", out JsonElement c) && c.ValueKind == JsonValueKind.Number
+                    ? c.GetInt32() : 15;
+                return new CombatScenario.DeckSpec.Random(cards);
+            }
+            case "realistic":
+            {
+                CombatScenario.DeckSpec.Realistic d = CombatScenario.DeckSpec.DefaultRealistic();
+                (int rMin, int rMax) = ReadRange(e, "removals", d.RemovalsMin, d.RemovalsMax);
+                (int aMin, int aMax) = ReadRange(e, "additions", d.AdditionsMin, d.AdditionsMax);
+                CombatScenario.PoolWeights w = ReadWeights(e, d.Weights);
+                return new CombatScenario.DeckSpec.Realistic(rMin, rMax, aMin, aMax, w);
+            }
+            case "explicit":
+            {
+                var ids = new List<string>();
+                if (e.TryGetProperty("cards", out JsonElement arr) && arr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement item in arr.EnumerateArray())
+                    {
+                        if (item.GetString() is { } id)
+                        {
+                            ids.Add(id);
+                        }
+                    }
+                }
+                return new CombatScenario.DeckSpec.Explicit(ids);
+            }
+            default:
+                throw new InvalidOperationException(
+                    $"Unknown deckSpec kind '{kind}' (expected 'random', 'realistic', or 'explicit').");
+        }
+    }
+
+    /// <summary>Read a two-element inclusive <c>[min,max]</c> range field, falling back to the defaults.</summary>
+    private static (int Min, int Max) ReadRange(JsonElement obj, string name, int defMin, int defMax)
+    {
+        if (obj.TryGetProperty(name, out JsonElement arr) && arr.ValueKind == JsonValueKind.Array
+            && arr.GetArrayLength() >= 2)
+        {
+            int min = arr[0].GetInt32();
+            int max = arr[1].GetInt32();
+            return (min, max);
+        }
+        return (defMin, defMax);
+    }
+
+    /// <summary>Read the addition pool weights, falling back per-key to the defaults.</summary>
+    private static CombatScenario.PoolWeights ReadWeights(JsonElement obj, CombatScenario.PoolWeights def)
+    {
+        if (!obj.TryGetProperty("weights", out JsonElement w) || w.ValueKind != JsonValueKind.Object)
+        {
+            return def;
+        }
+        double Read(string name, double fallback) =>
+            w.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : fallback;
+        return new CombatScenario.PoolWeights(
+            Read("own", def.Own), Read("colorless", def.Colorless),
+            Read("curse", def.Curse), Read("offCharacter", def.OffCharacter));
     }
 
     /// <summary>Whether the live run can be soft-reset into a new fight for <paramref name="wanted"/>.
@@ -314,6 +394,9 @@ public sealed class TrainingEnvironmentServer
                 HpLost = hpLost,
                 Encounter = spec.Encounter,
                 RoomType = spec.RoomType,
+                DeckSpec = spec.DeckKind,
+                RemovedCards = spec.RemovedCards,
+                AddedCards = spec.AddedCards,
             },
         };
     }
