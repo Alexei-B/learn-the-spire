@@ -117,6 +117,8 @@ def collect_fights(root: str) -> List[Dict[str, Any]]:
                     "policy": meta.get("policy"), "act": meta.get("act"), "room": meta.get("room"),
                     "character": meta.get("character"), "deckSpec": meta.get("deckSpec"),
                     "removedCards": meta.get("removedCards"), "addedCards": meta.get("addedCards"),
+                    "addedRelics": meta.get("addedRelics"), "addedPotions": meta.get("addedPotions"),
+                    "starterRelicState": meta.get("starterRelicState"),
                     "deckIds": _fight_deck_ids(rec), "records": 0, "won": False, "hpLost": 0.0,
                 }
                 fights[seed] = f
@@ -155,6 +157,11 @@ def realistic_stats(fights: List[Dict[str, Any]],
     additions_hist: Counter = Counter()
     pool_counts: Counter = Counter()
     added_counter: Counter = Counter()
+    relics_hist: Counter = Counter()
+    potions_hist: Counter = Counter()
+    starter_states: Counter = Counter()
+    relic_counter: Counter = Counter()
+    potion_counter: Counter = Counter()
     for f in realistic:
         removed = f.get("removedCards") or []
         added = f.get("addedCards") or []
@@ -163,6 +170,13 @@ def realistic_stats(fights: List[Dict[str, Any]],
         for cid in added:
             added_counter[cid] += 1
             pool_counts[classify_added_card(cid, f.get("character"), card_meta)] += 1
+        relics = f.get("addedRelics") or []
+        potions = f.get("addedPotions") or []
+        relics_hist[len(relics)] += 1
+        potions_hist[len(potions)] += 1
+        relic_counter.update(relics)
+        potion_counter.update(potions)
+        starter_states[str(f.get("starterRelicState"))] += 1
 
     # Realized fractions over the four *configured* buckets (exclude unknown/other/ownOrOff).
     graded = {k: pool_counts.get(k, 0) for k in CONFIGURED_WEIGHTS}
@@ -177,6 +191,11 @@ def realistic_stats(fights: List[Dict[str, Any]],
         "poolConfigured": CONFIGURED_WEIGHTS,
         "totalGradedAdditions": total_graded,
         "top20Added": added_counter.most_common(20),
+        "relicsHist": dict(sorted(relics_hist.items())),
+        "potionsHist": dict(sorted(potions_hist.items())),
+        "starterRelicStates": dict(sorted(starter_states.items())),
+        "top10Relics": relic_counter.most_common(10),
+        "top10Potions": potion_counter.most_common(10),
     }
 
 
@@ -273,6 +292,15 @@ def render_text(report: Dict[str, Any]) -> str:
     lines.append("  top-20 most-added cards:")
     for cid, cnt in r["top20Added"]:
         lines.append(f"    {cnt:>5}  {cid}")
+    lines.append(f"  #relics histogram: {r.get('relicsHist', {})}"
+                 f"   #potions histogram: {r.get('potionsHist', {})}")
+    lines.append(f"  starter-relic states: {r.get('starterRelicStates', {})}")
+    if r.get("top10Relics"):
+        lines.append("  top-10 granted relics: "
+                     + ", ".join(f"{cid}({cnt})" for cid, cnt in r["top10Relics"]))
+    if r.get("top10Potions"):
+        lines.append("  top-10 granted potions: "
+                     + ", ".join(f"{cid}({cnt})" for cid, cnt in r["top10Potions"]))
     lines.append("")
 
     lines.append("-- Sample of realistic decks " + "-" * 49)

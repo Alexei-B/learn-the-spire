@@ -79,8 +79,9 @@ RECORD_KEYS = (
 
 # scenarioMeta keys (all present, possibly null).
 SCENARIO_META_KEYS = (
-    "deckSpec", "removedCards", "addedCards", "act", "room", "character",
-    "encounter", "policy", "regime",
+    "deckSpec", "removedCards", "addedCards",
+    "addedRelics", "addedPotions", "starterRelicState", "upgradedStarterRelic",
+    "act", "room", "character", "encounter", "policy", "regime",
 )
 
 
@@ -126,12 +127,20 @@ def make_scenario_meta(
     *, deck_spec: Optional[str], removed_cards: Optional[Sequence[str]],
     added_cards: Optional[Sequence[str]], act: Any, room: Any, character: Any,
     encounter: Any, policy: str, regime: str,
+    added_relics: Optional[Sequence[str]] = None, added_potions: Optional[Sequence[str]] = None,
+    starter_relic_state: Optional[str] = None, upgraded_starter_relic: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Assemble the ``scenarioMeta`` block (all contract-4 keys, nulls kept explicit)."""
+    """Assemble the ``scenarioMeta`` block (all contract-4 keys, nulls kept explicit). The relic /
+    potion / starter-relic fields mirror the realistic deckSpec's scenario metadata in ``info``
+    (addedRelics / addedPotions / starterRelicState / upgradedStarterRelic); null for other kinds."""
     return {
         "deckSpec": deck_spec,
         "removedCards": list(removed_cards) if removed_cards is not None else None,
         "addedCards": list(added_cards) if added_cards is not None else None,
+        "addedRelics": list(added_relics) if added_relics is not None else None,
+        "addedPotions": list(added_potions) if added_potions is not None else None,
+        "starterRelicState": starter_relic_state,
+        "upgradedStarterRelic": upgraded_starter_relic,
         "act": act,
         "room": room,
         "character": character,
