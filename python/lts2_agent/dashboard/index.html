@@ -552,7 +552,7 @@ function drawChart(series) {
     if (!best) return;
     cross.style.display = ""; cross.setAttribute("x1", sx(best.p.step)); cross.setAttribute("x2", sx(best.p.step));
     tip.style.display = "block";
-    tip.style.left = (ev.clientX + 14) + "px";
+    tip.style.right = (window.innerWidth - ev.clientX + 14) + "px";
     tip.style.top = (ev.clientY + 12) + "px";
     tip.innerHTML = '<div class="t-name" style="color:' + best.s.color + '">' + escapeHtml(best.s.name) + '</div>' +
       'step ' + best.p.step + '<br>value ' + fmtNum(best.p.value) + '<br>n = ' + best.p.n;
