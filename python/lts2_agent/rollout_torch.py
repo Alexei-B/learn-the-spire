@@ -38,6 +38,7 @@ class TorchScenarioRollout:
         self._seed_counters = [itertools.count() for _ in range(config.n_envs)]
         self._cur: list[Optional[dict[str, Any]]] = [None] * config.n_envs
         self._start_hp: list[int] = [1] * config.n_envs
+        self._character: list[Optional[str]] = [None] * config.n_envs   # captured at fight start
         self._fight_steps: list[int] = [0] * config.n_envs   # decisions taken in the current fight
         self._pool = ThreadPoolExecutor(max_workers=config.n_envs)
 
@@ -57,7 +58,9 @@ class TorchScenarioRollout:
                     seed=f"C{i}-{next(self._seed_counters[i])}",
                     character=cfg.character, elite_pct=cfg.elite_pct, boss_pct=cfg.boss_pct,
                     starter_deck=cfg.starter_deck, act=cfg.act)
-                start_hp = obs["state"]["players"][0].get("maxHp", 1) if obs["state"].get("players") else 1
+                players = obs["state"].get("players") or []
+                start_hp = players[0].get("maxHp", 1) if players else 1
+                self._character[i] = players[0].get("character") if players else None
                 self._fight_steps[i] = 0
                 return obs, max(1, start_hp)
             except Exception as e:
@@ -188,6 +191,7 @@ class TorchScenarioRollout:
                     won = bool(info.get("won")) and not truncated
                     outcomes.append({"won": won, "hp_lost": info.get("hpLost") or 0,
                                      "room": info.get("roomType"), "act": info.get("act"),
+                                     "character": self._character[i],
                                      "truncated": truncated, "flen": self._fight_steps[i]})
                     self._cur[i] = None
                 else:

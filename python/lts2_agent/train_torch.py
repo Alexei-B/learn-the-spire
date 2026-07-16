@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 
 import numpy as np
@@ -20,6 +21,7 @@ import torch
 
 from . import features, model_torch, navigator, ppo_torch, reward, synthetic_eval
 from .env import Lts2Env
+from .metrics import MetricsWriter
 from .rollout_torch import TorchScenarioRollout
 from .scenario import ScenarioConfig
 
@@ -30,10 +32,12 @@ _EVAL_COMBAT = {"PlayCard", "EndTurn", "UsePotion", "DiscardPotion"}
 def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV", greedy=True):
     """Play a FIXED set of fights (same seeds each call, for comparable measurement) with either the
     GREEDY (argmax) policy — the deployed behavior — or the SAMPLED policy the trainer optimizes.
-    Returns win rate, EndTurn fraction, avg HP lost."""
+    Returns win rate, EndTurn fraction, avg HP lost, plus a per-fight ``fights`` list (won/hp_lost/
+    act/room/character) so callers can emit tagged per-fight metrics."""
     model.eval()
     wins = fights = endturns = steps = 0
     hp_lost_sum = 0.0
+    per_fight: list[dict] = []
     for env in envs:
         for s in range(n_seeds):
             try:
@@ -41,6 +45,8 @@ def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV", greedy=True):
                                        boss_pct=scfg.boss_pct, starter_deck=scfg.starter_deck, act=scfg.act)
             except Exception:
                 continue
+            players = obs["state"].get("players") or []
+            character = players[0].get("character") if players else None   # captured at fight start
             for _ in range(scfg.max_fight_len + 6):
                 if obs["done"] or not obs["options"]:
                     break
@@ -70,11 +76,15 @@ def greedy_winrate(model, envs, scfg, n_seeds, device, tag="EV", greedy=True):
                     break
             fights += 1
             info = obs.get("info", {})
-            if info.get("won"):
+            won = bool(info.get("won"))
+            hp_lost = info.get("hpLost") or 0
+            if won:
                 wins += 1
-            hp_lost_sum += info.get("hpLost") or 0
+            hp_lost_sum += hp_lost
+            per_fight.append({"won": won, "hp_lost": hp_lost, "act": info.get("act"),
+                              "room": info.get("roomType"), "character": character})
     return {"win": wins / max(1, fights), "endturn": endturns / max(1, steps),
-            "hp_lost": hp_lost_sum / max(1, fights), "n": fights}
+            "hp_lost": hp_lost_sum / max(1, fights), "n": fights, "fights": per_fight}
 
 
 @torch.no_grad()
@@ -151,6 +161,11 @@ def main() -> int:
                          "deployed behavior). 0 = off.")
     ap.add_argument("--eval-envs", type=int, default=3)
     ap.add_argument("--eval-fights", type=int, default=8, help="greedy fights per eval env")
+    ap.add_argument("--run-dir", default="checkpoints/runs",
+                    help="root for per-run metrics dirs (<run-dir>/<run_id>/{manifest.json,events.jsonl})")
+    ap.add_argument("--run-label", default=None,
+                    help="human label in the run id; default = the checkpoint filename stem")
+    ap.add_argument("--no-metrics", action="store_true", help="disable the JSONL metrics event stream")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -205,6 +220,13 @@ def main() -> int:
 
     eval_envs = [Lts2Env() for _ in range(args.eval_envs)] if args.eval_every > 0 else []
 
+    label = args.run_label or (os.path.splitext(os.path.basename(args.ckpt))[0] if args.ckpt else "run")
+    mw = MetricsWriter(run_dir=args.run_dir, label=label, argv=sys.argv, config=vars(args),
+                       feature_version=features.FEATURE_VERSION,
+                       catalog_signature=features.CATALOG_SIGNATURE, enabled=not args.no_metrics)
+    if mw.enabled:
+        print(f"[train_torch] metrics -> {mw.run_dir}", flush=True)
+
     rollout = TorchScenarioRollout(scfg)
     try:
         ramp_end = max(1.0, args.shaping_ramp_frac * args.iterations)
@@ -231,12 +253,42 @@ def main() -> int:
                   f"maxRatio={metrics['max_ratio']:.1f} maxLogit={metrics['max_logit']:.1f} | "
                   f"collect={t_collect:.2f}s update={t_update:.2f}s sps={sps:.0f}", flush=True)
 
+            if mw.enabled:
+                train_scalars = {
+                    "train.win_rate": s["win_rate"], "train.hp_lost": s["mean_hp_lost"],
+                    "train.trunc_rate": s["trunc_rate"], "train.fights": s["n"], "train.steps": n,
+                    "train.flen": flen, "train.loss": metrics["loss"], "train.approx_kl": metrics["approx_kl"],
+                    "train.entropy": metrics["entropy"], "train.explained_var": metrics["explained_var"],
+                    "train.ret_std": metrics["ret_std"], "train.val_std": metrics["val_std"],
+                    "train.ret_mean": metrics["ret_mean"], "train.max_ratio": metrics["max_ratio"],
+                    "train.max_logit": metrics["max_logit"], "train.shaping": shaping_coef,
+                    "train.sps": sps, "train.collect_s": t_collect, "train.update_s": t_update,
+                }
+                for name, value in train_scalars.items():
+                    mw.emit("train", it, name, value)
+                for o in outcomes:
+                    tags = {"act": str(o.get("act")), "room": str(o.get("room")),
+                            "character": str(o.get("character")),
+                            "truncated": "true" if o.get("truncated") else "false"}
+                    mw.emit("train", it, "fight.won", 1.0 if o["won"] else 0.0, tags=tags)
+                    mw.emit("train", it, "fight.hp_lost", float(o.get("hp_lost") or 0), tags=tags)
+
             if eval_envs and (it % args.eval_every == 0 or it == start_it):
                 g = greedy_winrate(model, eval_envs, scfg, args.eval_fights, device, tag="EVAL", greedy=True)
                 sm = greedy_winrate(model, eval_envs, scfg, args.eval_fights, device, tag="EVAL", greedy=False)
                 print(f"         EVAL[fixed {g['n']}] greedy: win={g['win']:.2f} hp~{g['hp_lost']:.0f} "
                       f"endT={g['endturn']:.2f}  |  sampled: win={sm['win']:.2f} hp~{sm['hp_lost']:.0f} "
                       f"endT={sm['endturn']:.2f}", flush=True)
+                if mw.enabled:
+                    for mode, res in (("greedy", g), ("sampled", sm)):
+                        mw.emit("eval", it, f"eval.{mode}.win", res["win"])
+                        mw.emit("eval", it, f"eval.{mode}.hp_lost", res["hp_lost"])
+                        mw.emit("eval", it, f"eval.{mode}.endturn", res["endturn"])
+                        for fo in res["fights"]:
+                            tags = {"act": str(fo.get("act")), "room": str(fo.get("room")),
+                                    "character": str(fo.get("character")), "mode": mode}
+                            mw.emit("eval", it, "eval_fight.won", 1.0 if fo["won"] else 0.0, tags=tags)
+                            mw.emit("eval", it, "eval_fight.hp_lost", float(fo.get("hp_lost") or 0), tags=tags)
 
             if bg_fixture is not None:
                 scores = bodyguard_scores(model, bg_fixture, device)
@@ -246,6 +298,8 @@ def main() -> int:
                     bg_reached = it
                 print(f"         BODYGUARD pass={bg_pass} streak={bg_streak}/{args.bodyguard_patience} "
                       f"({why})", flush=True)
+                if mw.enabled:
+                    mw.emit("eval", it, "bodyguard.pass", 1.0 if bg_pass else 0.0)
 
             if args.ckpt:
                 model_torch.save_checkpoint(args.ckpt, model)
@@ -257,6 +311,7 @@ def main() -> int:
                   f"{('iter ' + str(bg_reached - args.bodyguard_patience + 1)) if bg_reached else 'NOT REACHED'} "
                   f"(prior pipeline baseline ~100 iters)", flush=True)
     finally:
+        mw.close()
         rollout.close()
         for e in eval_envs:
             try:

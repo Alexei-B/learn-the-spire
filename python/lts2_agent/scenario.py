@@ -143,8 +143,10 @@ class ScenarioRollout:
 
             if done:
                 info = nxt["info"]
+                players = obs["state"].get("players") or []   # pre-step combat obs carries the character
                 outcomes.append({"won": bool(info.get("won")), "hp_lost": info.get("hpLost") or 0,
-                                 "room": info.get("roomType"), "act": info.get("act")})
+                                 "room": info.get("roomType"), "act": info.get("act"),
+                                 "character": players[0].get("character") if players else None})
                 obs, start_hp = self._new_combat(i)
             else:
                 obs = nxt
