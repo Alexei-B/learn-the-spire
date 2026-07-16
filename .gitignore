@@ -36,3 +36,5 @@ python/lts2_agent/data/*
 
 # Transition corpus shards (logged game observations — large, regenerable, never committed)
 python/data/corpus/
+# Pre-tokenized corpus cache (derived from the corpus by lts2_agent.wm.cache; large, regenerable)
+python/data/corpus_tok/

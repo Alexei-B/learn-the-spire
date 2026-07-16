@@ -24,6 +24,7 @@ import numpy as np
 import torch
 
 from .. import corpus, tokens
+from . import cache as C
 from . import model as M
 
 
@@ -83,6 +84,45 @@ def train_batches_cpu(root: str, split: str, batch_size: int, buffer_size: int,
         yield M.collate(feats), acts
 
 
+# --------------------------------------------------------------------------------------------------
+# Cache-reading path (roadmap 3.1 speedup) — reads pre-tokenized ``.npz`` shards instead of tokenizing
+# on the fly. Shuffling: shard-order shuffle + per-shard permutation, re-seeded every epoch from ``rng``
+# so the whole stream is deterministic. See :mod:`lts2_agent.wm.cache`.
+# --------------------------------------------------------------------------------------------------
+
+def cache_batches_cpu(cache_dir: str, split: str, batch_size: int, rng: random.Random
+                      ) -> Iterator[Tuple[Dict[str, np.ndarray], List[Any]]]:
+    """Infinite stream of ``(stacked_numpy_batch, acts)`` read from the pre-tokenized cache. Each epoch
+    shuffles the shard order and permutes states within each shard; batches spanning a shard boundary
+    carry the sub-batch remainder into the next shard (and across epochs)."""
+    shards = C.shard_files(cache_dir, split)
+    if not shards:
+        raise RuntimeError(f"no cache shards for split {split!r} under {cache_dir!r}")
+    carry: Optional[Tuple[Dict[str, np.ndarray], List[Any]]] = None
+    while True:
+        order = list(shards)
+        rng.shuffle(order)
+        for path in order:
+            stacked, acts = C.load_shard(path)
+            n = len(acts)
+            perm = np.random.default_rng(rng.getrandbits(64)).permutation(n)
+            stacked = {k: stacked[k][perm] for k in M.BATCH_KEYS}
+            acts = [acts[i] for i in perm]
+            if carry is not None:
+                c_arr, c_acts = carry
+                stacked = {k: np.concatenate([c_arr[k], stacked[k]]) for k in M.BATCH_KEYS}
+                acts = c_acts + acts
+                carry = None
+                n = len(acts)
+            i = 0
+            while i + batch_size <= n:
+                sl = {k: stacked[k][i:i + batch_size] for k in M.BATCH_KEYS}
+                yield sl, acts[i:i + batch_size]
+                i += batch_size
+            if i < n:
+                carry = ({k: stacked[k][i:] for k in M.BATCH_KEYS}, acts[i:])
+
+
 def prefetch(gen: Iterator, depth: int = 4) -> Iterator:
     """Run ``gen`` on a background thread, buffering up to ``depth`` items — overlaps the corpus-read +
     tokenization (Python/numpy, releases the GIL heavily) with the GPU step."""
@@ -105,19 +145,56 @@ def prefetch(gen: Iterator, depth: int = 4) -> Iterator:
 
 
 def train_batches(root: str, split: str, batch_size: int, buffer_size: int, device,
-                  rng: random.Random, prefetch_depth: int = 4
+                  rng: random.Random, prefetch_depth: int = 4, cache_dir: Optional[str] = None
                   ) -> Iterator[Tuple[Dict[str, torch.Tensor], List[Any]]]:
-    """Infinite stream of ``(batch_tensors_on_device, acts)`` for training, tokenized on a prefetch
-    thread and moved to ``device`` in the consumer."""
-    cpu = train_batches_cpu(root, split, batch_size, buffer_size, rng)
+    """Infinite stream of ``(batch_tensors_on_device, acts)`` for training.
+
+    Uses the **pre-tokenized cache** at ``cache_dir`` when it exists and its manifest signature matches
+    the current tokenizer (GPU-bound; a shard read + permute per batch). A signature mismatch raises
+    loudly (rebuild). Otherwise falls back to the on-the-fly path (tokenizes on a prefetch thread) with
+    a speed warning. Batches move to ``device`` in the consumer either way."""
+    manifest = C.resolve_manifest(cache_dir)
+    if manifest is not None:
+        print(f"[wm.data] using pre-tokenized cache {cache_dir!r} "
+              f"({manifest.get('total_states', '?')} states)", flush=True)
+        cpu = cache_batches_cpu(cache_dir, split, batch_size, rng)
+    else:
+        if cache_dir:
+            print(f"[wm.data] WARNING: no pre-tokenized cache at {cache_dir!r}; tokenizing on the fly "
+                  f"(CPU-bound, slower). Build one: "
+                  f"python -m lts2_agent.wm.cache build --corpus {root} --out {cache_dir}", flush=True)
+        cpu = train_batches_cpu(root, split, batch_size, buffer_size, rng)
     for stacked, acts in prefetch(cpu, depth=prefetch_depth):
         yield M.to_tensors(stacked, device), acts
 
 
-def load_fixed_sample(root: str, split: str, n: int, cache_path: Optional[str] = None
+def load_fixed_sample_from_cache(cache_dir: str, split: str, n: int
+                                 ) -> Tuple[Dict[str, np.ndarray], List[Any]]:
+    """First-``n`` states of a split read from the pre-tokenized cache, in cache (== corpus) order.
+
+    The cache preserves corpus order and skips the same featurize failures the live path does, so this
+    is byte-identical to the fresh ``load_fixed_sample`` first-``n`` states — the fixed val set stays
+    FIXED and drawn from the val split, just read instead of retokenized."""
+    feats: List[Dict[str, np.ndarray]] = []
+    acts: List[Any] = []
+    for path in C.shard_files(cache_dir, split):
+        stacked, sh_acts = C.load_shard(path)
+        for i in range(len(sh_acts)):
+            feats.append({k: stacked[k][i] for k in M.BATCH_KEYS})
+            acts.append(sh_acts[i])
+            if len(feats) >= n:
+                return M.collate(feats), acts
+    return M.collate(feats), acts
+
+
+def load_fixed_sample(root: str, split: str, n: int, cache_path: Optional[str] = None,
+                      cache_dir: Optional[str] = None
                       ) -> Tuple[Dict[str, np.ndarray], List[Any]]:
     """Deterministic first-``n`` states of a split, tokenized once (cached to ``.npz`` if given).
-    Returns stacked numpy arrays + the per-state acts."""
+    Returns stacked numpy arrays + the per-state acts. When a valid pre-tokenized ``cache_dir`` is
+    present the sample is read from it (identical states); a signature mismatch raises loudly."""
+    if C.resolve_manifest(cache_dir) is not None:
+        return load_fixed_sample_from_cache(cache_dir, split, n)
     if cache_path and os.path.exists(cache_path):
         data = np.load(cache_path, allow_pickle=True)
         stacked = {k: data[k] for k in M.BATCH_KEYS}

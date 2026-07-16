@@ -327,7 +327,17 @@ fixed-seed eval (expectation: ≥ baseline).
       group-by. `eval_encdec` prints the full-split report card (the CP4 artifact). Tests in
       `tests/test_wm_encdec.py` (forward shapes, SimNorm normalization, overfit-one-batch loss drop,
       report-card contract + detokenize hand-off, exact-state=1 on teacher-forced targets, checkpoint stamp
-      rejection).
+      rejection). **Speed:** on-the-fly Python tokenization put tokenization on the trainer's critical path
+      (and it competed for CPU when the GPU was shared with another job); `lts2_agent.wm.cache build` now
+      writes a one-time pre-tokenized `.npz` shard cache (multiprocessing pool; both `state`+`nextState`
+      kept, no dedup, for exact distribution parity; signature-stamped manifest; auto byte-equality
+      `--verify`). 2.0M states → ~179 MB in ~39 min. `train_encdec` reads it automatically when
+      present+matching (loud error on mismatch). Measured (RTX 3090): cache data path **~7400 states/s** (vs
+      ~960 on-the-fly single-thread), so training is now **fully GPU-bound** — the model forward+backward
+      itself caps this box at **~470 states/s** (fp32, no flash-attention on Windows), ~11-12 h for a 50k×384
+      run (the earlier ~30 h estimate was under GPU contention with a concurrent job). Reaching the
+      >2000 states/s ceiling further is a GPU-compute problem (TF32/AMP, flash-attention, or a faster GPU),
+      not a data-path one. Cache tests in `tests/test_wm_cache.py`.
 - [x] **3.2 Decoded-state pretty-printer + diff view** — _done._ `lts2_agent.statefmt`:
       `format_state` renders any **canonical dict** (`tokens.detokenize` output — a decoder's output, or
       `detokenize(tokenize(raw wire))`) as compact text (player/Osty/enemies with hp/block/powers/intents,

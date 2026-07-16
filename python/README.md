@@ -449,6 +449,23 @@ python -m lts2_agent.train_encdec --steps 50000 --batch 384 --val-every 500 \
 python -m lts2_agent.eval_encdec --ckpt checkpoints/wm_encdec.pt --split val   # --json for machine form
 ```
 
+**Pre-tokenized cache (one-time, for speed).** On-the-fly Python tokenization can bottleneck the trainer
+on a corpus that never changes between runs (worse still when the GPU is shared with another job). Build a
+pre-tokenized cache once so tokenization leaves the critical path entirely:
+`python -m lts2_agent.wm.cache build --corpus data/corpus --out data/corpus_tok --workers 8` streams every
+record per split, tokenizes with a multiprocessing pool, and writes compressed `.npz` array shards + a
+`manifest.json` stamped with the tokenizer signature (it auto-verifies ~200 states against a fresh
+tokenize). The 2.0M-state corpus builds to ~179 MB in ~39 min (~800 states/s, parent-side gzip/JSON
+bound). `train_encdec` uses the cache automatically when `data/corpus_tok` exists and its signature matches
+(mismatch = loud error, not silent fallback; pass `--cache ""` to force on-the-fly). The cache stores
+**both** each record's `state` and `nextState` (no dedup) to preserve exact training-distribution parity
+with the live loader. Measured on an RTX 3090: the cache data path delivers **~7400 states/s** (vs ~960
+states/s single-thread on-the-fly), so training is now fully GPU-bound — the encoder/decoder
+forward+backward itself caps this box at **~470 states/s** (fp32, no flash-attention on the Windows torch
+build), i.e. ~11-12 h for a 50k×384 run. **Rebuild the cache whenever the corpus changes or the
+tokenizer/catalog signature bumps** (`TOKENIZER_VERSION` or any catalog); it is gitignored
+(`python/data/corpus_tok/`).
+
 Metrics land as a `kind="wm-encdec"` run under `checkpoints/runs/`. **Per train step-window**
 (phase=`train`): `train.loss`, `train.loss_categorical`, `train.loss_numeric`, `train.loss_presence`,
 `train.lr`, `train.states_per_s`. **Per val pass** (phase=`eval`) the per-field report card:

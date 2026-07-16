@@ -75,6 +75,10 @@ def run_val(model, sample_stacked, sample_acts, batch_size, device):
 def main() -> int:
     ap = argparse.ArgumentParser(description="World-model encoder/decoder trainer (roadmap 3.1)")
     ap.add_argument("--corpus", default="data/corpus", help="corpus root (train split streamed)")
+    ap.add_argument("--cache", default="data/corpus_tok",
+                    help="pre-tokenized cache dir; used automatically when it exists and its signature "
+                         "matches (GPU-bound). Empty string disables. Build: python -m "
+                         "lts2_agent.wm.cache build --corpus <corpus> --out <cache>")
     ap.add_argument("--steps", type=int, default=50000)
     ap.add_argument("--batch", type=int, default=384)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -147,7 +151,9 @@ def main() -> int:
           f"batch={args.batch}", flush=True)
 
     print(f"[train_encdec] loading fixed val sample ({args.val_states} states)...", flush=True)
-    val_stacked, val_acts = D.load_fixed_sample(args.corpus, "val", args.val_states, args.val_cache)
+    cache_dir = args.cache or None
+    val_stacked, val_acts = D.load_fixed_sample(args.corpus, "val", args.val_states, args.val_cache,
+                                                cache_dir=cache_dir)
     print(f"[train_encdec] val sample: {len(val_acts)} states", flush=True)
 
     label = args.run_label or (os.path.splitext(os.path.basename(args.ckpt))[0] if args.ckpt else "wm")
@@ -157,7 +163,8 @@ def main() -> int:
     if mw.enabled:
         print(f"[train_encdec] metrics -> {mw.run_dir}", flush=True)
 
-    stream = D.train_batches(args.corpus, "train", args.batch, args.buffer, device, rng)
+    stream = D.train_batches(args.corpus, "train", args.batch, args.buffer, device, rng,
+                             cache_dir=cache_dir)
 
     win = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0}
     win_states = 0
