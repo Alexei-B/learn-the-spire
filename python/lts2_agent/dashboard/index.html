@@ -354,6 +354,22 @@ const SCALES = {
   nines: { fn: v => -Math.log10(Math.max(1 - v, 1e-4)), inv: y => 1 - Math.pow(10, -y),
            note: " · nines scale (ticks show real values)" },
 };
+// Metrics that are rates/accuracies bounded to [0,1]: their y-axis is pinned to the full 0..1
+// range (in transformed space) instead of the data range — except on the log scale, where a hard
+// 0 bound maps to the 1e-6 floor and would crush the data; log keeps the data range.
+const BOUNDED_01 = new Set([
+  "train.win_rate", "train.trunc_rate", "train.shaping",
+  "fight.won", "eval_fight.won", "bodyguard.pass",
+  "eval.greedy.win", "eval.sampled.win", "eval.greedy.endturn", "eval.sampled.endturn",
+  "eval.card_id_top1", "eval.card_zone_acc", "eval.power_id_top1", "eval.energy_acc",
+  "eval.relic_set_f1", "eval.potion_set_f1", "eval.hand_size_acc", "eval.pile_size_acc",
+  "eval.pending_choice_acc", "eval.exact_state_rate", "eval.state_dist",
+]);
+function isBounded01(name) {
+  if (BOUNDED_01.has(name)) return true;
+  // Heuristic for future metrics: accuracy/rate-style suffixes are [0,1] by convention.
+  return /(_acc|_f1|_top1|_rate|\.won)$/.test(name || "");
+}
 // Tick labels for transformed axes need more precision near the interesting ends (≈1 for rates,
 // tiny values on log) than fmtNum gives.
 function fmtTick(v) {
@@ -430,8 +446,15 @@ function drawChart(series) {
   }
   if (!isFinite(xmin)) { chart.innerHTML = '<div class="empty">No data for this metric yet.</div>'; return; }
   if (xmax === xmin) xmax = xmin + 1;
-  if (ymax === ymin) { ymax = ymin + 1; ymin -= 1; }
-  const pad = (ymax - ymin) * 0.08; ymin -= pad; ymax += pad;
+  const scale = SCALES[state.scale] || SCALES.linear;
+  if (isBounded01(state.metric) && state.scale !== "log") {
+    // [0,1]-bounded metric: pin the axis to the full range (in transformed space), no padding —
+    // progress reads against the absolute scale, not a zoomed data window.
+    ymin = scale.fn(0); ymax = scale.fn(1);
+  } else {
+    if (ymax === ymin) { ymax = ymin + 1; ymin -= 1; }
+    const pad = (ymax - ymin) * 0.08; ymin -= pad; ymax += pad;
+  }
 
   const sx = v => m.l + (v - xmin) / (xmax - xmin) * iw;
   const sy = v => m.t + ih - (v - ymin) / (ymax - ymin) * ih;
