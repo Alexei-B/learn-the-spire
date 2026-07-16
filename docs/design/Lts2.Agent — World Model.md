@@ -230,6 +230,17 @@ step against the logged `s_{t+1}..s_{t+K}`, with the chance codes teacher-forced
 outcomes. This is what keeps compounding error in check and is the single most important training
 detail; one-step-only training produces models whose 3-step rollouts are garbage.
 
+Two post-2021 refinements to bake in from the start (see §11 for provenance):
+
+- **Latent consistency loss** (EfficientZero's key ingredient, also TD-MPC2's): at every unroll
+  step, pull the *predicted* latent `ẑ_{t+k}` toward the *encoder's* latent of the real
+  `s_{t+k}` (stop-gradient on the target, SimSiam/EMA style). This supervises the dynamics in
+  latent space directly instead of only through the decoder, and was the single biggest
+  sample-efficiency lever in the EfficientZero ablations.
+- **Normalize the latent** (TD-MPC2's SimNorm, or DreamerV3's categorical latents): a bounded,
+  normalized `z` cheaply prevents both latent explosion and degenerate collapse — the same class
+  of runaway we already fought once in the PPO value head.
+
 Where the model complexity budget goes: exactly as the proposal says, **most parameters belong
 here** — the predictor is where the game's rules live.
 
@@ -284,10 +295,13 @@ Stage the planner; each stage is shippable and measurable:
   the predictor is most accurate — a turn is typically ≤6 plays from a hand we can see. Note the
   legal-action prediction (§4.3.2) is what allows expansion past the first ply.
 - **P-2: Multi-turn MCTS with chance nodes** (Stochastic MuZero proper), if P-1 plateaus:
-  cross End Turn by sampling ~k chance codes per chance node, guided by `π`, backed by `V`,
-  ~50–200 simulations per move — all GPU-batched latent ops, no emulator in the loop. This is
-  the "much more complicated games, less determinism" endgame the user described; it's also the
-  point of steepest engineering cost, hence last.
+  cross End Turn by sampling ~k chance codes per chance node, guided by `π`, backed by `V` —
+  all GPU-batched latent ops, no emulator in the loop. Use **Gumbel search** (Gumbel MuZero's
+  sequential-halving root selection, §11) rather than vanilla PUCT: it guarantees policy
+  improvement even at tiny simulation budgets (~8–32 sims instead of MuZero's classic 50–800),
+  which matters both for training throughput and for the decision-server latency budget when
+  serving into the TUI. This is the "much more complicated games, less determinism" endgame the
+  user described; it's also the point of steepest engineering cost, hence last.
 
 The planner's output (visit counts / improved ranking) feeds back as `π`'s training target, and —
 served through the existing decision-server seam — is directly watchable in the TUI.
@@ -322,7 +336,11 @@ served through the existing decision-server seam — is directly watchable in th
 algorithm like DQN-per-option or IMPALA). Cheaper, and honestly it would help — the representation
 is plausibly the current binding constraint. **Verdict: not either/or.** The tokenizer/encoder
 (Phases 1–2) *is* this alternative; if we stopped after Phase 2 with a PPO head on top, we'd still
-have banked most of its value. The predictor phases are additive on top of it.
+have banked most of its value. The predictor phases are additive on top of it. Note also that the
+strongest *model-free* sample-efficiency results (SPR → BBF, §11) get there by bolting a latent
+**self-prediction auxiliary loss** onto the value learner — i.e. even the model-free frontier
+converged on "add the predictor"; they just never plan with it. So P3's predictor pays off even in
+the world where planning never ships: it doubles as SPR-style auxiliary supervision for `V`/`π`.
 
 **B. Search with the real simulator instead of a learned predictor** (expectimax/MCTS over
 `Lts2Env`). Attractive — the "model" is perfect. Three blockers, all noted in §3: no mid-combat
@@ -419,6 +437,97 @@ we stop, keep P1–P2 (which already subsume the best model-free upgrade), and h
 - **Multi-character generality:** the corpus should mix characters from day one (scenario mode
   already does) so the predictor learns shared rules rather than one character's.
 
+## 11. Follow-up literature scan (2022 → 2026): what the descendants of our anchors teach us
+
+The doc's anchors are 2020–2022 papers; each spawned a line of follow-up work. Scanned July 2026.
+Verdicts are relative to *this* design (small symbolic states, localized stochasticity, owned
+simulator), not to the papers' own pixel/Atari settings.
+
+### MuZero line
+
+- **Gumbel MuZero** (Danihelka et al., ICLR 2022): replaces PUCT root selection with Gumbel top-k
+  sampling + sequential halving, with a *proven* policy-improvement guarantee at any simulation
+  budget — matches classic MuZero at n=800 sims and still improves at n=2–16. **Adopt outright**
+  in P-2 (§4.6); it converts MCTS from "expensive endgame" to something serveable within the
+  decision-server timeout. EfficientZero V2 (2024) confirms it halves search budgets in practice.
+- **EfficientZero** (Ye et al., NeurIPS 2021) / **EfficientZero V2** (2024): human-level
+  Atari-100k from ~2 hours of experience — the canonical proof of the sample-efficiency claim in
+  §5. Its three additions, in our terms: (1) the **latent consistency loss** (now folded into
+  §4.4 — their ablations show it's the biggest single lever); (2) a *value-prefix* head
+  (predict cumulative reward over the unroll window rather than per-step reward — hedges timing
+  ambiguity; cheap to add if per-step `r̂` proves noisy); (3) model-based off-policy value
+  correction (re-bootstrap stale buffer targets with fresh model rollouts — subsumed by
+  Reanalyse in our plan).
+- **MuZero Unplugged / Reanalyse (2021) and ReZero (2024):** training entirely from a fixed
+  offline buffer works, and reanalyze-style target refreshing is the mechanism that makes
+  "append-forever replay" (§5) keep paying; ReZero is engineering to make it cheap. Validates the
+  buffer-centric training economy this design bets on.
+- **UniZero (2024) + LightZero (NeurIPS 2023 benchmark):** UniZero swaps the recurrent latent for
+  a transformer over (state, action) token history, decoupling "latent state" from "latent
+  history", and jointly trains model + policy — outperforms MuZero on 17/26 Atari-100k games.
+  Relevant if we ever need cross-turn *memory* beyond what the visible state carries (mostly we
+  don't: STS2's state is near-fully observable, §3). **The practical takeaway is LightZero
+  itself**: an actively maintained PyTorch framework implementing MuZero, Stochastic MuZero,
+  Sampled MuZero, Gumbel MuZero, and UniZero behind one interface. The implementation plan should
+  seriously consider building on or at least cross-checking against it rather than
+  reimplementing chance-node MCTS from scratch.
+
+### Dreamer line
+
+- **DreamerV3** was published in Nature (2025) essentially unchanged — its robustness recipe
+  (symlog targets, two-hot regression, categorical latents, fixed hyperparameters across 150+
+  tasks) is the field's consensus "make it stable without per-task tuning" toolkit; we already
+  reference two-hot in §4.3 and the categorical-latent option in §10.
+- **Dreamer 4** (Hafner & Yan, 2025): a 2B-param transformer world model that solves Minecraft
+  "obtain diamonds" with the policy trained **entirely inside the world model from a fixed
+  offline dataset** — no environment interaction during RL at all — using ~100× less labeled data
+  than prior offline RL. Two transferable lessons: (1) the strongest available evidence for our
+  endgame economics (env = data collection + eval only; all optimization against the buffer and
+  the model); (2) its "shortcut forcing" objective works by predicting the *clean final state*
+  (x-prediction) rather than deltas — our symbolic decoder predicting absolute next-state fields
+  is already the x-prediction shape, and we should keep it that way (don't be tempted into
+  delta/diff prediction, which compounds).
+- **Token-based world models — IRIS, TWM (2023), STORM (NeurIPS 2023), Δ-IRIS (2024):**
+  the field converged on exactly our §4.1–4.2 shape (tokenize → transformer → predict tokens).
+  STORM is the encouraging data point on scale: a **2-layer** transformer world model matches
+  DreamerV3 on Atari-100k. Our latent budget estimates in §4.2 are, if anything, generous.
+
+### JEPA line
+
+- **V-JEPA 2 / V-JEPA 2-AC** (Meta, 2025): action-conditioned latent prediction at scale, used
+  for zero-shot robot planning — the decoder-free program does work now, in pixel domains where
+  reconstruction is genuinely expensive. Our states are a few hundred symbols; reconstruction
+  costs us almost nothing and buys the debugger + legal-action head, so §6.C's verdict stands.
+- **TD-MPC2** (ICLR 2024): the strongest practical decoder-free recipe — latent world model
+  trained on consistency + reward + value only, **SimNorm** latent normalization to prevent
+  collapse/explosion, one fixed hyperparameter set across 100+ continuous-control tasks. Two
+  imports even though we keep the decoder: SimNorm on `z` (§4.4), and the existence proof that
+  if reconstruction ever becomes a capacity tax, dropping the decoder is safe *provided* the
+  consistency+reward+value losses stay.
+- **SPR → BBF** (2021 → 2023): the best *model-free* Atari-100k agents got there by adding
+  latent **self-prediction as an auxiliary loss** — a predictor nobody plans with. Folded into
+  §6.A: it de-risks P3 by giving the predictor a second payoff channel (auxiliary shaping of
+  `V`/`π`) independent of whether planning ever ships.
+
+### Stochastic line
+
+- Direct follow-ups to Stochastic MuZero are thinner — the afterstate + discrete-chance-codebook
+  factorization of 2022 is still the state of the art for discrete stochastic planning (2024–25
+  extensions target continuous actions, offline settings, and belief-state variants — L-MAP,
+  belief-aware MuZero — none of which we need). Two consequences: our §4.4 design is current, and
+  the maintained implementation to borrow from is LightZero's Stochastic MuZero.
+
+### Net design deltas adopted from this scan
+
+1. §4.4: explicit **latent consistency loss** + **SimNorm/categorical latent normalization**.
+2. §4.6 P-2: **Gumbel search** (sequential halving) instead of vanilla PUCT; budgets of 8–32
+   sims are legitimate.
+3. §6.A: predictor doubles as **SPR-style auxiliary loss** for the model-free head — P3 pays off
+   even without a planner.
+4. Implementation planning should evaluate **LightZero** as a base/reference before writing
+   chance-node MCTS from scratch.
+5. Keep the decoder predicting **absolute states** (x-prediction), never deltas.
+
 ## References
 
 - MuZero: Schrittwieser et al., *Mastering Atari, Go, Chess and Shogi by Planning with a Learned
@@ -430,5 +539,15 @@ we stop, keep P1–P2 (which already subsume the best model-free upgrade), and h
 - World Models: Ha & Schmidhuber, 2018. JEPA: LeCun, *A Path Towards Autonomous Machine
   Intelligence*, 2022.
 - TD-Gammon: Tesauro, *Temporal Difference Learning and TD-Gammon*, CACM 1995 (afterstate values).
+- Gumbel MuZero: Danihelka et al., *Policy Improvement by Planning with Gumbel*, ICLR 2022.
+- EfficientZero: Ye et al., NeurIPS 2021; V2: [arXiv:2403.00564](https://arxiv.org/abs/2403.00564).
+- UniZero: [arXiv:2406.10667](https://arxiv.org/abs/2406.10667); LightZero (framework):
+  [arXiv:2310.08348](https://arxiv.org/abs/2310.08348), github.com/opendilab/LightZero.
+- Dreamer 4: Hafner & Yan, *Training Agents Inside of Scalable World Models*,
+  [arXiv:2509.24527](https://arxiv.org/abs/2509.24527).
+- STORM: Zhang et al., NeurIPS 2023 (efficient stochastic transformer world model).
+- TD-MPC2: Hansen et al., ICLR 2024 (consistency-only latent model, SimNorm).
+- SPR: Schwarzer et al., ICLR 2021; BBF: Schwarzer et al., ICML 2023 (self-predictive aux losses).
+- V-JEPA 2: [arXiv:2506.09985](https://arxiv.org/abs/2506.09985) (action-conditioned JEPA planning).
 - LLM agents on STS1 (context for Alternative D):
   [*Language-Driven Play: LLMs as Game-Playing Agents in Slay the Spire*](https://dl.acm.org/doi/fullHtml/10.1145/3649921.3650013).
