@@ -80,6 +80,9 @@ def main() -> int:
                          "matches (GPU-bound). Empty string disables. Build: python -m "
                          "lts2_agent.wm.cache build --corpus <corpus> --out <cache>")
     ap.add_argument("--steps", type=int, default=50000)
+    ap.add_argument("--halt-step", type=int, default=0,
+                    help="stop training at this step while the LR schedule still spans --steps — for "
+                         "short fair-comparison probes that must share the long-run schedule. 0 = off.")
     ap.add_argument("--batch", type=int, default=384)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
@@ -192,6 +195,10 @@ def main() -> int:
     step = start_step
     try:
         for step in range(start_step + 1, args.steps + 1):
+            if args.halt_step and step > args.halt_step:
+                print(f"[train_encdec] halt-step {args.halt_step} reached; stopping (schedule spans "
+                      f"{args.steps}).", flush=True)
+                break
             batch, _acts = next(stream)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                 z, out = model(batch)

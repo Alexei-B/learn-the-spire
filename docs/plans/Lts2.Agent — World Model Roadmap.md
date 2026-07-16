@@ -346,8 +346,15 @@ fixed-seed eval (expectation: ≥ baseline).
       capping card-identity reconstruction over big multisets). Dropping the two projections makes `tokens`
       the smaller model (~7.0M vs ~10.1M params). Checkpoint meta stamps `latent_mode`/`latent_k`; load
       rejects a mode mismatch loudly; the M4 predictor reads `latent_mode` to shape its latent. Tokens-mode
-      tests added to `tests/test_wm_encdec.py`. The 21k-step fair-budget comparison is the orchestrator's to
-      run.
+      tests added to `tests/test_wm_encdec.py`. **A/B VERDICT (product owner, 2026-07-16): token-set wins
+      decisively** — same-budget curves: tokens `state_dist` 0.082 at 12.5k steps vs flat's 0.098 at 21k
+      (better with 40% less compute, 31% fewer params), and a steeper power law (b≈0.54-0.64 vs 0.36);
+      run stopped at ~19k on the owner's call. **`--latent-mode tokens` is the latent contract for M4.**
+      Follow-on experiment series (5k-step probes vs the tokens control curve, one change at a time,
+      `--halt-step` keeps the shared cosine-to-50k schedule): count-grouped card tokens (tokenizer v2),
+      decoder-heavy scale, LR sweep + EMA, two-hot numeric heads, class-balanced card CE. Cross-tokenizer
+      comparisons use `eval.action_snr` (footprint re-measured per tokenizer version), not raw
+      `state_dist`.
 - [x] **3.2 Decoded-state pretty-printer + diff view** — _done._ `lts2_agent.statefmt`:
       `format_state` renders any **canonical dict** (`tokens.detokenize` output — a decoder's output, or
       `detokenize(tokenize(raw wire))`) as compact text (player/Osty/enemies with hp/block/powers/intents,
