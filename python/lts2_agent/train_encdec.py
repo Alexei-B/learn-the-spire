@@ -110,6 +110,9 @@ def main() -> int:
     ap.add_argument("--run-label", default=None)
     ap.add_argument("--no-metrics", action="store_true")
     ap.add_argument("--val-cache", default=None, help="path to cache the tokenized val sample (.npz)")
+    ap.add_argument("--amp", default="bf16", choices=["bf16", "off"],
+                    help="autocast the training forward+loss to bfloat16 (Ampere+; backward/optimizer "
+                         "stay fp32, no GradScaler needed). Val passes always run fp32.")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -118,8 +121,15 @@ def main() -> int:
         print("[train_encdec] CUDA not available; falling back to CPU (slow).")
         args.device = "cpu"
     device = torch.device(args.device)
+    # TF32 matmuls/convs: ~free Ampere speedup, standard for training; exactness lives in the
+    # detokenize-side rounding, not fp32 matmul precision.
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    use_amp = device.type == "cuda" and args.amp == "bf16" and torch.cuda.is_bf16_supported()
     print(f"[train_encdec] device={device} "
-          f"{torch.cuda.get_device_name(0) if device.type == 'cuda' else ''}")
+          f"{torch.cuda.get_device_name(0) if device.type == 'cuda' else ''} "
+          f"tf32={device.type == 'cuda'} amp={'bf16' if use_amp else 'off'}")
 
     model = M.WorldModelAE(d_model=args.d_model, n_heads=args.heads, enc_layers=args.enc_layers,
                            dec_layers=args.dec_layers, n_pool_layers=args.pool_layers,
@@ -174,8 +184,9 @@ def main() -> int:
     try:
         for step in range(start_step + 1, args.steps + 1):
             batch, _acts = next(stream)
-            z, out = model(batch)
-            losses = M.compute_losses(batch, out)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                z, out = model(batch)
+                losses = M.compute_losses(batch, out)
             opt.zero_grad(set_to_none=True)
             losses["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
