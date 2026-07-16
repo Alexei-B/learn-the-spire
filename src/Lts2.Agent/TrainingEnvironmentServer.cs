@@ -179,8 +179,13 @@ public sealed class TrainingEnvironmentServer
                 CombatScenario.DeckSpec.Realistic d = CombatScenario.DeckSpec.DefaultRealistic();
                 (int rMin, int rMax) = ReadRange(e, "removals", d.RemovalsMin, d.RemovalsMax);
                 (int aMin, int aMax) = ReadRange(e, "additions", d.AdditionsMin, d.AdditionsMax);
+                (int relMin, int relMax) = ReadRange(e, "relics", d.RelicsMin, d.RelicsMax);
+                (int potMin, int potMax) = ReadRange(e, "potions", d.PotionsMin, d.PotionsMax);
                 CombatScenario.PoolWeights w = ReadWeights(e, d.Weights);
-                return new CombatScenario.DeckSpec.Realistic(rMin, rMax, aMin, aMax, w);
+                (double absent, double orobas) =
+                    ReadStarterRelic(e, d.AbsentStarterPct, d.OrobasStarterPct);
+                return new CombatScenario.DeckSpec.Realistic(
+                    rMin, rMax, aMin, aMax, w, relMin, relMax, potMin, potMax, absent, orobas);
             }
             case "explicit":
             {
@@ -214,6 +219,19 @@ public sealed class TrainingEnvironmentServer
             return (min, max);
         }
         return (defMin, defMax);
+    }
+
+    /// <summary>Read the realistic <c>starterRelic</c> object's <c>absent</c>/<c>orobas</c> probabilities,
+    /// falling back per-key to the defaults.</summary>
+    private static (double Absent, double Orobas) ReadStarterRelic(JsonElement obj, double defAbsent, double defOrobas)
+    {
+        if (!obj.TryGetProperty("starterRelic", out JsonElement s) || s.ValueKind != JsonValueKind.Object)
+        {
+            return (defAbsent, defOrobas);
+        }
+        double Read(string name, double fallback) =>
+            s.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : fallback;
+        return (Read("absent", defAbsent), Read("orobas", defOrobas));
     }
 
     /// <summary>Read the addition pool weights, falling back per-key to the defaults.</summary>
@@ -397,6 +415,10 @@ public sealed class TrainingEnvironmentServer
                 DeckSpec = spec.DeckKind,
                 RemovedCards = spec.RemovedCards,
                 AddedCards = spec.AddedCards,
+                AddedRelics = spec.AddedRelics,
+                AddedPotions = spec.AddedPotions,
+                StarterRelicState = spec.StarterRelicState,
+                UpgradedStarterRelic = spec.UpgradedStarterRelicId,
             },
         };
     }

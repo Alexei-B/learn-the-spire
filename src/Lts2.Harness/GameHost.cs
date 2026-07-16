@@ -638,6 +638,38 @@ public sealed class GameHost
     }
 
     /// <summary>
+    /// Test/dev seam: grant the local player a potion and pump its procurement to quiescence, the same
+    /// faithful path a reward/merchant uses (<c>PotionCmd.TryToProcure</c>, as the dev console's
+    /// <c>potion</c> command does). Procurement runs the <c>AfterPotionProcured</c> hook; like
+    /// <see cref="ObtainRelicDebug"/> it is pumped as a fire-and-forget task so any hook effect resolves
+    /// (out of combat, with no agent, any mid-effect pick auto-resolves randomly). Returns the mutable
+    /// potion actually added (a full potion belt would no-op the add — the scenario grants at most one to
+    /// a fresh 3-slot belt, so that does not happen here).
+    /// </summary>
+    public MegaCrit.Sts2.Core.Models.PotionModel ObtainPotionDebug(
+        MegaCrit.Sts2.Core.Models.PotionModel potion)
+    {
+        MegaCrit.Sts2.Core.Models.PotionModel mutable = potion.IsMutable ? potion : potion.ToMutable();
+        Selector.AutoResolveRandom = true;
+        try
+        {
+            System.Threading.Tasks.Task procure = MegaCrit.Sts2.Core.Helpers.TaskHelper.RunSafely(
+                MegaCrit.Sts2.Core.Commands.PotionCmd.TryToProcure(mutable, Run.Players[0]));
+            _suspendedRoomTask = procure;
+            PumpRoomTaskUntilIdleOrChoice(procure);
+            if (procure.IsCompleted)
+            {
+                _suspendedRoomTask = null;
+            }
+            return mutable;
+        }
+        finally
+        {
+            Selector.AutoResolveRandom = false;
+        }
+    }
+
+    /// <summary>
     /// Test/dev seam: enter an event room for an arbitrary event directly, bypassing map
     /// navigation, so every act event can be exercised in isolation. Mirrors the harness's normal
     /// room-entry handling (wait for the event's options to be generated). The event is cloned to a

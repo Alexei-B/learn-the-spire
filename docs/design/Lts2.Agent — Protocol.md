@@ -93,7 +93,9 @@ spec ⇒ byte-identical deck**):
 ```json
 {"kind": "random",    "cards": 15}                             // random deck from the character's pool
 {"kind": "realistic", "removals": [0,3], "additions": [0,3],   // "looks like act 1"
- "weights": {"own": 0.60, "colorless": 0.25, "curse": 0.12, "offCharacter": 0.03}}
+ "weights": {"own": 0.60, "colorless": 0.25, "curse": 0.12, "offCharacter": 0.03},
+ "relics": [0,2], "potions": [0,1],                            // random relic/potion grants
+ "starterRelic": {"absent": 0.10, "orobas": 0.10}}             // starter-relic variation
 {"kind": "explicit",  "cards": ["STRIKE_IRONCLAD", "..."]}     // closed-eval only (needs `encounter`)
 ```
 
@@ -101,9 +103,26 @@ spec ⇒ byte-identical deck**):
 - **`realistic`** — the character's **starter deck**, minus `N` random cards (`N` uniform in the inclusive
   `removals` range) and plus `M` random cards (`M` uniform in `additions`); each addition draws a pool by
   `weights` (own-character / colorless / curse / off-character) then a card uniformly within it. Added
-  cards are **unupgraded** (upgrade realism is a later knob). Only the **starter relic** is granted (no
-  random relics), so the built deck is the exact, deterministic set the spec describes. Every field
-  defaults exactly as shown, so `{"kind": "realistic"}` alone works.
+  cards are **unupgraded** (upgrade realism is a later knob). On top of the deck it also grants:
+  - **`relics`** `[min,max]` (default `[0,2]`, inclusive) random relics **plus the starter relic**, using the
+    same eligibility as a random scenario (no on-pickup reward, not a starter relic, distinct).
+  - **`potions`** `[min,max]` (default `[0,1]`, inclusive) random potions from the character + shared reward
+    pool, **excluding every potion that restores or grants player HP** (rewards are HP-based, so an
+    HP-granting potion would skew training). The excluded ids are **`BLOOD_POTION`, `FRUIT_JUICE`,
+    `REGEN_POTION`, `FAIRY_IN_A_BOTTLE`** — derived mechanically (their `OnUse` reaches `CreatureCmd.Heal`
+    / `CreatureCmd.GainMaxHp` / a heal power / a revive) and unioned with the game's own
+    `CanBeGeneratedInCombat == false` flag (which covers all but Blood Potion). See `PotionCatalog`.
+  - **`starterRelic`** — per-fight variation of the starter relic itself: with probability `absent`
+    (default `0.10`) the starter relic is **not granted at all**; with probability `orobas` (default `0.10`)
+    it is **replaced by its "Touch of Orobas" upgraded form and Touch of Orobas is also granted** (the game's
+    own ancient-reward effect — the upgrade mapping is read from `TouchOfOrobas`, e.g. Burning Blood→Black
+    Blood); otherwise it is the normal starter relic.
+
+  The relic/potion/starter-relic sampling happens **after** the deck is built, so the built deck is
+  byte-identical for a given seed regardless of these knobs. (They do consume the rng stream before the
+  encounter is picked, so a non-zero range/probability shifts the chosen *encounter* — the deck does not; a
+  `[k,k]` range and `{"absent":0,"orobas":0}` consume no rng, reproducing the earlier deck-only behavior.)
+  Every field defaults exactly as shown, so `{"kind": "realistic"}` alone works.
 - **`explicit`** — an exact list of card ids (mirrors the legacy top-level `cards` field); requires
   `encounter`. Collectors must refuse this kind (eval-only).
 - **Absent `deckSpec`** = exactly the prior behavior: the character's starter deck when `starterDeck` is
@@ -111,9 +130,14 @@ spec ⇒ byte-identical deck**):
 
 **Status-type cards are never dealt into a deck by any spec.** The observation's `info` block gains the
 resolved scenario metadata — `deckSpec` (the resolved kind: `"random"`/`"realistic"`/`"explicit"`/
-`"starter"`), and for realistic decks `removedCards` / `addedCards` (card-id lists) — so collectors and
-the deck-distribution report can tag outcomes without re-deriving them. `info` already carries
-`encounter`/`roomType`/`act`/`won`/`hpLost` for scenario fights.
+`"starter"`), and for realistic decks `removedCards` / `addedCards` (deck card-id lists), `addedRelics` /
+`addedPotions` (the random relic/potion grant ids, on top of the starter relic), `starterRelicState`
+(`"normal"`/`"absent"`/`"orobas"`) and `upgradedStarterRelic` (the upgraded relic id for the `"orobas"`
+state) — so collectors and the deck-distribution report can tag outcomes without re-deriving them. `info`
+already carries `encounter`/`roomType`/`act`/`won`/`hpLost` for scenario fights. **HP accounting note:**
+`hpLost` adds back the starter relic's end-of-combat heal on a win; that heal follows the starter-relic
+state (0 when `absent`, the upgraded relic's heal when `orobas` — e.g. Black Blood heals 12 vs Burning
+Blood's 6).
 
 ### Catalog dumps
 

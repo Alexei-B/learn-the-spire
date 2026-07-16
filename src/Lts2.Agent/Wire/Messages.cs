@@ -156,10 +156,20 @@ public sealed record ObservationInfo
     // Scenario deck metadata (reset_combat only), so collectors can tag outcomes and report deck
     // distributions without re-deriving them. DeckSpec is the resolved kind ("random"/"realistic"/
     // "explicit"/"starter"); RemovedCards/AddedCards are the realistic sampler's actual picks (card ids),
-    // null for other deck kinds.
+    // null for other deck kinds. AddedRelics/AddedPotions are the realistic sampler's random relic/potion
+    // grants (ids, on top of the starter relic) — never an HP-restoring/granting potion; null for other
+    // deck kinds, empty when none were rolled.
     public string? DeckSpec { get; init; }
     public IReadOnlyList<string>? RemovedCards { get; init; }
     public IReadOnlyList<string>? AddedCards { get; init; }
+    public IReadOnlyList<string>? AddedRelics { get; init; }
+    public IReadOnlyList<string>? AddedPotions { get; init; }
+
+    // Realistic starter-relic state (reset_combat, realistic only): "normal", "absent" (starter relic not
+    // granted), or "orobas" (starter relic replaced by its upgraded form, and Touch of Orobas also granted).
+    // UpgradedStarterRelic is the upgraded relic id for the "orobas" state, null otherwise.
+    public string? StarterRelicState { get; init; }
+    public string? UpgradedStarterRelic { get; init; }
 }
 
 /// <summary>Per-player reward scalars in an <see cref="ObservationInfo"/>.</summary>

@@ -194,10 +194,15 @@ cheap and the system under observation is well-understood.
       the prior behavior byte-for-byte. Realistic = starter deck ± random removals/additions (inclusive
       ranges), additions weighted 60/25/12/3 own/colorless/curse/off-character via `CardCatalog` (reads the
       game's real `ModelDb`/`CardPoolModel` pools — no hand-maintained lists); never deals status; added
-      cards unupgraded; starter relic only (deck-only regime) so decks are deterministic. Observation `info`
+      cards unupgraded; decks stay byte-identical for a seed. Observation `info`
       gains `deckSpec` kind + realistic `removedCards`/`addedCards`. Python `Lts2Env.reset_combat` takes a
       pass-through `deck_spec` dict (stdlib-only). Seeded determinism + bounds + no-status + explicit/absent
-      parity covered by `DeckSpecTests`.
+      parity covered by `DeckSpecTests`. _Product update:_ realistic now also grants `relics` `[0,2]` +
+      `potions` `[0,1]` (HP-restoring/granting potions excluded — Blood Potion, Fruit Juice, Regen Potion,
+      Fairy in a Bottle — via `PotionCatalog`), and varies the starter relic per fight (`starterRelic`
+      `{absent:0.10, orobas:0.10}`: absent / Touch-of-Orobas upgraded+granted / normal); `info` gains
+      `addedRelics`/`addedPotions`/`starterRelicState`/`upgradedStarterRelic`, and `StarterHeal` follows the
+      starter-relic state. Sampled after the deck build so decks stay seed-stable.
 - [x] **1.2 Catalogs** — _done._ `--dump-powers` mirrors `--dump-cards` (per power: id, Buff/Debuff type,
       stack/instance type, allowNegative, varKeys). `--dump-cards` extended with `rarity`, `pool` title,
       `category`, and `colorless`/`curse`/`status` flags (from the shared `CardCatalog` classifier the

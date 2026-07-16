@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Relics;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
@@ -45,6 +47,23 @@ public static class CombatScenario
         /// <summary>For a realistic deck: the card ids added to the character's starter deck (unupgraded).
         /// Null for other deck kinds.</summary>
         public IReadOnlyList<string>? AddedCards { get; init; }
+
+        /// <summary>For a realistic deck: the ids of the random relics granted on top of the starter relic
+        /// (0–2 by default). Empty when none were rolled; null for other deck kinds.</summary>
+        public IReadOnlyList<string>? AddedRelics { get; init; }
+
+        /// <summary>For a realistic deck: the ids of the random potions granted (0–1 by default, never an
+        /// HP-restoring/granting potion). Empty when none were rolled; null for other deck kinds.</summary>
+        public IReadOnlyList<string>? AddedPotions { get; init; }
+
+        /// <summary>For a realistic deck: the rolled starter-relic state — <c>"normal"</c>, <c>"absent"</c>
+        /// (starter relic not granted), or <c>"orobas"</c> (starter relic replaced by its upgraded form and
+        /// Touch of Orobas also granted). Null for other deck kinds.</summary>
+        public string? StarterRelicState { get; init; }
+
+        /// <summary>For an <c>"orobas"</c> starter-relic state: the id of the upgraded starter relic the base
+        /// was replaced with (e.g. <c>BLACK_BLOOD</c>). Null otherwise.</summary>
+        public string? UpgradedStarterRelicId { get; init; }
     }
 
     /// <summary>
@@ -61,9 +80,20 @@ public static class CombatScenario
 
         /// <summary>The character's starter deck with <c>N</c> random removals and <c>M</c> random additions
         /// (each range inclusive), additions drawn from a pool chosen by <see cref="Weights"/> then uniformly
-        /// within that pool. Status cards are never added.</summary>
+        /// within that pool. Status cards are never added. Additionally grants the starter relic plus
+        /// <c>[RelicsMin, RelicsMax]</c> random relics and <c>[PotionsMin, PotionsMax]</c> random potions
+        /// (each range inclusive) — the relic and potion counts/picks are sampled <em>after</em> the deck is
+        /// built, so the built deck is byte-identical for a given seed regardless of these knobs. Granted
+        /// potions never restore or grant player HP (see <see cref="PotionCatalog"/>).
+        /// <para>The starter relic itself is varied per fight (seeded): with probability <see cref="AbsentStarterPct"/>
+        /// it is <b>not granted at all</b> (trains the model on what the starter relic does, by contrast); with
+        /// probability <see cref="OrobasStarterPct"/> it is replaced by its "Touch of Orobas" upgraded form
+        /// <em>and</em> the Touch of Orobas relic is also granted (the game's own effect); otherwise it is the
+        /// normal starter relic.</para></summary>
         public sealed record Realistic(
-            int RemovalsMin, int RemovalsMax, int AdditionsMin, int AdditionsMax, PoolWeights Weights) : DeckSpec;
+            int RemovalsMin, int RemovalsMax, int AdditionsMin, int AdditionsMax, PoolWeights Weights,
+            int RelicsMin, int RelicsMax, int PotionsMin, int PotionsMax,
+            double AbsentStarterPct, double OrobasStarterPct) : DeckSpec;
 
         /// <summary>An exact list of card ids (closed-eval only).</summary>
         public sealed record Explicit(IReadOnlyList<string> CardIds) : DeckSpec;
@@ -71,8 +101,9 @@ public static class CombatScenario
         /// <summary>The product-owner default weights for a realistic deck's additions.</summary>
         public static readonly PoolWeights DefaultWeights = new(Own: 0.60, Colorless: 0.25, Curse: 0.12, OffCharacter: 0.03);
 
-        /// <summary><c>{"kind":"realistic"}</c> with all defaults: 0–3 removals, 0–3 additions, 60/25/12/3 weights.</summary>
-        public static Realistic DefaultRealistic() => new(0, 3, 0, 3, DefaultWeights);
+        /// <summary><c>{"kind":"realistic"}</c> with all defaults: 0–3 removals, 0–3 additions, 60/25/12/3
+        /// weights, 0–2 random relics, 0–1 random potions, 10% absent / 10% Orobas-upgraded starter relic.</summary>
+        public static Realistic DefaultRealistic() => new(0, 3, 0, 3, DefaultWeights, 0, 2, 0, 1, 0.10, 0.10);
     }
 
     /// <summary>The pool-selection weights for a realistic deck's additions. Not required to sum to 1 —
@@ -145,11 +176,15 @@ public static class CombatScenario
 
         var spec = new Spec(
             character.Id.Entry, encounter.GetType().Name, actIndex, roomType.ToString(),
-            startHp, StarterHealFor(character.Id.Entry))
+            startHp, deck.StarterHeal ?? StarterHealFor(character.Id.Entry))
         {
             DeckKind = deck.Kind,
             RemovedCards = deck.Removed,
             AddedCards = deck.Added,
+            AddedRelics = deck.Relics,
+            AddedPotions = deck.Potions,
+            StarterRelicState = deck.StarterRelicState,
+            UpgradedStarterRelicId = deck.UpgradedStarterRelicId,
         };
         return (host, spec);
     }
@@ -186,17 +221,25 @@ public static class CombatScenario
 
         return new Spec(
             character.Id.Entry, encounter.GetType().Name, actIndex, roomType.ToString(),
-            startHp, StarterHealFor(character.Id.Entry))
+            startHp, deck.StarterHeal ?? StarterHealFor(character.Id.Entry))
         {
             DeckKind = deck.Kind,
             RemovedCards = deck.Removed,
             AddedCards = deck.Added,
+            AddedRelics = deck.Relics,
+            AddedPotions = deck.Potions,
+            StarterRelicState = deck.StarterRelicState,
+            UpgradedStarterRelicId = deck.UpgradedStarterRelicId,
         };
     }
 
-    /// <summary>What a deck build resolved to, for the observation's scenario metadata.</summary>
+    /// <summary>What a deck build resolved to, for the observation's scenario metadata. <see cref="StarterHeal"/>
+    /// is the effective end-of-combat starter-relic heal for this fight's actual starter-relic state (null =
+    /// fall back to <see cref="StarterHealFor"/> for non-realistic decks).</summary>
     private readonly record struct DeckOutcome(
-        string Kind, IReadOnlyList<string>? Removed, IReadOnlyList<string>? Added);
+        string Kind, IReadOnlyList<string>? Removed, IReadOnlyList<string>? Added,
+        IReadOnlyList<string>? Relics = null, IReadOnlyList<string>? Potions = null,
+        string? StarterRelicState = null, string? UpgradedStarterRelicId = null, int? StarterHeal = null);
 
     /// <summary>
     /// Build the deck (and, for non-starter decks, grant the random relics) according to
@@ -211,13 +254,26 @@ public static class CombatScenario
         {
             case DeckSpec.Realistic real:
             {
-                // Realistic is a deck-only regime (the roadmap frames it purely in deck terms), so the deck
-                // is the sole variable: starter relic only, no random relics. This keeps the built deck the
-                // exact, deterministic set the spec describes (random relics can inject status/combat cards at
-                // combat start and would perturb both the deck and the seed stream).
+                // Build the deck FIRST (it consumes the rng stream for its removals/additions), so the built
+                // deck is byte-identical for a given seed regardless of the relic/potion knobs below.
                 (IReadOnlyList<string> removed, IReadOnlyList<string> added) =
                     BuildRealisticDeck(player, character, real, rng);
-                return new DeckOutcome("realistic", removed, added);
+                // Then sample & grant the starter relic PLUS 0–2 random relics and 0–1 random potions (per
+                // the product decision, so relic/potion play keeps being trained). Sampled after the deck so
+                // deck bytes stay independent of these knobs; note the relics/potions DO consume rng before
+                // the later encounter pick, so a non-zero range shifts the chosen encounter (the deck does
+                // not). A relic can inject combat-start cards (incl. status) into the piles — that is
+                // realistic and intended, but it means the deck-composition metadata describes the built deck,
+                // not necessarily every card in the opening combat piles.
+                // Vary the starter relic (absent / Orobas-upgraded / normal) BEFORE granting random relics,
+                // so the Orobas upgrade finds the character's own starter relic unambiguously. This drives the
+                // effective end-of-combat heal fed into the hpLost accounting (0 when absent).
+                (string starterState, string? upgradedId, int starterHeal) =
+                    ApplyStarterRelicState(host, player, real, rng);
+                IReadOnlyList<string> relics = GrantRealisticRelics(host, character, real, rng);
+                IReadOnlyList<string> potions = GrantRealisticPotions(host, player, real, rng);
+                return new DeckOutcome(
+                    "realistic", removed, added, relics, potions, starterState, upgradedId, starterHeal);
             }
             case DeckSpec.Random rnd:
                 BuildRandomDeck(player, character, Math.Max(0, rnd.Cards), rng);
@@ -247,6 +303,141 @@ public static class CombatScenario
         {
             host.ObtainRelicDebug(relic);
         }
+    }
+
+    /// <summary>Grant a realistic scenario's random relics: <c>[RelicsMin, RelicsMax]</c> distinct relics
+    /// (inclusive) on top of the already-normalized starter relic, using the same eligibility filter as
+    /// <see cref="GrantRandomRelics"/> (no on-pickup reward, not a starter relic). Returns the granted ids.
+    /// A zero count consumes no rng, so <c>[0,0]</c> leaves the stream (and thus the later encounter pick)
+    /// exactly where the deck build left it.</summary>
+    private static IReadOnlyList<string> GrantRealisticRelics(
+        GameHost host, CharacterModel character, DeckSpec.Realistic spec, Random rng)
+    {
+        int count = SampleCount(spec.RelicsMin, spec.RelicsMax, rng);
+        if (count <= 0)
+        {
+            return Array.Empty<string>();
+        }
+        var starterIds = character.StartingRelics.Select(r => r.Id.Entry).ToHashSet();
+        var granted = new List<string>(count);
+        foreach (RelicModel relic in ModelDb.AllRelics
+                     .Where(r => !r.HasUponPickupEffect && !starterIds.Contains(r.Id.Entry))
+                     .OrderBy(_ => rng.Next()).Take(count))
+        {
+            host.ObtainRelicDebug(relic);
+            granted.Add(relic.Id.Entry);
+        }
+        return granted;
+    }
+
+    /// <summary>Grant a realistic scenario's random potions: <c>[PotionsMin, PotionsMax]</c> distinct potions
+    /// (inclusive) drawn from <see cref="PotionCatalog.GrantablePool"/> — the character + shared reward pool
+    /// with every HP-restoring/granting potion excluded (HP-based rewards would be skewed otherwise). Returns
+    /// the granted ids; a zero count consumes no rng.</summary>
+    private static IReadOnlyList<string> GrantRealisticPotions(
+        GameHost host, Player player, DeckSpec.Realistic spec, Random rng)
+    {
+        int count = SampleCount(spec.PotionsMin, spec.PotionsMax, rng);
+        if (count <= 0)
+        {
+            return Array.Empty<string>();
+        }
+        var granted = new List<string>(count);
+        foreach (MegaCrit.Sts2.Core.Models.PotionModel potion in PotionCatalog.GrantablePool(player)
+                     .OrderBy(_ => rng.Next()).Take(count))
+        {
+            host.ObtainPotionDebug(potion);
+            granted.Add(potion.Id.Entry);
+        }
+        return granted;
+    }
+
+    /// <summary>Sample an inclusive count in <c>[min, max]</c> from <paramref name="rng"/>, consuming exactly
+    /// one draw when the range is non-degenerate and <b>zero</b> when it collapses to a point — so a
+    /// <c>[k,k]</c> range never perturbs the downstream rng stream.</summary>
+    private static int SampleCount(int min, int max, Random rng)
+    {
+        int hi = Math.Max(0, max);
+        int lo = Math.Clamp(min, 0, hi);
+        return lo == hi ? lo : rng.Next(lo, hi + 1);
+    }
+
+    private enum StarterRelicMode { Normal, Absent, Orobas }
+
+    /// <summary>Roll the per-fight starter-relic state. Consumes exactly one draw when either probability is
+    /// positive and <b>zero</b> when both are zero (so <c>{"absent":0,"orobas":0}</c> reproduces the normal
+    /// starter relic with an unperturbed stream, like a <c>[k,k]</c> count range).</summary>
+    private static StarterRelicMode SampleStarterState(double absentPct, double orobasPct, Random rng)
+    {
+        double a = Math.Max(0.0, absentPct);
+        double o = Math.Max(0.0, orobasPct);
+        if (a <= 0.0 && o <= 0.0)
+        {
+            return StarterRelicMode.Normal;
+        }
+        double roll = rng.NextDouble();
+        if (roll < a)
+        {
+            return StarterRelicMode.Absent;
+        }
+        if (roll < a + o)
+        {
+            return StarterRelicMode.Orobas;
+        }
+        return StarterRelicMode.Normal;
+    }
+
+    /// <summary>
+    /// Apply the rolled starter-relic state to the (already relic-normalized) player: keep it (normal), drop
+    /// it (absent), or replace it with its Touch-of-Orobas upgraded form while also granting Touch of Orobas
+    /// (orobas — the game's own <see cref="TouchOfOrobas"/> effect). Returns the state string, the upgraded
+    /// relic id (orobas only), and the effective end-of-combat heal for the resulting starter relic.
+    /// </summary>
+    private static (string State, string? UpgradedId, int StarterHeal) ApplyStarterRelicState(
+        GameHost host, Player player, DeckSpec.Realistic spec, Random rng)
+    {
+        switch (SampleStarterState(spec.AbsentStarterPct, spec.OrobasStarterPct, rng))
+        {
+            case StarterRelicMode.Absent:
+            {
+                foreach (RelicModel r in player.Relics.Where(r => r.Rarity == RelicRarity.Starter).ToList())
+                {
+                    player.RemoveRelicInternal(r, silent: true);
+                }
+                return ("absent", null, 0);
+            }
+            case StarterRelicMode.Orobas:
+            {
+                RelicModel? starter = player.Relics.FirstOrDefault(r => r.Rarity == RelicRarity.Starter);
+                if (starter is null)
+                {
+                    return ("normal", null, 0);   // defensive: nothing to upgrade
+                }
+                var orobas = (TouchOfOrobas)ModelDb.Relic<TouchOfOrobas>().ToMutable();
+                // Derive the upgrade mapping from the game's own code rather than hard-coding it here.
+                RelicModel upgraded = orobas.GetUpgradedStarterRelic(starter);
+                orobas.SetupForPlayer(player);   // records StarterRelic/UpgradedRelic used by AfterObtained
+                // Obtaining Touch of Orobas runs its AfterObtained: replace the starter relic with the upgraded
+                // form (RelicCmd.Replace) and keep Orobas itself — exactly the ancient reward's effect.
+                host.ObtainRelicDebug(orobas);
+                return ("orobas", upgraded.Id.Entry, EndOfCombatHeal(upgraded));
+            }
+            default:
+            {
+                RelicModel? starter = player.Relics.FirstOrDefault(r => r.Rarity == RelicRarity.Starter);
+                return ("normal", null, starter is null ? 0 : EndOfCombatHeal(starter));
+            }
+        }
+    }
+
+    /// <summary>The HP a starter (or Orobas-upgraded) relic restores at end of combat. Mechanical: only
+    /// Burning Blood (6) and Black Blood (12) heal on victory, both via a <c>Heal</c> dynamic var (a
+    /// <c>HealVar</c>) consumed by their <c>AfterCombatVictory</c>; every other starter/upgrade relic has no
+    /// such var and heals 0. Reading the var covers the normal and Orobas-upgraded relics uniformly.</summary>
+    private static int EndOfCombatHeal(RelicModel relic)
+    {
+        var vars = relic.DynamicVars;
+        return vars.ContainsKey("Heal") ? (int)vars["Heal"].BaseValue : 0;
     }
 
     /// <summary>Fill the deck with <paramref name="size"/> cards drawn uniformly from the character's own
