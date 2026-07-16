@@ -247,6 +247,95 @@ To try it without a real run, generate synthetic data (optionally live-appending
 python -m lts2_agent.dashboard.demo --dir checkpoints/runs --live
 ```
 
+## Oracle prober (replay-based ground truth)
+
+The world-model's *predictor* will predict the next observation given a state and an action. To score
+it we need **ground truth**: for a fixed set of combat *positions*, the true next observation for
+**every** legal action. The emulator is deterministic — same seed + same reset params + same action
+sequence reproduces a fight exactly — but there are no mid-combat snapshots, so a position is reached
+by **replaying an action prefix** from a seeded combat start. `lts2_agent.oracle` does exactly that:
+
+1. a **probe** freezes a reproducible position: `{probeId, resetParams (seed/character/elitePct/
+   bossPct/starterDeck/act), actionPrefix (option indices), meta}` where `meta` captures
+   `{act, roomType, character, turn, phase, optionCount}` for stratification;
+2. the **oracle runner** replays each probe, enumerates its legal options, and for each option index
+   replays `reset + prefix + [i]` to record the resulting full observation — the ground-truth next
+   state for that action.
+
+**Evaluation-only, by construction.** Every probe seed lives in a reserved namespace prefixed with
+**`PROBE-`**. **Training collectors must never use that prefix** — it keeps probe fights structurally
+excluded from any training corpus. `oracle.validate_probe_seed` enforces the rule (the builder always
+prefixes) and `oracle.assert_not_probe_seed` is the guard collectors call.
+
+Three commands (all against the built `Lts2.AgentHost`):
+
+```sh
+# 1. Freeze a probe set (reproducible from --master-seed). Spans acts 0-2, a monster/elite/boss room
+#    mix (via the elite/boss pct knobs), all characters, and varied replay depth (0-15 steps).
+python -m lts2_agent.oracle build --n 300 --out lts2_agent/data/probes.json
+
+# 2. Replay -> ground-truth next states; writes a gzip-JSONL shard, one record per probe.
+python -m lts2_agent.oracle run --probes lts2_agent/data/probes.json --out shard.jsonl.gz --envs 4
+
+# 3. Determinism spot-check (also available as `run --verify`): double-replay each position, assert
+#    the serialized state is byte-identical.
+python -m lts2_agent.oracle verify --probes lts2_agent/data/probes.json --sample 40
+```
+
+- **Reproducibility gate.** ~5% of deep-replay fights are genuinely non-reproducible (an RNG not
+  reseeded per fight, or async-combat-pump ordering) — either fully chaotic or *flaky* (occasional
+  divergence). At build time every candidate is replayed `--reproduce-checks` (default 8) times on a
+  **second, independent host process** and kept only if every replay is byte-identical, so every
+  committed probe is a stable, cross-process ground-truth position.
+- **Shard record schema** (gzip JSONL, one line per probe):
+  `{probeId, position: {state, options, done, info}, results: [{action: i, obs: <next-obs>} | {action: i, error: "..."}], meta}`.
+  A probe whose position replay itself fails is recorded as `{probeId, error}` and skipped. Per-action
+  and per-probe env errors are tolerated (recorded, never fatal). Progress streams to **stderr**.
+- **Parallelism.** `--envs N` runs probes across N host processes (a thread pool over env instances,
+  like the trainers — env I/O releases the GIL).
+
+The committed `lts2_agent/data/probes.json` is a small 40-probe set (kept light on purpose); the full
+few-hundred-probe evaluation set is built at CP2.
+
+## Transition corpus (supervised world-model data)
+
+The world model (encoder/predictor) is trained **supervised** on logged transitions. `lts2_agent.collect`
+plays scenario combats with cheap policies and logs **every** decision point — combat moves *and*
+mid-combat `Choice` selections — as one `(state, action, next-state)` record. `lts2_agent.corpus` is the
+store; `lts2_agent.corpus_report` is the CP2 composition report. Stdlib only.
+
+```sh
+# Collect (N parallel host processes; broad+realistic regimes, random/heuristic policies mixable).
+python -m lts2_agent.collect --envs 8 --fights 500 --regime mixed --policy mixed \
+    --out python/data/corpus --run-label demo
+#   --transitions N instead of --fights; --regime broad|realistic|mixed; --policy random|heuristic|mixed;
+#   --character (default random) --act -1(any)/0/1/2 --elite-pct/--boss-pct.
+
+# CP2 report: composition, realistic-deck distributions, a 20-deck sample, determinism spot-check.
+python -m lts2_agent.corpus_report --corpus python/data/corpus        # add --json for machine-readable
+```
+
+- **Layout** — sharded gzip JSONL under the corpus root: `<root>/{train,val,test}/<run-label>-<NNNNN>.jsonl.gz`,
+  one JSON record per line, shards capped at ~2000 records. The default root is `python/data/corpus/`
+  (gitignored — the shards are large and regenerable). A whole fight is written **atomically** at its end;
+  a fight that errors (the env throws sporadically) or exceeds the ~90-decision cap is dropped cleanly.
+- **Record schema** (contract 4, lossless raw wire observations):
+  `{seed, scenarioMeta, t, state, options, actionTaken, nextState, nextOptions, rewardComponents, done, info}`.
+  `scenarioMeta = {deckSpec, removedCards, addedCards, act, room, character, encounter, policy, regime}`;
+  `actionTaken` is an option index (or a `cardIndices` list); `rewardComponents` are raw before/after
+  scalars (player currentHp/block, summed enemy HP) — **no reward function applied**, the trainer derives
+  its own.
+- **Split rule** (leak-proof, deterministic): the split is a pure function of the **fight seed** —
+  `crc32(seed) % 100` → 0-89 train / 90-94 val / 95-99 test (`corpus.split_for_seed`, used by writer and
+  reader alike). All records of a fight share the seed, so a fight lands wholly in one split; the same
+  seed always maps to the same split. Train/val/test leakage is structurally impossible.
+- **Seed namespaces**: collector fight seeds are `CORPUS-<run-label>-<env>-<counter>`. The `PROBE-`
+  namespace (oracle eval set) is refused, and records from an `explicit` deckSpec (closed-eval fixed
+  instances) are refused — training data is always sampled distributions, never fixed instances.
+- **Dashboard**: a collection run appears like a training run (metrics `kind="collect"`) — aggregate
+  `collect.transitions_total/fights_total/errors_total/transitions_per_s` plus per-fight `fight.won`/
+  `fight.hp_lost` tagged `{act, room, character, regime, policy}`.
+
 ## Protocol
 
 The full wire spec lives in `docs/design/Lts2.Agent — Protocol.md`.

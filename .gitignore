@@ -30,4 +30,9 @@ runs/
 lts2.agent.json
 
 # Derived card-metadata dump (from sts2.dll via --dump-cards)
-python/lts2_agent/data/
+python/lts2_agent/data/*
+# ...but the oracle probe set (seeds + action indices + metadata only, no game content) is committed.
+!python/lts2_agent/data/probes.json
+
+# Transition corpus shards (logged game observations — large, regenerable, never committed)
+python/data/corpus/
