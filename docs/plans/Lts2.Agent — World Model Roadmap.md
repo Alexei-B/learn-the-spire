@@ -1,6 +1,6 @@
 # Lts2.Agent — World-Model Roadmap (implementation backlog)
 
-Status: **backlog — nothing started.** This is the implementation plan for
+Status: **M0 in progress — 0.1–0.4 done, 0.5 baseline running, CP1 pending review.** This is the implementation plan for
 `docs/design/Lts2.Agent — World Model.md` (read that first; this doc assumes its vocabulary:
 tokenizer, encoder/decoder, predictor, afterstate/chance step, value/policy, planner).
 
@@ -149,7 +149,11 @@ protocol-v2 explanations; any mismatch rejects loudly, exactly like `FEATURE_VER
 
 ### M0 — Instruments first (works entirely against the current PPO stack)
 
-- [ ] **0.1 Metrics events**: `train_torch` (and the eval loops) emit the event stream (contract 1)
+- [x] **0.1 Metrics events** — _done_: `lts2_agent.metrics.MetricsWriter` (stdlib-only) writes
+      `manifest.json` + per-line-flushed `events.jsonl` under `checkpoints/runs/<run_id>/`;
+      `train_torch` emits per-iteration `train.*`, per-fight `fight.*` tagged
+      act/room/character/truncated, `eval.*`/`eval_fight.*` (mode=greedy|sampled), and
+      `bodyguard.pass`. Original item: `train_torch` (and the eval loops) emit the event stream (contract 1)
       alongside the existing stdout/CSV; outcome events tagged act/room/character.
 - [x] **0.2 Dashboard MVP** — _done._ `python/lts2_agent/dashboard/` (stdlib-only, offline): a
       ThreadingHTTPServer + one self-contained `index.html` (inline CSS/JS, hand-rolled SVG line
@@ -171,7 +175,9 @@ protocol-v2 explanations; any mismatch rejects loudly, exactly like `FEATURE_VER
       fetched once per decision point off the UI thread and shared by both `Tab` and the panel — no extra
       round-trip per keystroke, never blocking the UI; a dead/timed-out agent degrades to "declined".
       Pure formatter `RankingPanel` covered by `RankingPanelTests`.
-- [ ] **0.5 Baseline capture**: one PPO training run + fixed-seed eval recorded through the new
+- [ ] **0.5 Baseline capture** — _in progress_: 300-iteration run `baseline-ppo` (random character,
+      acts 0–2, eval every 10 iters, ckpt `checkpoints/baseline_m0.pt`) recording through the new
+      pipeline. Original item: one PPO training run + fixed-seed eval recorded through the new
       pipeline, kept as the comparison baseline for M5/M6.
 
 **CP1 (manual review):** start a PPO training run; open the dashboard; watch it live; inspect the
