@@ -28,7 +28,7 @@ METRIC_NAMES = [
     "card_id_top1", "card_zone_acc", "power_id_top1", "power_amount_mae",
     "creature_hp_mae", "creature_block_mae", "intent_damage_mae", "energy_acc",
     "relic_set_f1", "potion_set_f1", "hand_size_acc", "pile_size_acc",
-    "pending_choice_acc", "exact_state_rate", "exact_mech_rate", "state_dist",
+    "pending_choice_acc", "exact_state_rate", "exact_mech_rate", "state_dist", "field_acc",
 ]
 
 
@@ -183,6 +183,9 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     pairs["exact_state_rate"] = (exact, ones)
     pairs["exact_mech_rate"] = (exact_mech, ones)
     pairs["state_dist"] = (dist_num, dist_den)
+    # The ascending complement: fraction of token-fields correctly decoded (1 - state_dist),
+    # an accuracy so it pins to the 0..1 axis and suits the top-end display scales.
+    pairs["field_acc"] = (dist_den - dist_num, dist_den)
     return pairs
 
 

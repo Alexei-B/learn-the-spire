@@ -129,7 +129,7 @@
         <button data-metric="fight.won" data-group="act">Win by act</button>
         <button data-metric="fight.hp_lost" data-group="room">HP lost by room</button>
         <button data-metric="eval_fight.won" data-group="mode">Eval greedy vs sampled win</button>
-        <button data-metric="eval.exact_state_rate" data-group="none" data-scale="pow">Enc/dec accuracy</button>
+        <button data-metric="eval.field_acc" data-group="none" data-scale="nines">Enc/dec accuracy</button>
         <button data-metric="eval.state_dist" data-group="none" data-scale="log">Enc/dec distance</button>
       </div>
     </div>
@@ -334,6 +334,7 @@ const METRIC_LABELS = {
   "eval.exact_state_rate": "Decoder: exact full-state reconstruction rate",
   "eval.state_dist": "Decoder: mean state distance (per-token-field mismatch, 0=perfect)",
   "eval.exact_mech_rate": "Decoder: exact mechanical-state rate (strict minus score/gold)",
+  "eval.field_acc": "Decoder: fields correctly decoded (1 − state distance)",
 };
 function metricLabel(name) {
   const d = METRIC_LABELS[name];
