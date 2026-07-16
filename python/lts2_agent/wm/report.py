@@ -29,7 +29,15 @@ METRIC_NAMES = [
     "creature_hp_mae", "creature_block_mae", "intent_damage_mae", "energy_acc",
     "relic_set_f1", "potion_set_f1", "hand_size_acc", "pile_size_acc",
     "pending_choice_acc", "exact_state_rate", "exact_mech_rate", "state_dist", "field_acc",
+    "action_snr",
 ]
+
+
+# Median fraction of token-fields changed by ONE real action (state -> nextState, the same
+# _state_dist metric): measured 2026-07-16 over 3,000 val-split transitions of corpus-v1
+# (PlayCard median 0.108, EndTurn 0.213, overall median 0.1303). Re-measure if the tokenizer
+# layout or corpus changes materially.
+ACTION_FOOTPRINT = 0.1303
 
 
 def _symexp_np(y: np.ndarray) -> np.ndarray:
@@ -186,6 +194,12 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     # The ascending complement: fraction of token-fields correctly decoded (1 - state_dist),
     # an accuracy so it pins to the 0..1 axis and suits the top-end display scales.
     pairs["field_acc"] = (dist_den - dist_num, dist_den)
+    # Signal-to-noise for the M4 gate: how many times larger is a MEDIAN action's state-change
+    # footprint than the decoder's reconstruction error, in the same token-field distance.
+    # SNR 1 = reconstruction noise equals a whole action; the roadmap gate is >=~4 to start the
+    # predictor phase, >=~13 to trust fine-grained predictor comparisons.
+    # (num, den) = (footprint * den, mismatches) so grouped sums give footprint / group-distance.
+    pairs["action_snr"] = (ACTION_FOOTPRINT * dist_den, np.maximum(dist_num, 1e-9))
     return pairs
 
 
