@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from . import features, model_torch
+from .adapters import FeaturesAdapter
 
 
 @dataclass
@@ -42,13 +42,17 @@ class PPOConfig:
     ent_floor: float = 0.6
 
 
-def make_optimizer(model: model_torch.ActorCritic, config: PPOConfig) -> torch.optim.Optimizer:
+def make_optimizer(model, config: PPOConfig) -> torch.optim.Optimizer:
     return torch.optim.Adam(model.parameters(), lr=config.lr)
 
 
-def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
-           batch: dict, config: PPOConfig, device) -> dict:
-    """Run PPO epochs over ``batch`` (dict of stacked numpy arrays); returns mean metrics."""
+def update(model, optimizer: torch.optim.Optimizer,
+           batch: dict, config: PPOConfig, device, adapter=None) -> dict:
+    """Run PPO epochs over ``batch`` (dict of stacked numpy arrays); returns mean metrics.
+
+    ``adapter`` (defaults to the features path) decides how the batch feeds the model, so the same PPO
+    surrogate trains either the features actor-critic or the entity-token model."""
+    ad = adapter or FeaturesAdapter()
     n = int(batch["action"].shape[0])
 
     adv = batch["adv"].astype(np.float32)
@@ -65,7 +69,7 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
     ev = 1.0 - float(np.var(batch["ret"] - batch["value"])) / (var_ret + 1e-8) if var_ret > 1e-8 else 0.0
 
     # Whole batch to device once; minibatches are indexed on-device.
-    feats = model_torch.to_tensors({k: batch[k] for k in features.MODEL_KEYS}, device)
+    feats = ad.to_device({k: batch[k] for k in ad.MODEL_KEYS}, device)
     action = torch.as_tensor(batch["action"], dtype=torch.long, device=device)
     old_logp = torch.as_tensor(batch["logp"], dtype=torch.float32, device=device)
     old_value = torch.as_tensor(batch["value"], dtype=torch.float32, device=device)
@@ -87,9 +91,9 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
         perm = torch.randperm(n, device=device)
         for start in range(0, n, mb_size):
             idx = perm[start:start + mb_size]
-            mb_mask = feats[features.MODEL_KEYS.index("mask")][idx]   # [mb, M] bool: legal options
-            logits, values = model(*(t[idx] for t in feats))
-            new_logp = model_torch.log_prob(logits, action[idx])
+            mb_mask = ad.mask(feats)[idx]   # [mb, M] bool: legal options
+            logits, values = ad.forward(model, ad.index(feats, idx))
+            new_logp = ad.log_prob(logits, action[idx])
             logratio = new_logp - old_logp[idx]
             ratio = logratio.exp()
 
@@ -106,7 +110,7 @@ def update(model: model_torch.ActorCritic, optimizer: torch.optim.Optimizer,
                 v_loss = torch.max(v_unclipped, v_clipped).mean()
             else:
                 v_loss = F.smooth_l1_loss(values, ret_t[idx], beta=1.0)
-            ent = model_torch.entropy(logits).mean()
+            ent = ad.entropy(logits).mean()
             # L2-penalize the legal logits so they stay in a sane range (bounds the ratio) without a
             # gradient-killing clamp.
             logit_reg = (logits[mb_mask] ** 2).mean()

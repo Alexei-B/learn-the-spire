@@ -19,18 +19,23 @@ from typing import Any, Optional
 import numpy as np
 import torch
 
-from . import features, model_torch, navigator, reward
+from . import navigator, reward
+from .adapters import FeaturesAdapter
 from .env import Lts2Env
-from .rollout import featurize, gae
-from .scenario import ScenarioConfig, _COMBAT_KINDS
+from .rollout import gae
+from .scenario import ScenarioConfig
 
 
 class TorchScenarioRollout:
-    """Persistent pool of scenario envs; collects on-policy batches with a batched GPU forward."""
+    """Persistent pool of scenario envs; collects on-policy batches with a batched GPU forward.
 
-    def __init__(self, config: ScenarioConfig, host_command: Optional[list[str]] = None):
+    ``adapter`` (defaults to the hand-features path) abstracts featurize + model I/O, so the same rollout
+    drives either the features actor-critic or the entity-token set-transformer."""
+
+    def __init__(self, config: ScenarioConfig, host_command: Optional[list[str]] = None, adapter=None):
         self.config = config
         self._host_command = host_command
+        self.adapter = adapter or FeaturesAdapter()
         # LTS2_ENV_STDERR surfaces the C# host's stderr (incl. the LTS2_PROFILE per-step breakdown).
         log_stderr = bool(os.environ.get("LTS2_ENV_STDERR"))
         self._envs = [Lts2Env(host_command=host_command, log_stderr=log_stderr)
@@ -112,12 +117,13 @@ class TorchScenarioRollout:
     # --- collection --------------------------------------------------------------------------------
 
     @torch.no_grad()
-    def collect(self, model: model_torch.ActorCritic, device, shaping_coef: float = 1.0):
+    def collect(self, model, device, shaping_coef: float = 1.0):
         cfg = self.config
         N = cfg.n_envs
+        ad = self.adapter
         model.eval()
 
-        feats_buf = [{k: [] for k in features.MODEL_KEYS} for _ in range(N)]
+        feats_buf = [{k: [] for k in ad.MODEL_KEYS} for _ in range(N)]
         actions_b = [[] for _ in range(N)]
         logps_b = [[] for _ in range(N)]
         values_b = [[] for _ in range(N)]
@@ -137,23 +143,17 @@ class TorchScenarioRollout:
             if prof: tt["advance"] += time.perf_counter() - t
 
             t = time.perf_counter()
-            feats_list = []
-            for i in range(N):
-                f = featurize(self._cur[i]["state"], self._cur[i]["options"])
-                for j, o in enumerate(self._cur[i]["options"][:features.MAX_OPTIONS]):
-                    if o.get("kind") not in _COMBAT_KINDS:
-                        f["mask"][j] = False
-                feats_list.append(f)
-            stacked = model_torch.stack_feats(feats_list)
+            feats_list = [ad.featurize(self._cur[i]["state"], self._cur[i]["options"]) for i in range(N)]
+            stacked = ad.stack(feats_list)
             if prof: tt["featurize"] += time.perf_counter() - t
 
             t = time.perf_counter()
-            batch_feats = model_torch.to_tensors(stacked, device)
+            batch_feats = ad.to_device(stacked, device)
             if prof: tt["transfer"] += time.perf_counter() - t
 
             t = time.perf_counter()
-            logits, values = model(*batch_feats)                 # ONE batched GPU forward [N, M], [N]
-            actions, logps = model_torch.sample_action(logits)
+            logits, values = ad.forward(model, batch_feats)      # ONE batched GPU forward [N, M], [N]
+            actions, logps = ad.sample_action(logits)
             a = actions.cpu().numpy(); lp = logps.cpu().numpy(); v = values.cpu().numpy()
             if prof: tt["forward"] += time.perf_counter() - t
 
@@ -181,7 +181,7 @@ class TorchScenarioRollout:
                     r -= cfg.weights.truncate_penalty
                 done = bool(nxt["done"]) or truncated
 
-                for k in features.MODEL_KEYS:
+                for k in ad.MODEL_KEYS:
                     feats_buf[i][k].append(feats_list[i][k])
                 actions_b[i].append(int(a[i])); logps_b[i].append(float(lp[i]))
                 values_b[i].append(float(v[i])); rewards_b[i].append(r)
@@ -207,8 +207,8 @@ class TorchScenarioRollout:
 
         # Bootstrap non-terminal tails with one more batched forward, then GAE per env.
         list(self._pool.map(self._advance_env, range(N)))
-        tail_feats = [featurize(self._cur[i]["state"], self._cur[i]["options"]) for i in range(N)]
-        _, tail_v = model(*model_torch.to_tensors(model_torch.stack_feats(tail_feats), device))
+        tail_feats = [ad.featurize(self._cur[i]["state"], self._cur[i]["options"]) for i in range(N)]
+        _, tail_v = ad.forward(model, ad.to_device(ad.stack(tail_feats), device))
         tail_v = tail_v.cpu().numpy()
 
         per_env = []
@@ -217,14 +217,14 @@ class TorchScenarioRollout:
                 continue
             last_value = 0.0 if dones_b[i][-1] > 0.5 else float(tail_v[i])
             adv, returns = gae(rewards_b[i], values_b[i], dones_b[i], last_value, cfg.gamma, cfg.lam)
-            b = {k: np.stack(feats_buf[i][k]) for k in features.MODEL_KEYS}
+            b = {k: np.stack(feats_buf[i][k]) for k in ad.MODEL_KEYS}
             b.update({"action": np.asarray(actions_b[i], np.int32),
                       "logp": np.asarray(logps_b[i], np.float32),
                       "value": np.asarray(values_b[i], np.float32), "adv": adv, "ret": returns})
             per_env.append(b)
 
         batch = {k: np.concatenate([b[k] for b in per_env], axis=0)
-                 for k in (*features.MODEL_KEYS, "action", "logp", "value", "adv", "ret")}
+                 for k in (*ad.MODEL_KEYS, "action", "logp", "value", "adv", "ret")}
         return batch, outcomes
 
     def close(self):

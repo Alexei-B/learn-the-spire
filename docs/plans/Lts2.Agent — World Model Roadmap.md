@@ -273,10 +273,27 @@ deck and fight).
       static `poolId`; monster/character/orb/enchant/affliction ids + granted keywords are covered-lossy
       (hashed). **Padded dims (measured max over the full 1.0M-record corpus → cap):** cards 82→200,
       creatures 8→12, powers 24→96, intents 7→32, orbs 9→16, relics 8→24, potions 5→8. README
-      "Tokenizer" section documents the contract. (2.2 PPO-on-tokens sanity pass not yet run.)
-- [ ] **2.2 PPO-on-tokens sanity pass** (optional but recommended): attention encoder under the
-      existing PPO head, trained on the realistic regime. Banks the model-free upgrade
-      (design §6.A) and shakes out the tokenizer end to end before anything depends on it.
+      "Tokenizer" section documents the contract. (2.2 PPO-on-tokens sanity pass now landed.)
+- [x] **2.2 PPO-on-tokens sanity pass** — _done (full comparison run pending)._ `lts2_agent.model_tokens`
+      is a set-transformer actor-critic over the tokenizer (per-token-type embedders with a **shared card
+      embedder** for state cards and option cards; creatures fold in powers/intents by scatter-add then
+      self-attend; learned latent queries attention-pool the token set into a state context `z`; ~1.3M params
+      at `d_model=160`). Options are scored as (kind ⊕ option card/potion embedding ⊕ the **target creature's
+      embedding gathered by `targetCombatId → creature slot`** ⊕ `z`) under a masked softmax, with a
+      tanh-bounded ±20 value head — same PPO head shape as `model_torch`. Checkpoints stamp
+      `tokens.tokenizer_signature()` and reject a mismatch loudly. The rollout (`rollout_torch`) and PPO update
+      (`ppo_torch`) are shared with the features baseline via a defaulted `adapter` seam (`adapters.py`), so
+      `train_torch` is byte-for-byte unchanged; the new trainer `train_tokens` reuses the same `ScenarioConfig`
+      knobs + reward + fixed-seed greedy/sampled eval and streams a `kind="ppo-tokens"` metrics run for
+      dashboard overlay. Serve path: `policies.torch_tokens_policy` (sampled-by-default). Tests in
+      `tests/test_model_tokens.py` (forward shapes/masking, always-legal sampling, targeted-option→slot
+      mapping, card-featurization parity with the tokenizer, checkpoint version-stamp rejection, serve
+      parity/decline). A 25-iter GPU short run (default scenario settings) was healthy: no NaN, entropy stable
+      ~1.2 (no collapse), explained-var rose 0.00→0.20, sampled eval win 0.75 (matches the baseline) / greedy
+      0.25→0.50, sps ~200-290. **Remaining:** the full 300-iter baseline-comparison run (M0.5 bar: greedy 0.38
+      / sampled 0.75) is the orchestrator's to run. Original item: attention encoder under the existing PPO
+      head, trained on the realistic regime. Banks the model-free upgrade (design §6.A) and shakes out the
+      tokenizer end to end before anything depends on it.
 
 **CP3 (manual review):** round-trip/coverage report over the corpus (target: 100% of fields
 accounted for); if 2.2 ran — dashboard comparison of PPO-on-tokens vs the M0.5 baseline on the

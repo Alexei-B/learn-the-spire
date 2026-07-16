@@ -384,6 +384,33 @@ python -m lts2_agent.tokens --check python/data/corpus            # add --limit 
   enchant/affliction ids, granted keywords) are **covered-lossy** — hashed into fixed vocabs (`LOSSY_FIELDS`
   documents each); they are tokenized but do not round-trip back to a string.
 
+### PPO-on-tokens (the model-free representation upgrade, roadmap 2.2)
+
+`lts2_agent.model_tokens` is a small **set-transformer actor-critic** over the tokenizer, trained under the
+*existing* PPO algorithm — the design's "Alternative A" upgrade (§6.A), banked before the world-model
+depends on the tokenizer. Per-token-type embedders (the **card** embedder shared between state card tokens
+and legal-option cards) project into a shared `d_model` (default 160, ~1.3M params); creatures fold in
+their powers/intents (scatter-add) then self-attend; learned latent queries attention-pool the whole token
+set into a state context `z`. Each legal option is scored as **(kind ⊕ option-card/potion embedding ⊕ the
+target creature's embedding, gathered by `targetCombatId → creature slot` ⊕ `z`)** through a masked softmax
+(exactly like `model_torch`), with a tanh-bounded ±20 value head. Checkpoints are stamped with
+`tokenizer_signature()` and reject a mismatch loudly, the way `model_torch` rejects a `FEATURE_VERSION`
+mismatch.
+
+The rollout (`rollout_torch`) and PPO update (`ppo_torch`) are shared with the features baseline via a small
+`adapters.py` seam (a defaulted `adapter` parameter) — so `train_torch` is byte-for-byte unchanged and stays
+the recorded baseline. The trainer is a separate CLI (`train_tokens`), same `ScenarioConfig` knobs, reward,
+and metrics stream (as a `kind="ppo-tokens"` run so the dashboard overlays it on the baseline):
+
+```sh
+# Full baseline-comparison run (matches the M0.5 baseline scenario settings).
+python -m lts2_agent.train_tokens --envs 16 --iterations 300 --eval-every 10 \
+    --ckpt checkpoints/tokens_m2.pt --run-label tokens-ppo
+```
+
+Serve a trained token checkpoint into the TUI with `lts2_agent.policies.torch_tokens_policy` (sampled by
+default — argmax collapses onto EndTurn, same as the features policy; `LTS2_PPO_TOKENS_CKPT` sets the path).
+
 ## Protocol
 
 The full wire spec lives in `docs/design/Lts2.Agent — Protocol.md`.
