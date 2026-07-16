@@ -411,6 +411,104 @@ python -m lts2_agent.train_tokens --envs 16 --iterations 300 --eval-every 10 \
 Serve a trained token checkpoint into the TUI with `lts2_agent.policies.torch_tokens_policy` (sampled by
 default — argmax collapses onto EndTurn, same as the features policy; `LTS2_PPO_TOKENS_CKPT` sets the path).
 
+## World-model encoder/decoder (roadmap 3.1, design §4.2–4.3)
+
+`lts2_agent.wm` is the first world-model module: an **encoder** that compresses a tokenized combat state
+into a normalized latent `z`, and a **symbolic decoder** that reconstructs the structured state from `z`
+alone. The decoder is the training signal, the anti-collapse anchor (design §4.3 — reconstruction makes
+the JEPA collapse mode impossible), and — later — the debugger. It trains **supervised** on the transition
+corpus (no reward, no env): every record's `state` and `nextState` (~2M states) autoencoded.
+
+- **Encoder** (`wm/encoder.py`): per-token-type input projections into `d_model` (default 256; cards/
+  powers/relics/potions also gather their static-catalog row), a token-type embedding, `enc_layers`
+  (default 4) of pre-norm self-attention over the packed token set (key-padding-masked — no manual
+  sort/pack needed at these batch sizes), then Perceiver-style **attention pooling** (learned latent
+  queries) into a latent vector (`z_dim`, default 512).
+- **SimNorm latent** (design §11 delta): `z` is split into groups of `simnorm_group` (default 8) and
+  softmax'd within each group (TD-MPC2's SimNorm), so the latent is a concatenation of probability
+  simplices — bounded (each group sums to 1), so it can neither explode nor collapse to a constant scale.
+  Chosen over plain L2 because grouped-simplex latents are the published default for latent world models
+  and preserve more categorical structure at equal width.
+- **Decoder** (`wm/decoder.py`): `z` → a few memory tokens; per token type a bank of **learned slot
+  queries** cross-attends into the memory and self-attends (`TransformerDecoderLayer`), then per-type
+  heads emit the tokenizer's array space directly — categorical logits per `*_idx` column (cross-entropy),
+  a numeric vector per `*_num` block (**MSE on the symlog values** — the same array `tokens.detokenize`
+  inverts; symlog already compresses and integer quantities round-trip exactly, so two-hot buys nothing
+  here), a per-slot **presence** logit for each variable-length type (BCE), and card-keyword multi-hot
+  (BCE). Canonical-dict reconstruction reuses `tokens.detokenize` verbatim (never reimplemented).
+- **Field spec** (`wm/spec.py`) is the single description of the array layout both the encoder embedders
+  and decoder heads iterate, so the model's output space *is* the tokenizer's array space; vocab sizes come
+  from the live catalogs/enums. Checkpoints stamp `tokenizer_signature()` and reject a mismatch loudly.
+
+```sh
+# Train (streams the train split; per-field reconstruction metrics stream live to the dashboard).
+python -m lts2_agent.train_encdec --steps 50000 --batch 384 --val-every 500 \
+    --ckpt checkpoints/wm_encdec.pt --run-label wm-encdec        # --resume to continue
+
+# CP4 artifact: full-split report card (overall + by-act) against a checkpoint.
+python -m lts2_agent.eval_encdec --ckpt checkpoints/wm_encdec.pt --split val   # --json for machine form
+```
+
+Metrics land as a `kind="wm-encdec"` run under `checkpoints/runs/`. **Per train step-window**
+(phase=`train`): `train.loss`, `train.loss_categorical`, `train.loss_numeric`, `train.loss_presence`,
+`train.lr`, `train.states_per_s`. **Per val pass** (phase=`eval`) the per-field report card:
+`eval.card_id_top1`, `eval.card_zone_acc`, `eval.power_id_top1`, `eval.power_amount_mae`,
+`eval.creature_hp_mae`, `eval.creature_block_mae`, `eval.intent_damage_mae`, `eval.energy_acc`,
+`eval.relic_set_f1`, `eval.potion_set_f1`, `eval.hand_size_acc`, `eval.pile_size_acc`,
+`eval.pending_choice_acc`, and the aggregate `eval.exact_state_rate` (fraction of val states whose full
+decoded canonical dict equals the original after detokenize-level quantization). MAEs are RAW game units
+(symexp'd), not symlog space. Each eval metric is emitted a second time tagged `{"act": …}` so the
+dashboard's group-by works. Note: per-slot metrics (card-id, power-id) are measured **slot-aligned** to the
+tokenizer's content-sorted target order; because that order is a deterministic function of content the
+decoder can learn it, but the slot-assignment ambiguity makes these a conservative floor — `exact_state_rate`
+(set-based, order-invariant via `detokenize`) is the honest aggregate.
+
+## Decoded-state printer + diff (roadmap 3.2)
+
+`lts2_agent.statefmt` is the human window onto a **canonical state dict** — the exact shape
+`tokens.detokenize` produces, whether from `detokenize(tokenize(raw wire))` or from a decoder's output.
+
+- `format_state(cv, hash_names=None)` renders it compactly: player / Osty / enemies with
+  hp/block/powers/intents, energy/stars/turn, the hand with per-card cost/dmg/block/upgrade,
+  draw/discard/exhaust as counted multisets, relics, potions, and any pending choice.
+- `diff_states(a, b, hash_names=None)` is the field-level "what changed" view — HP/block/energy deltas,
+  per-zone card multiset moves, powers gained/lost/changed, enemies died, intents changed — reused by the
+  TUI prediction inspector (4.4) and the predictor report card (4.3).
+
+Hashed-lossy ids (monster/character/orb/enchant/affliction/keyword buckets — see `tokens.LOSSY_FIELDS`)
+have no exact inverse, so the printer resolves them through an optional reverse map, shown as names when
+present else `#bucket`:
+
+```bash
+# Scan the corpus once -> data/hash_names.json {bucket -> [names]} per vocab (collisions listed).
+python -m lts2_agent.statefmt build-hash-names --corpus data/corpus
+# Pretty-print / diff one corpus record (loads the map automatically if present).
+python -m lts2_agent.statefmt show --corpus data/corpus --split val --index 0
+python -m lts2_agent.statefmt diff --corpus data/corpus --split val --index 0
+```
+
+## Legal-action derivation (roadmap 3.3)
+
+`lts2_agent.legal_actions.derive_option_keys` reproduces `GameHost.ListOptions` from **tokenized fields
+alone**: each hand card's `canPlay` flag + target type crossed with the live hittable enemies gives the
+PlayCard options (per-target for `AnyEnemy`, else untargeted); potions expand the same way by their
+catalog usage/target type; `EndTurn` is always available in the player's turn; a `Choice` state's pending
+offered cards give the SelectCards options. The same function will later run on decoder-predicted states
+(M4); this measures it on **true** states — the upper bound.
+
+```bash
+python -m lts2_agent.legal_actions --corpus data/corpus --split val   # [--limit N]
+```
+
+Scored as set-F1 vs the recorded options by option identity (`kind` + cardId/potion + `targetCombatId`;
+order-agnostic), printing overall + per-kind + per-phase exact-set/precision/recall/F1 and the top
+mismatch patterns. **On 47.4k val records: exact-set 99.82%, F1 0.99936.** The residual is two enumerated
+missing-information findings (the tokenizer is left unpatched — reported, not worked around): the
+offered-card **order** for multi-select (`minSelect>1`) choices is lost by the sorted-multiset encoding
+(so the game's exact-minimum SelectCards shortcut can't be reproduced), and a post-combat **reward screen**
+whose wire `phase` is still `Combat` (`PendingRewards` is not tokenized) derives combat options instead of
+the reward options.
+
 ## Protocol
 
 The full wire spec lives in `docs/design/Lts2.Agent — Protocol.md`.

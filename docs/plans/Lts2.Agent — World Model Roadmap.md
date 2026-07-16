@@ -304,14 +304,58 @@ fixed-seed eval (expectation: ≥ baseline).
 
 ### M3 — Encoder + decoder (design P2)
 
-- [ ] **3.1 Encoder/decoder training** on the corpus (broad regime dominant), with per-field
-      reconstruction metrics (card-id top-1, HP MAE, power amounts, pile sizes, …) streaming to
-      new dashboard panels.
-- [ ] **3.2 Decoded-state pretty-printer + diff view**: render any decoded state, and a
-      field-level diff between two states — the debugging primitive the TUI inspector (4.4) and
-      the report card (4.3) both reuse.
-- [ ] **3.3 Legal-action derivation** from decoded states, scored as set-F1 vs real
-      `ListOptions` on held-out data.
+- [x] **3.1 Encoder/decoder training** — _done (full 50k training run pending — the orchestrator's to
+      run; this landed the module + a 4k-step verification run)._ `lts2_agent.wm` (`spec`/`encoder`/
+      `decoder`/`model`/`report`/`data`) is a **set-transformer encoder → SimNorm latent `z` → symbolic
+      decoder** trained supervised on the corpus (both `state` and `nextState` of every train-split record,
+      ~2M states, streamed through a shuffle buffer + prefetch thread — no reward, no env). Encoder:
+      per-token-type projections into `d_model=256` (cards/powers/relics/potions gather their static-catalog
+      row) + type embedding → 4 pre-norm self-attention layers over the packed masked token set → Perceiver
+      attention-pool into `z_dim=512`; **SimNorm** (groups of 8, TD-MPC2 §11 delta) makes `z` a concatenation
+      of probability simplices (bounded, anti-collapse). Decoder: `z` → memory tokens → per-type learned slot
+      queries (cross+self-attention) → per-type heads emitting the tokenizer's array space directly —
+      categorical CE per `*_idx` column, **MSE on symlog `*_num`**, per-slot presence BCE, keyword BCE;
+      canonical reconstruction reuses `tokens.detokenize` verbatim. ~10.1M params. The field spec both sides
+      iterate lives in `wm/spec.py`; checkpoints stamp `tokenizer_signature()` and reject a mismatch.
+      Trainer `train_encdec` (AdamW + warmup/cosine, `--steps`/`--val-every`/`--resume`/`--run-label`, fixed
+      cached val sample) streams a **`kind="wm-encdec"`** metrics run: per step-window `train.loss`/
+      `loss_categorical`/`loss_numeric`/`loss_presence`/`lr`/`states_per_s`; per val pass the per-field
+      report card (`eval.card_id_top1`, `card_zone_acc`, `power_id_top1`, `power_amount_mae`,
+      `creature_hp_mae`, `creature_block_mae`, `intent_damage_mae`, `energy_acc`, `relic_set_f1`,
+      `potion_set_f1`, `hand_size_acc`, `pile_size_acc`, `pending_choice_acc`, aggregate
+      `exact_state_rate`) — MAEs in RAW units — each emitted a second time tagged `{act}` for the dashboard
+      group-by. `eval_encdec` prints the full-split report card (the CP4 artifact). Tests in
+      `tests/test_wm_encdec.py` (forward shapes, SimNorm normalization, overfit-one-batch loss drop,
+      report-card contract + detokenize hand-off, exact-state=1 on teacher-forced targets, checkpoint stamp
+      rejection).
+- [x] **3.2 Decoded-state pretty-printer + diff view** — _done._ `lts2_agent.statefmt`:
+      `format_state` renders any **canonical dict** (`tokens.detokenize` output — a decoder's output, or
+      `detokenize(tokenize(raw wire))`) as compact text (player/Osty/enemies with hp/block/powers/intents,
+      energy/stars/turn, hand with per-card cost/dmg/block/upgrade, draw/discard/exhaust as counted
+      multisets, relics, potions, pending choice); `diff_states` is the field-level "what changed" view
+      (HP/block/energy deltas, per-zone card multiset moves, powers gained/lost/changed, enemies died,
+      intents changed) the TUI inspector (4.4) + report card (4.3) reuse. Hashed-lossy ids
+      (monster/character/orb/enchant/afflict/keyword — `tokens.LOSSY_FIELDS`) resolve to names via an
+      optional reverse map; `build-hash-names` CLI scans the corpus once → `data/hash_names.json`
+      (**1.0M records → 120 buckets across 6 vocabs, 13 colliding buckets, all monster**), printer shows
+      names when present else `#bucket`. Tests in `tests/test_statefmt.py` (synthetic render + moved-card /
+      HP / new-power / enemy-died diffs + real fixtures).
+- [x] **3.3 Legal-action derivation** — _done._ `lts2_agent.legal_actions.derive_option_keys` implements
+      `GameHost.ListOptions` over **tokenized fields** (each hand card's `canPlay` + targetType × live
+      hittable enemies → PlayCard-per-target; potions by catalog usage/targetType; EndTurn in combat;
+      pending choice → SelectCards), scored as set-F1 vs the recorded options by option identity
+      (kind + cardId/potion + targetCombatId; order-agnostic). CLI
+      `python -m lts2_agent.legal_actions --corpus data/corpus --split val` prints overall + per-kind +
+      per-phase rates + top mismatch patterns. **Measured on TRUE states (the upper bound), 47.4k val
+      records: exact-set 99.82%, precision 0.99935 / recall 0.99937 / F1 0.99936** (PlayCard F1 0.9998,
+      EndTurn 0.9999, Use/DiscardPotion 1.0000, SelectCards 0.9884). The residual is **two enumerated
+      missing-information findings** (tokens NOT patched — reported per instructions): (1) the offered-card
+      **order** for multi-select (`minSelect>1`) choices is lost by the sorted-multiset tokenization, so the
+      game's exact-minimum SelectCards shortcut can't be reproduced (~4% of Choice records, 142 keys);
+      (2) a post-combat **reward screen** whose wire `phase` is still `Combat` (`PendingRewards` isn't
+      tokenized — rewards view is waived) derives combat options instead of TakeReward/Proceed (~14
+      records, 143 keys). Tests in `tests/test_legal_actions.py` (synthetic rules + real fixtures derive
+      the recorded set exactly, incl. via token round-trip).
 
 **CP4 (manual review):** held-out reconstruction dashboard (~exact expected); a session with the
 pretty-printer on random held-out states — do decoded states read as *the same fight* to a human?
