@@ -57,6 +57,17 @@ internal sealed class OptionsView : View
         SelectionChanged?.Invoke(_selected);
     }
 
+    /// <summary>
+    /// Update just the Tab auto-play pick (the "(tab)" marker) without rebuilding the list — so a
+    /// recommendation that arrives asynchronously (an external agent takes a moment) can be patched in
+    /// without disturbing the user's current selection or scroll position.
+    /// </summary>
+    public void SetAuto(int? autoIndex)
+    {
+        _auto = autoIndex is int a && a >= 0 && a < _entries.Count ? a : null;
+        SetNeedsDraw();
+    }
+
     // Assign each option a digit shortcut: the end-turn option gets "0"; the rest take 1..9 in order
     // (anything past the ninth non-end-turn option gets no digit).
     private static List<string> AssignHotkeys(int count, int? endTurnIndex)

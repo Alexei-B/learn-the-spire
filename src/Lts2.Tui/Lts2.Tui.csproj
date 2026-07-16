@@ -15,6 +15,12 @@
     <PackageReference Include="Terminal.Gui" Version="2.0.0" />
   </ItemGroup>
 
+  <!-- Expose internals (the pure RankingPanel formatter + the Line/Seg render model) to the test project
+       so the panel formatting is covered by a plain unit test. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Lts2.Harness.Tests" />
+  </ItemGroup>
+
   <!-- The harness library (which transitively brings in the GodotSharp shim), and the opt-in
        localization library (packages the extracted loc tables + name/description helpers). -->
   <ItemGroup>

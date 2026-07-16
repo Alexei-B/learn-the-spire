@@ -68,7 +68,14 @@ exists). Then the main screen:
   shows as a `B` node at the top. In an **event**: the flavour body text plus each option's outcome
   text, with the real per-run numbers (energy shown as teal circles, colours applied).
 - **Side panel** (top-right) — the act **map** (with connections) on every screen, except in combat
-  where it shows your **draw / discard / exhaust piles**.
+  where it shows your **draw / discard / exhaust piles**. Press **`r`** (or **View ▸ Agent Ranking**) to
+  swap it for the **agent ranking panel** (see below).
+- **Agent ranking panel** (toggle with **`r`**) — the active **Strategy** engine's full scored ranking for
+  the current decision, sorted by score (what `Tab` auto-play would apply is marked **▸**), each with its
+  score and the engine's rationale. The panel title names the engine. It updates as the game advances and
+  says so explicitly when the engine **declined** (no recommendation) or is still **evaluating** (an
+  external agent can take a moment). The ranking is fetched once per decision point, off the UI thread, and
+  shared with `Tab` — so opening the panel costs no extra agent round-trip and never blocks the UI.
 - **Decisions** (bottom-left) — the legal options with their localized descriptions inline. Move with
   **↑/↓**, **0–9** to quick-pick (**0** is always *End turn* in combat), **Enter** to apply; scrolls
   when there are more than fit. Potions can also be used/discarded on the **rewards** screen. While a
@@ -78,7 +85,8 @@ exists). Then the main screen:
   gained or moved between piles, relics/potions/gold/powers, enemy defeats, phase changes), derived
   by diffing the state before/after each apply.
 - **Menus** — **Game** (New Run / Continue / Save Run / Load Run / Quit), **View** (Deck/Relics, Map
-  popups). `Alt+G` / `Alt+V`. Saving is only possible out of combat (on the map); the app also
+  popups, Agent Ranking — the `r` panel), **Strategy** (pick the auto-play engine). `Alt+G` / `Alt+V` /
+  `Alt+S`. Saving is only possible out of combat (on the map); the app also
   autosaves whenever you reach the map, so **Continue** resumes your latest checkpoint.
 
 ### How it maps onto the harness

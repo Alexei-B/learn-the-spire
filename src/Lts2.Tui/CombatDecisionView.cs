@@ -45,6 +45,7 @@ internal sealed class CombatDecisionView : View
     {
         public CardView Card = null!;
         public List<GameOption> Options = new();
+        public int HandIndex;      // the card's index in the player's hand (for matching the "tab" pick)
         public bool Playable;
         public bool Targeted;
         public string? Hotkey;     // "1".."9", or null (unplayable / past the ninth)
@@ -114,6 +115,7 @@ internal sealed class CombatDecisionView : View
             {
                 Card = hand[i],
                 Options = opts ?? new List<GameOption>(),
+                HandIndex = i,
                 Playable = playable,
                 Targeted = playable && opts!.Any(o => o.TargetCombatId is not null),
                 IsAuto = _auto?.Kind == OptionKind.PlayCard && _auto.HandIndex == i,
@@ -128,6 +130,21 @@ internal sealed class CombatDecisionView : View
 
         _selCard = 0;
         ClearTargeting();
+        SetNeedsDraw();
+    }
+
+    /// <summary>
+    /// Update just the Tab auto-play pick (the "[tab]" card marker) without rebuilding the hand — so a
+    /// recommendation that arrives asynchronously (an external agent takes a moment) can be patched in
+    /// without resetting the user's card selection or any in-progress targeting.
+    /// </summary>
+    public void SetRecommended(GameOption? recommended)
+    {
+        _auto = recommended;
+        foreach (Slot slot in _slots)
+        {
+            slot.IsAuto = recommended?.Kind == OptionKind.PlayCard && recommended.HandIndex == slot.HandIndex;
+        }
         SetNeedsDraw();
     }
 

@@ -163,9 +163,14 @@ protocol-v2 explanations; any mismatch rejects loudly, exactly like `FEATURE_VER
       preset buttons "Win by room", "Win by act", "HP lost by room", "Eval greedy vs sampled win";
       covers training outcomes (`fight.*`) and fixed-seed eval (`eval_fight.*`). Sample count `n` is
       mandatory on every series point and shown in legend + tooltip, so low-count rates read as thin.
-- [ ] **0.4 TUI ranking panel**: render the decision reply's full scored ranking (already in
-      protocol v1) — sorted options with scores, the Tab pick highlighted, declines explicit.
-      Works with the current PPO checkpoint and the heuristic immediately.
+- [x] **0.4 TUI ranking panel** — _done._ A toggleable panel (`r` hotkey / **View ▸ Agent Ranking**)
+      renders the active Strategy engine's full scored ranking for the current decision: options sorted by
+      score, each with its score + rationale, the `Tab` pick marked ▸, and explicit **declined** /
+      **evaluating** / **no strategy** text; the engine name is in the panel title. Works with the built-in
+      `RulesDecisionEngine` and any external `ProcessDecisionEngine` (PPO checkpoint). The ranking is
+      fetched once per decision point off the UI thread and shared by both `Tab` and the panel — no extra
+      round-trip per keystroke, never blocking the UI; a dead/timed-out agent degrades to "declined".
+      Pure formatter `RankingPanel` covered by `RankingPanelTests`.
 - [ ] **0.5 Baseline capture**: one PPO training run + fixed-seed eval recorded through the new
       pipeline, kept as the comparison baseline for M5/M6.
 

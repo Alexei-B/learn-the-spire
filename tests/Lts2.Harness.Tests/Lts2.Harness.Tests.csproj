@@ -23,6 +23,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Lts2.Harness\Lts2.Harness.csproj" />
     <ProjectReference Include="..\..\src\Lts2.Agent\Lts2.Agent.csproj" />
+    <!-- The TUI, for the RankingPanel formatter unit test (internals shared via InternalsVisibleTo). -->
+    <ProjectReference Include="..\..\src\Lts2.Tui\Lts2.Tui.csproj" />
   </ItemGroup>
 
 </Project>

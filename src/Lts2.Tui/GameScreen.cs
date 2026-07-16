@@ -65,6 +65,19 @@ internal sealed class GameScreen
     private int _engineIndex;
     private IDecisionEngine Engine => _engines[_engineIndex];
 
+    // The full scored ranking the active engine gives for the current decision point (protocol v1's
+    // per-option score/rationale). It is fetched ONCE per decision point, off the UI thread (an external
+    // agent can take seconds), and shared by both the Tab auto-play pick and the ranking debug panel — no
+    // extra evaluate round-trip per keystroke. _evalToken tags each fetch so a reply that arrives after
+    // the state moved on is discarded; _topPick is the option Tab would apply (the engine's Best).
+    private readonly FrameView _rankingFrame;
+    private readonly BoardView _rankingView;
+    private bool _rankingVisible;
+    private IReadOnlyList<ScoredOption> _ranking = Array.Empty<ScoredOption>();
+    private RankingPanel.Status _rankingStatus = RankingPanel.Status.NoStrategy;
+    private GameOption? _topPick;
+    private int _evalToken;
+
     // Set when the current state is a multi-select card choice (choose N of M): such a choice can't be
     // resolved by a single flat option, so the decision list shows one "open the picker" entry and
     // activating it opens the interactive selector (see OpenCardPicker). Null otherwise.
@@ -105,6 +118,7 @@ internal sealed class GameScreen
                 {
                     new MenuItem("_Deck / Relics", "", ShowDeck),
                     new MenuItem("_Map", "", ShowMap),
+                    new MenuItem("Agent _Ranking (r)", "", ToggleRanking),
                 }),
                 new MenuBarItem("_Strategy", _strategyItems),
             },
@@ -143,6 +157,24 @@ internal sealed class GameScreen
         _side = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _sideFrame.Add(_side);
 
+        // The agent-ranking debug panel: occupies the same rectangle as the side panel and is shown in its
+        // place while toggled on (the 'r' hotkey). Non-interactive, like the other display panes.
+        _rankingFrame = new FrameView
+        {
+            Title = "Ranking",
+            X = Pos.Right(_boardFrame),
+            Y = 1,
+            Width = Dim.Fill(),
+            Height = Dim.Percent(72),
+            ColorScheme = Theme.Frame,
+            BorderStyle = LineStyle.Rounded,
+            CanFocus = false,
+            TabStop = TabBehavior.NoStop,
+            Visible = false,
+        };
+        _rankingView = new BoardView { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
+        _rankingFrame.Add(_rankingView);
+
         _optionsFrame = new FrameView
         {
             Title = "Decisions  (↑↓ · 0-9 · Enter)",
@@ -180,8 +212,22 @@ internal sealed class GameScreen
 
         _msg = new Label { X = 1, Y = Pos.AnchorEnd(1), Width = Dim.Fill(1), Text = "" };
 
-        _root.Add(menu, _boardFrame, _sideFrame, _optionsFrame, _logFrame, _msg);
+        _root.Add(menu, _boardFrame, _sideFrame, _rankingFrame, _optionsFrame, _logFrame, _msg);
+        // 'r' toggles the agent-ranking panel. Application.KeyDown fires for every key, but the guard
+        // (only act while THIS screen is the running toplevel) scopes it to the game screen: a modal
+        // dialog — e.g. a save-name text field — runs its own toplevel, so 'r' still types there normally.
+        Application.KeyDown += OnAppKeyDown;
         Refresh();
+    }
+
+    /// <summary>Application-wide key handling for the game screen: <c>r</c> toggles the ranking panel.</summary>
+    private void OnAppKeyDown(object? sender, Key key)
+    {
+        if (key.AsRune.Value is 'r' or 'R' && ReferenceEquals(Application.Top, _root))
+        {
+            ToggleRanking();
+            key.Handled = true;
+        }
     }
 
     public Toplevel Root => _root;
@@ -315,6 +361,7 @@ internal sealed class GameScreen
     /// exit so a launched decision server is killed with the app.</summary>
     public void Shutdown()
     {
+        Application.KeyDown -= OnAppKeyDown;
         foreach (IDecisionEngine engine in _engines)
         {
             (engine as IDisposable)?.Dispose();
@@ -395,6 +442,12 @@ internal sealed class GameScreen
             _optionsView.SetEntries(new List<OptionsView.Entry>());
             _options = new List<GameOption>();
             _msg.Text = " Game ▸ New Run to begin.";
+            _evalToken++; // discard any in-flight evaluation from a prior run.
+            _ranking = Array.Empty<ScoredOption>();
+            _topPick = null;
+            _rankingStatus = RankingPanel.Status.NoStrategy;
+            ApplyRankingVisibility();
+            UpdateRankingView();
             return;
         }
 
@@ -412,10 +465,11 @@ internal sealed class GameScreen
 
         _options = _host.ListOptions().ToList();
 
-        // The active decision engine's suggested move (the Tab "auto-play" pick) for this state, or null
-        // if it has no opinion here (e.g. the rules engine off the battlefield). Combat draws it as a
-        // "(tab)" marker on the hand card; other phases mark it in the options list.
-        GameOption? recommended = Engine.Recommend(state, _options);
+        // The active decision engine's suggested move (the Tab "auto-play" pick) is fetched asynchronously
+        // (see BeginEvaluate) so the UI thread never blocks on a slow external agent; the decision views
+        // render immediately with no pick, and BeginEvaluate's completion patches the "(tab)" marker in and
+        // fills the ranking panel. It stays null in this pass.
+        GameOption? recommended = null;
 
         // In active combat the decision area draws the hand as interactive card art (its own layout); every
         // other phase (including a mid-combat card Choice) uses the scrolling options list. Any aiming
@@ -460,11 +514,16 @@ internal sealed class GameScreen
         }
         _log.SetNeedsDraw();
 
+        // Fetch the ranking for this decision point once, off the UI thread, and keep the ranking panel's
+        // visibility in step with the toggle across refreshes.
+        ApplyRankingVisibility();
+        BeginEvaluate(state, _options);
+
         _msg.Text = state.IsGameOver
             ? " Run over.  Game ▸ New Run to play again."
             : combatDecision
-                ? " 1-9 play card · 0 end turn · Tab auto-play · targeted card → pick target 1-9 (Esc cancels) · Alt+G Game"
-                : " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · Alt+G Game · Alt+V View";
+                ? " 1-9 play card · 0 end turn · Tab auto-play · r ranking · targeted card → pick target 1-9 (Esc) · Alt+G Game"
+                : " ↑↓ select · 0-9 quick-pick (0=end turn) · Enter apply · r ranking · Alt+G Game · Alt+V View";
 
         if (state.IsGameOver && !_gameOverShown)
         {
@@ -474,6 +533,119 @@ internal sealed class GameScreen
                 $"\nReached Act {state.ActIndex + 1}, floor {state.Floor}.\nFinal score: {state.Score}\n",
                 "OK");
         }
+    }
+
+    // ---- Agent ranking panel ---------------------------------------------------
+
+    /// <summary>
+    /// Fetch the active engine's full scored ranking for the current decision point, off the UI thread so
+    /// a slow external agent never blocks it. The reply (mapped back on the UI thread) fills the ranking
+    /// panel and patches the Tab auto-play marker into the live decision view — a single evaluate shared by
+    /// both. A reply that arrives after the state has advanced is discarded via <see cref="_evalToken"/>;
+    /// any engine failure degrades to "declined" (empty ranking), never a throw or a hang.
+    /// </summary>
+    private void BeginEvaluate(GameState state, IReadOnlyList<GameOption> options)
+    {
+        int token = ++_evalToken;
+        IDecisionEngine engine = Engine;
+
+        _ranking = Array.Empty<ScoredOption>();
+        _topPick = null;
+
+        if (options.Count == 0 || state.IsGameOver)
+        {
+            _rankingStatus = RankingPanel.Status.NoStrategy;
+            UpdateRankingView();
+            return;
+        }
+
+        _rankingStatus = RankingPanel.Status.Pending;
+        UpdateRankingView();
+
+        Task.Run(() =>
+        {
+            // Evaluate is pure over the immutable state/options snapshot (no game mutation), so it is safe
+            // off the UI thread; clear the sync context like the other background pumps just in case.
+            SynchronizationContext.SetSynchronizationContext(null);
+            try
+            {
+                return (IReadOnlyList<ScoredOption>?)engine.Evaluate(state, options);
+            }
+            catch (Exception ex)
+            {
+                _sessionLog.WriteLine($"[agent] {engine.Name}: evaluate threw, treating as decline: {ex.Message}");
+                return null;
+            }
+        }).ContinueWith(t => Application.Invoke(() =>
+        {
+            if (token != _evalToken)
+            {
+                return; // stale — the decision point moved on.
+            }
+
+            IReadOnlyList<ScoredOption> scored = t.Result ?? Array.Empty<ScoredOption>();
+            _ranking = scored;
+            _rankingStatus = scored.Count == 0 ? RankingPanel.Status.Declined : RankingPanel.Status.Ranked;
+
+            // The Tab pick = the highest score, tie-broken toward the earliest option (matching Best).
+            GameOption? top = null;
+            double bestScore = double.NegativeInfinity;
+            foreach (ScoredOption s in scored)
+            {
+                if (s.Score > bestScore)
+                {
+                    bestScore = s.Score;
+                    top = s.Option;
+                }
+            }
+            _topPick = top;
+
+            // Patch the marker into whichever decision view is showing, without rebuilding it (so an
+            // in-progress card selection or targeting survives a late reply).
+            if (_combatView.Visible)
+            {
+                _combatView.SetRecommended(top);
+            }
+            else
+            {
+                int idx = top is null ? -1 : _options.IndexOf(top);
+                _optionsView.SetAuto(idx >= 0 ? idx : null);
+            }
+            UpdateRankingView();
+        }));
+    }
+
+    /// <summary>Show/hide the ranking panel (the <c>r</c> hotkey); it takes the side panel's place.</summary>
+    private void ToggleRanking()
+    {
+        _rankingVisible = !_rankingVisible;
+        ApplyRankingVisibility();
+        UpdateRankingView();
+        _msg.Text = _rankingVisible
+            ? " Ranking panel shown — press r to hide it."
+            : " Ranking panel hidden — press r to show it.";
+        _root.SetNeedsLayout();
+        _root.SetNeedsDraw();
+    }
+
+    /// <summary>Keep the ranking frame and the side panel mutually exclusive per the toggle.</summary>
+    private void ApplyRankingVisibility()
+    {
+        _sideFrame.Visible = !_rankingVisible;
+        _rankingFrame.Visible = _rankingVisible;
+    }
+
+    /// <summary>Repaint the ranking panel from the current ranking snapshot (status + scores + top pick).</summary>
+    private void UpdateRankingView()
+    {
+        string name = _host is null ? "" : Engine.Name;
+        RankingPanel.Status status = _rankingStatus;
+        IReadOnlyList<ScoredOption> ranking = _ranking;
+        GameOption? top = _topPick;
+
+        _rankingFrame.Title = status == RankingPanel.Status.NoStrategy ? "Ranking" : $"Ranking — {name}";
+        _rankingView.SetRenderer((w, _) =>
+            RankingPanel.Format(name, status, RankingPanel.RowsFrom(ranking, top), w));
     }
 
     /// <summary>
@@ -499,6 +671,7 @@ internal sealed class GameScreen
             int decisionsHeight = CombatDecisionView.ContentHeight(handCount, potionCount, innerWidth) + 2; // + frame borders
             _boardFrame.Height = Dim.Fill(decisionsHeight + 1);
             _sideFrame.Height = Dim.Fill(decisionsHeight + 1);
+            _rankingFrame.Height = Dim.Fill(decisionsHeight + 1);
         }
         else
         {
@@ -506,6 +679,7 @@ internal sealed class GameScreen
             _optionsFrame.Width = Dim.Percent(68);
             _boardFrame.Height = Dim.Percent(72);
             _sideFrame.Height = Dim.Percent(72);
+            _rankingFrame.Height = Dim.Percent(72);
         }
         _root.SetNeedsLayout();
     }
@@ -555,7 +729,7 @@ internal sealed class GameScreen
         _board.SetNeedsDraw();
         _msg.Text = _combatView.Prompt is { } p
             ? " " + p
-            : " 1-9 play card · 0 end turn · Tab auto-play · targeted card → pick target 1-9 (Esc cancels) · Alt+G Game";
+            : " 1-9 play card · 0 end turn · Tab auto-play · r ranking · targeted card → pick target 1-9 (Esc) · Alt+G Game";
     }
 
     private void Choose(int index)
