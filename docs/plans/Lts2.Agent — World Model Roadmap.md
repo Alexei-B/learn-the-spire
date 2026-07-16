@@ -1,8 +1,10 @@
 # Lts2.Agent — World-Model Roadmap (implementation backlog)
 
-Status: **M0 done (CP1 approved). M1 done — 1.1–1.4 plus realistic relics/potions/starter-relic
-states; corpus-v1 (1.0M transitions) and the 300-probe oracle set are built; CP2 pending review.**
-This is the implementation plan for
+Status: **M0–M2 done (CP1–CP3 approved). Next: M3 encoder/decoder.** CP3 verdict: PPO-on-tokens
+overlaps the baseline on the live dashboard comparison — parity confirms the tokenizer carries at
+least the hand-features' signal with zero feature engineering (the synergy payoff is expected from
+the supervised M3/M4 modules, not from PPO); the comparison run was stopped early at the product
+owner's direction. This is the implementation plan for
 `docs/design/Lts2.Agent — World Model.md` (read that first; this doc assumes its vocabulary:
 tokenizer, encoder/decoder, predictor, afterstate/chance step, value/policy, planner).
 
@@ -274,7 +276,8 @@ deck and fight).
       (hashed). **Padded dims (measured max over the full 1.0M-record corpus → cap):** cards 82→200,
       creatures 8→12, powers 24→96, intents 7→32, orbs 9→16, relics 8→24, potions 5→8. README
       "Tokenizer" section documents the contract. (2.2 PPO-on-tokens sanity pass now landed.)
-- [x] **2.2 PPO-on-tokens sanity pass** — _done (full comparison run pending)._ `lts2_agent.model_tokens`
+- [x] **2.2 PPO-on-tokens sanity pass** — _done (CP3: comparison overlapped baseline; stopped early
+      by product decision — encoding parity confirmed)._ `lts2_agent.model_tokens`
       is a set-transformer actor-critic over the tokenizer (per-token-type embedders with a **shared card
       embedder** for state cards and option cards; creatures fold in powers/intents by scatter-add then
       self-attend; learned latent queries attention-pool the token set into a state context `z`; ~1.3M params
