@@ -1,9 +1,11 @@
-"""Decoder — reconstruct the tokenizer's typed arrays from the latent ``z`` ALONE (design §4.3).
+"""Decoder — reconstruct the tokenizer's typed arrays from the latent ALONE (design §4.3).
 
 Decoding from the pooled latent (not from any per-token encoder output) is the measurement that matters:
-*what does ``z`` retain?* Architecture:
+*what does the latent retain?* Architecture:
 
-1. ``z`` projects to a small set of **memory tokens**.
+1. The latent becomes a small set of **memory tokens**. In ``flat`` mode ``z`` (``z_dim``) projects/expands
+   to ``n_mem`` memory tokens; in ``tokens`` mode the encoder's ``latent_k`` latent tokens ARE the memory
+   directly (no expansion projection — the A/B variant that removes the flatten/expand bottleneck).
 2. Per token type, a bank of **learned slot queries** (one per padded slot, + a type embedding) cross-
    attends into the memory and self-attends among the whole query set (``TransformerDecoderLayer``), so
    slots can coordinate on set sizes / presence.
@@ -57,11 +59,17 @@ class _TypeHeads(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, z_dim: int = 512, d_model: int = 256, n_heads: int = 4, n_layers: int = 3,
-                 n_mem: int = 16, ff_mult: int = 2):
+                 n_mem: int = 16, ff_mult: int = 2, latent_mode: str = "flat", latent_k: int = 16):
         super().__init__()
+        if latent_mode not in ("flat", "tokens"):
+            raise ValueError(f"latent_mode must be 'flat' or 'tokens', got {latent_mode!r}")
         self.d_model = d_model
         self.n_mem = n_mem
-        self.to_mem = nn.Linear(z_dim, n_mem * d_model)
+        self.latent_mode = latent_mode
+        self.latent_k = latent_k
+        # flat: expand the pooled z into n_mem memory tokens; tokens: the latent_k latent tokens ARE the
+        # memory, so no expansion projection.
+        self.to_mem = nn.Linear(z_dim, n_mem * d_model) if latent_mode == "flat" else None
         self.mem_norm = nn.LayerNorm(d_model)
 
         # Learned slot queries: one contiguous bank per type, + a per-type embedding.
@@ -81,7 +89,10 @@ class Decoder(nn.Module):
 
     def forward(self, z: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
         B = z.shape[0]
-        mem = self.mem_norm(self.to_mem(z).reshape(B, self.n_mem, self.d_model))
+        if self.latent_mode == "tokens":
+            mem = self.mem_norm(z)                                       # [B, latent_k, d] used directly
+        else:
+            mem = self.mem_norm(self.to_mem(z).reshape(B, self.n_mem, self.d_model))
         q = []
         for ti, t in enumerate(S.TYPES):
             qt = self.slot_queries[t.name].unsqueeze(0).expand(B, -1, -1) + self.type_emb.weight[ti]

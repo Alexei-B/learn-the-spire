@@ -12,6 +12,16 @@ round-trip exactly through ``round(symexp(·))``; a scalar-regression target on 
 symlog-regression and keeps the decoder output *literally* the array ``tokens.detokenize`` inverts, so the
 canonical-dict reconstruction is a straight array hand-off with no extra decoding layer. Two-hot would add
 a bin vocabulary per field for no accuracy the exact-round-trip already gives us here.
+
+Latent contract (M4/predictor note)
+------------------------------------
+``WorldModelAE`` has two ``latent_mode`` values, selected at construction and stamped into the checkpoint
+meta (``latent_mode`` + ``latent_k``): ``flat`` — the encoder returns a single SimNorm vector ``z`` of
+shape ``[B, z_dim]`` (today's default, byte-identical); ``tokens`` — the encoder returns a SimNorm token
+set of shape ``[B, latent_k, d_model]`` (per-token simplices) which the decoder consumes directly as
+memory. The predictor (roadmap M4) that learns dynamics over this latent MUST read ``latent_mode`` (and
+``latent_k``) from the checkpoint meta and shape its state accordingly — the latent is now *either*
+``z[z_dim]`` *or* a ``latent_k × d_model`` token set, not a fixed flat vector.
 """
 
 from __future__ import annotations
@@ -68,16 +78,21 @@ def to_tensors(stacked: Dict[str, np.ndarray], device) -> Dict[str, torch.Tensor
 class WorldModelAE(nn.Module):
     def __init__(self, d_model: int = 256, n_heads: int = 4, enc_layers: int = 4,
                  dec_layers: int = 3, n_pool_layers: int = 2, n_latents: int = 8,
-                 z_dim: int = 512, simnorm_group: int = 8, cat_dim: int = 24, n_mem: int = 16):
+                 z_dim: int = 512, simnorm_group: int = 8, cat_dim: int = 24, n_mem: int = 16,
+                 latent_mode: str = "flat", latent_k: int = 16):
         super().__init__()
         self.cfg = dict(d_model=d_model, n_heads=n_heads, enc_layers=enc_layers,
                         dec_layers=dec_layers, n_pool_layers=n_pool_layers, n_latents=n_latents,
-                        z_dim=z_dim, simnorm_group=simnorm_group, cat_dim=cat_dim, n_mem=n_mem)
+                        z_dim=z_dim, simnorm_group=simnorm_group, cat_dim=cat_dim, n_mem=n_mem,
+                        latent_mode=latent_mode, latent_k=latent_k)
+        self.latent_mode = latent_mode
+        self.latent_k = latent_k
         self.encoder = Encoder(d_model=d_model, n_heads=n_heads, n_layers=enc_layers,
                                n_pool_layers=n_pool_layers, n_latents=n_latents, z_dim=z_dim,
-                               simnorm_group=simnorm_group, cat_dim=cat_dim)
+                               simnorm_group=simnorm_group, cat_dim=cat_dim,
+                               latent_mode=latent_mode, latent_k=latent_k)
         self.decoder = Decoder(z_dim=z_dim, d_model=d_model, n_heads=n_heads, n_layers=dec_layers,
-                               n_mem=n_mem)
+                               n_mem=n_mem, latent_mode=latent_mode, latent_k=latent_k)
 
     def forward(self, batch: Dict[str, torch.Tensor]):
         z = self.encoder(batch)
@@ -155,6 +170,9 @@ def save_checkpoint(path: str, m: WorldModelAE, *, step: int = 0,
         torch.save({"optimizer": optimizer.state_dict(), "step": step}, path + ".train")
     meta = {
         "backend": "wm-encdec", "config": m.cfg, "step": step,
+        # Latent contract, surfaced top-level so the M4 predictor can read it without unpacking config.
+        "latent_mode": m.cfg.get("latent_mode", "flat"),
+        "latent_k": m.cfg.get("latent_k", 16),
         "tokenizer_version": tokens.TOKENIZER_VERSION,
         "tokenizer_signature": tokens.tokenizer_signature(),
         "catalog_signatures": tokens.CATALOG_SIGNATURES,
@@ -165,9 +183,12 @@ def save_checkpoint(path: str, m: WorldModelAE, *, step: int = 0,
         json.dump(meta, f, indent=2)
 
 
-def load_checkpoint(path: str, device="cpu") -> Tuple[WorldModelAE, dict]:
+def load_checkpoint(path: str, device="cpu",
+                    expect_latent_mode: Optional[str] = None) -> Tuple[WorldModelAE, dict]:
     """Load ``(model, meta)``, rejecting a checkpoint whose tokenizer/catalog signature no longer
-    matches (a stale corpus/catalog), exactly like the PPO checkpoints do."""
+    matches (a stale corpus/catalog), exactly like the PPO checkpoints do. When ``expect_latent_mode``
+    is given, also reject loudly if the checkpoint's ``latent_mode`` differs (a flat/tokens A/B mixup —
+    e.g. resuming a flat run under ``--latent-mode tokens``)."""
     with open(path + ".meta.json") as f:
         meta = json.load(f)
     want = tokens.tokenizer_signature()
@@ -175,6 +196,11 @@ def load_checkpoint(path: str, device="cpu") -> Tuple[WorldModelAE, dict]:
         raise ValueError(
             f"Checkpoint {path} was trained with a different tokenizer/catalog "
             f"(meta={meta.get('tokenizer_signature')} vs current {want}); retrain.")
+    ckpt_mode = meta["config"].get("latent_mode", "flat")
+    if expect_latent_mode is not None and ckpt_mode != expect_latent_mode:
+        raise ValueError(
+            f"Checkpoint {path} latent_mode={ckpt_mode!r} does not match requested "
+            f"latent_mode={expect_latent_mode!r}; the flat and tokens variants are not interchangeable.")
     m = WorldModelAE(**meta["config"])
     m.load_state_dict(torch.load(path, map_location=device))
     m.to(device)

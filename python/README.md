@@ -440,10 +440,32 @@ corpus (no reward, no env): every record's `state` and `nextState` (~2M states) 
   and decoder heads iterate, so the model's output space *is* the tokenizer's array space; vocab sizes come
   from the live catalogs/enums. Checkpoints stamp `tokenizer_signature()` and reject a mismatch loudly.
 
+**Latent shape A/B (`--latent-mode`, design §10 / CP4 decision).** The latent structure between the pool
+and the decoder is a switch, so a same-budget comparison isolates *only* it (encoder stack, per-type heads,
+losses, data, metrics are all unchanged):
+
+- `flat` (default) — the Perceiver pool's latents are flattened and projected to a single SimNorm vector
+  `z` (`z_dim`, default 512), which the decoder re-expands into `n_mem` memory tokens. This is the original
+  path, **byte-identical when selected** (existing checkpoints load unchanged).
+- `tokens` — the pool keeps `--latent-k` latent tokens (default 16, `d_model` each) *as* the latent: no
+  flatten, no `z_dim` projection, SimNorm applied **per latent token** (each token is its own concatenation
+  of simplices), and the decoder consumes those tokens **directly as its memory** (dropping the `z →
+  memory` expansion). This removes the flatten-to-512 squeeze — the suspected constraint on card-identity
+  reconstruction over big multisets. Dropping the two projections makes `tokens` the *smaller* model
+  (~7.0M vs ~10.1M params at the defaults; the ~3.15M delta is exactly `encoder.to_z` + `decoder.to_mem`).
+
+Pick `flat` unless you are running the A/B; the checkpoint meta stamps `latent_mode`/`latent_k` and load
+rejects a mode mismatch loudly (so `--resume` cannot cross a flat/tokens boundary). Which mode wins the
+CP4 latent-shape decision is settled by reconstruction quality at equal training budget.
+
 ```sh
 # Train (streams the train split; per-field reconstruction metrics stream live to the dashboard).
 python -m lts2_agent.train_encdec --steps 50000 --batch 384 --val-every 500 \
     --ckpt checkpoints/wm_encdec.pt --run-label wm-encdec        # --resume to continue
+
+# Token-set latent variant (same budget/knobs, different latent structure).
+python -m lts2_agent.train_encdec --latent-mode tokens --latent-k 16 --steps 50000 --batch 384 \
+    --ckpt checkpoints/wm_encdec_tokens.pt --run-label wm-encdec-tokens
 
 # CP4 artifact: full-split report card (overall + by-act) against a checkpoint.
 python -m lts2_agent.eval_encdec --ckpt checkpoints/wm_encdec.pt --split val   # --json for machine form

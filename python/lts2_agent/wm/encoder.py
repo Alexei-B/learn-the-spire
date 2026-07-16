@@ -12,12 +12,17 @@ Pipeline (leading batch dim ``B`` throughout):
    of pre-norm ``TransformerEncoderLayer`` blocks contextualizes them (efficient SDPA masking — no
    sort/pack needed at batch 256-512 on a 3090).
 3. **Attention pooling.** A few learned latent queries cross-attend over the token set (Perceiver/Set-
-   Transformer inducing points), then the flattened latents project to the latent vector.
-4. **SimNorm.** ``z`` is reshaped into groups and softmax'd within each group (TD-MPC2's SimNorm), giving
-   a latent that is a concatenation of probability simplices — bounded (each group sums to 1) so it can
-   neither explode nor collapse to a constant scale, the normalization design §4.4/§11 adopts. Chosen
+   Transformer inducing points). In ``flat`` mode the flattened latents project to a single latent vector
+   ``z`` (``z_dim``); in ``tokens`` mode the ``latent_k`` pooled latents ARE the latent (no flatten, no
+   ``z_dim`` projection) — the A/B variant that removes the flatten-to-``z_dim`` bottleneck between the
+   pool and the decoder (design §10, first bullet — the P2/CP4 latent-shape decision).
+4. **SimNorm.** the latent is reshaped into groups and softmax'd within each group (TD-MPC2's SimNorm),
+   giving a latent that is a concatenation of probability simplices — bounded (each group sums to 1) so it
+   can neither explode nor collapse to a constant scale, the normalization design §4.4/§11 adopts. Chosen
    over plain L2 because grouped-simplex latents empirically preserve more categorical structure at equal
-   width and are the published default for latent world models.
+   width and are the published default for latent world models. In ``tokens`` mode SimNorm is applied
+   *per latent token* over its ``d_model`` channels (same ``simnorm_group``), so each token is its own
+   concatenation of simplices.
 """
 
 from __future__ import annotations
@@ -113,13 +118,22 @@ class Encoder(nn.Module):
     def __init__(self, d_model: int = 256, n_heads: int = 4, n_layers: int = 4,
                  n_pool_layers: int = 2, n_latents: int = 8, z_dim: int = 512,
                  simnorm_group: int = 8, cat_dim: int = 24, ff_mult: int = 2,
-                 static_tables=None):
+                 static_tables=None, latent_mode: str = "flat", latent_k: int = 16):
         super().__init__()
-        if z_dim % simnorm_group != 0:
+        if latent_mode not in ("flat", "tokens"):
+            raise ValueError(f"latent_mode must be 'flat' or 'tokens', got {latent_mode!r}")
+        if latent_mode == "flat" and z_dim % simnorm_group != 0:
             raise ValueError(f"z_dim {z_dim} must be divisible by simnorm_group {simnorm_group}")
+        if latent_mode == "tokens" and d_model % simnorm_group != 0:
+            raise ValueError(f"d_model {d_model} must be divisible by simnorm_group {simnorm_group} "
+                             f"(tokens mode applies SimNorm per latent token)")
         self.d_model = d_model
         self.z_dim = z_dim
         self.simnorm_group = simnorm_group
+        self.latent_mode = latent_mode
+        # In flat mode the pool keeps n_latents inducing points then flattens+projects to z_dim; in tokens
+        # mode it keeps latent_k inducing points that ARE the latent (each d_model wide).
+        self.latent_k = latent_k if latent_mode == "tokens" else n_latents
         if static_tables is None:
             static_tables = {k: catalog.load(k).static_table for k in ("cards", "powers", "relics",
                                                                         "potions")}
@@ -134,9 +148,10 @@ class Encoder(nn.Module):
                                            batch_first=True, norm_first=True, activation="gelu")
         self.trunk = nn.TransformerEncoder(layer, n_layers)
 
-        self.latents = nn.Parameter(torch.randn(n_latents, d_model) * 0.02)
+        self.latents = nn.Parameter(torch.randn(self.latent_k, d_model) * 0.02)
         self.pool = nn.ModuleList(_PoolLayer(d_model, n_heads, ff_mult) for _ in range(n_pool_layers))
-        self.to_z = nn.Linear(n_latents * d_model, z_dim)
+        # flat mode flattens the pooled latents and projects to z_dim; tokens mode has no projection.
+        self.to_z = nn.Linear(self.latent_k * d_model, z_dim) if latent_mode == "flat" else None
 
     def _tokens_and_mask(self, batch: Dict[str, torch.Tensor]):
         """Embed every type into one ``[B, T, d]`` sequence + a ``[B, T]`` bool key-padding mask
@@ -171,5 +186,7 @@ class Encoder(nn.Module):
         lat = self.latents.unsqueeze(0).expand(B, -1, -1)
         for layer in self.pool:
             lat = layer(lat, toks, key_pad)
+        if self.latent_mode == "tokens":
+            return simnorm(lat, self.simnorm_group)          # [B, latent_k, d_model], per-token simplices
         z = self.to_z(lat.reshape(B, -1))
-        return simnorm(z, self.simnorm_group)
+        return simnorm(z, self.simnorm_group)                # [B, z_dim]

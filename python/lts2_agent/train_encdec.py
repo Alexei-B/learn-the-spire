@@ -100,6 +100,12 @@ def main() -> int:
     ap.add_argument("--simnorm-group", type=int, default=8)
     ap.add_argument("--cat-dim", type=int, default=24)
     ap.add_argument("--n-mem", type=int, default=16)
+    ap.add_argument("--latent-mode", default="flat", choices=["flat", "tokens"],
+                    help="latent structure A/B (design §10 / CP4): 'flat' = pooled z_dim vector (default, "
+                         "byte-identical to prior runs); 'tokens' = latent_k x d_model token set consumed "
+                         "directly as decoder memory (no flatten/expand bottleneck).")
+    ap.add_argument("--latent-k", type=int, default=16,
+                    help="tokens-mode only: number of latent tokens kept by the Perceiver pool.")
     # Plumbing.
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=0)
@@ -134,13 +140,14 @@ def main() -> int:
     model = M.WorldModelAE(d_model=args.d_model, n_heads=args.heads, enc_layers=args.enc_layers,
                            dec_layers=args.dec_layers, n_pool_layers=args.pool_layers,
                            n_latents=args.latents, z_dim=args.z_dim, simnorm_group=args.simnorm_group,
-                           cat_dim=args.cat_dim, n_mem=args.n_mem).to(device)
+                           cat_dim=args.cat_dim, n_mem=args.n_mem, latent_mode=args.latent_mode,
+                           latent_k=args.latent_k).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
 
     start_step = 0
     if args.resume and args.ckpt and os.path.exists(args.ckpt):
-        model, meta = M.load_checkpoint(args.ckpt, device)
+        model, meta = M.load_checkpoint(args.ckpt, device, expect_latent_mode=args.latent_mode)
         model = model.to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
@@ -156,7 +163,9 @@ def main() -> int:
         print(f"[train_encdec] resumed from {args.ckpt} at step {start_step}")
 
     n_params = M.param_count(model)
-    print(f"[train_encdec] params={n_params:,} d_model={args.d_model} z_dim={args.z_dim} "
+    latent_desc = (f"tokens[{args.latent_k}x{args.d_model}]" if args.latent_mode == "tokens"
+                   else f"flat[{args.z_dim}]")
+    print(f"[train_encdec] params={n_params:,} d_model={args.d_model} latent={latent_desc} "
           f"simnorm_group={args.simnorm_group} enc={args.enc_layers} dec={args.dec_layers} "
           f"batch={args.batch}", flush=True)
 

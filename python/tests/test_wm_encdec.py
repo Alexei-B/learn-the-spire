@@ -60,6 +60,13 @@ def _small_model():
                           n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8)
 
 
+def _small_tokens_model(latent_k=6):
+    # tokens mode: no flatten/z_dim/n_mem — the latent is latent_k x d_model, SimNorm per token.
+    return M.WorldModelAE(d_model=64, n_heads=2, enc_layers=2, dec_layers=2, n_pool_layers=1,
+                          n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8,
+                          latent_mode="tokens", latent_k=latent_k)
+
+
 def test_forward_shapes():
     batch = _batch([_state(), _state(n_hand=3, n_enemies=2)])
     model = _small_model()
@@ -75,6 +82,40 @@ def test_forward_shapes():
             assert o["num"].shape == (2, t.max_slots, t.num_width)
         if t.mask_key:
             assert o["presence"].shape == (2, t.max_slots)
+
+
+def test_tokens_mode_forward_shapes_and_per_token_simnorm():
+    batch = _batch([_state(), _state(n_hand=3, n_enemies=2)])
+    model = _small_tokens_model(latent_k=6)
+    z, out = model(batch)
+    # Latent is a token SET (no flatten): [B, latent_k, d_model].
+    assert z.shape == (2, 6, 64)
+    # SimNorm is applied PER latent token over its d_model channels: each group of 8 sums to 1.
+    groups = z.reshape(2, 6, -1, 8)
+    assert torch.all(z >= 0)
+    assert torch.allclose(groups.sum(-1), torch.ones(2, 6, 8), atol=1e-5)
+    # Decoder output space is UNCHANGED from flat mode (same per-type heads / slot counts).
+    for t in S.TYPES:
+        o = out[t.name]
+        assert len(o["cat"]) == len(t.cat_cols)
+        for c, (_, vocab) in zip(o["cat"], t.cat_cols):
+            assert c.shape == (2, t.max_slots, vocab)
+        if t.num_width:
+            assert o["num"].shape == (2, t.max_slots, t.num_width)
+        if t.mask_key:
+            assert o["presence"].shape == (2, t.max_slots)
+
+
+def test_tokens_mode_reconstruct_arrays_detokenize_handoff():
+    # The new memory path must feed reconstruct_arrays -> detokenize identically to flat mode.
+    batch = _batch([_state(), _state(n_hand=2, n_enemies=2)])
+    model = _small_tokens_model()
+    _z, out = model(batch)
+    pairs = report.report_pairs(batch, out)
+    assert set(pairs) == set(report.METRIC_NAMES)
+    arrays = reconstruct_arrays(out)
+    canon = tokens.detokenize(arrays[0])
+    assert set(canon) == {"global", "pending", "cards", "creatures", "orbs", "relics", "potions"}
 
 
 def test_simnorm_is_normalized():
@@ -173,3 +214,44 @@ def test_checkpoint_stamp_rejection(tmp_path):
         assert False, "expected a signature-mismatch rejection"
     except ValueError as e:
         assert "different tokenizer" in str(e)
+
+
+def test_checkpoint_latent_mode_roundtrip(tmp_path):
+    model = _small_tokens_model(latent_k=6)
+    path = str(tmp_path / "wm_tokens.pt")
+    M.save_checkpoint(path, model, step=5)
+    loaded, meta = M.load_checkpoint(path, "cpu")
+    # latent_mode/latent_k surface both top-level (for M4) and in config (for reconstruction).
+    assert meta["latent_mode"] == "tokens"
+    assert meta["latent_k"] == 6
+    assert meta["config"]["latent_mode"] == "tokens"
+    assert meta["config"]["latent_k"] == 6
+    # The reloaded model still produces the token-set latent.
+    z, _ = loaded(_batch([_state()]))
+    assert z.shape[1:] == (6, 64)
+
+
+def test_flat_checkpoint_defaults_latent_mode(tmp_path):
+    # An existing (flat) checkpoint whose config predates latent_mode must still load as flat.
+    model = _small_model()
+    path = str(tmp_path / "wm_flat.pt")
+    M.save_checkpoint(path, model, step=2)
+    loaded, meta = M.load_checkpoint(path, "cpu")
+    assert meta["latent_mode"] == "flat"
+    z, _ = loaded(_batch([_state()]))
+    assert z.shape == (1, 128)
+
+
+def test_checkpoint_latent_mode_mismatch_rejected(tmp_path):
+    model = _small_model()  # flat
+    path = str(tmp_path / "wm_flat.pt")
+    M.save_checkpoint(path, model, step=1)
+    # Requesting the other mode on load rejects loudly (flat/tokens are not interchangeable).
+    try:
+        M.load_checkpoint(path, "cpu", expect_latent_mode="tokens")
+        assert False, "expected a latent_mode-mismatch rejection"
+    except ValueError as e:
+        assert "latent_mode" in str(e)
+    # Matching mode (or no expectation) loads fine.
+    _loaded, meta = M.load_checkpoint(path, "cpu", expect_latent_mode="flat")
+    assert meta["latent_mode"] == "flat"

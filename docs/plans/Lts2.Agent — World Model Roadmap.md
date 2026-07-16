@@ -338,6 +338,16 @@ fixed-seed eval (expectation: ≥ baseline).
       run (the earlier ~30 h estimate was under GPU contention with a concurrent job). Reaching the
       >2000 states/s ceiling further is a GPU-compute problem (TF32/AMP, flash-attention, or a faster GPU),
       not a data-path one. Cache tests in `tests/test_wm_cache.py`.
+      **Latent-shape A/B (design §10, first bullet — the CP4 decision):** `--latent-mode flat|tokens`
+      switches only the latent structure between the pool and the decoder. `flat` (default) is byte-identical
+      to the above (pooled → flatten → `z_dim=512` SimNorm vector → re-expanded to memory tokens). `tokens`
+      keeps `--latent-k` (default 16) latent tokens as the latent (no flatten, no `z_dim` projection; SimNorm
+      per token; decoder consumes them directly as memory — removing the flatten-to-512 squeeze suspected of
+      capping card-identity reconstruction over big multisets). Dropping the two projections makes `tokens`
+      the smaller model (~7.0M vs ~10.1M params). Checkpoint meta stamps `latent_mode`/`latent_k`; load
+      rejects a mode mismatch loudly; the M4 predictor reads `latent_mode` to shape its latent. Tokens-mode
+      tests added to `tests/test_wm_encdec.py`. The 21k-step fair-budget comparison is the orchestrator's to
+      run.
 - [x] **3.2 Decoded-state pretty-printer + diff view** — _done._ `lts2_agent.statefmt`:
       `format_state` renders any **canonical dict** (`tokens.detokenize` output — a decoder's output, or
       `detokenize(tokenize(raw wire))`) as compact text (player/Osty/enemies with hp/block/powers/intents,
