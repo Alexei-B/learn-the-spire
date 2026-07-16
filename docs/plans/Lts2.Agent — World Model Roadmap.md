@@ -175,9 +175,10 @@ protocol-v2 explanations; any mismatch rejects loudly, exactly like `FEATURE_VER
       fetched once per decision point off the UI thread and shared by both `Tab` and the panel — no extra
       round-trip per keystroke, never blocking the UI; a dead/timed-out agent degrades to "declined".
       Pure formatter `RankingPanel` covered by `RankingPanelTests`.
-- [ ] **0.5 Baseline capture** — _in progress_: 300-iteration run `baseline-ppo` (random character,
-      acts 0–2, eval every 10 iters, ckpt `checkpoints/baseline_m0.pt`) recording through the new
-      pipeline. Original item: one PPO training run + fixed-seed eval recorded through the new
+- [x] **0.5 Baseline capture** — _done_: run `20260716-093447-baseline-ppo` (300 iters, random
+      character, acts 0–2, eval every 10, ckpt `checkpoints/baseline_m0.pt`): 45.7k events, final
+      fixed-seed eval greedy win 0.38 / sampled 0.75, the M5 comparison bar. Original item: one
+      PPO training run + fixed-seed eval recorded through the new
       pipeline, kept as the comparison baseline for M5/M6.
 
 **CP1 (manual review):** start a PPO training run; open the dashboard; watch it live; inspect the
