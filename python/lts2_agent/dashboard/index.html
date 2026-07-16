@@ -115,6 +115,11 @@
     <div class="toolbar">
       <span><label>metric</label><select id="metric"></select></span>
       <span><label>group by</label><select id="groupby"></select></span>
+      <span><label>scale</label><select id="scale">
+        <option value="linear">linear</option>
+        <option value="log">log</option>
+        <option value="logerr">log error (1−x)</option>
+      </select></span>
       <span><label>bucket</label><input type="number" id="bucket" min="1" placeholder="auto"></span>
       <button id="pause">Pause</button>
       <div class="spacer"></div>
@@ -123,7 +128,8 @@
         <button data-metric="fight.won" data-group="act">Win by act</button>
         <button data-metric="fight.hp_lost" data-group="room">HP lost by room</button>
         <button data-metric="eval_fight.won" data-group="mode">Eval greedy vs sampled win</button>
-        <button data-metric="eval.exact_state_rate" data-group="none">Enc/dec accuracy</button>
+        <button data-metric="eval.exact_state_rate" data-group="none" data-scale="logerr">Enc/dec accuracy</button>
+        <button data-metric="eval.state_dist" data-group="none" data-scale="log">Enc/dec distance</button>
       </div>
     </div>
     <div class="chartwrap">
@@ -145,6 +151,7 @@ const state = {
   selected: new Set(),    // run ids selected for overlay
   metric: null,
   groupBy: "none",
+  scale: "linear",        // linear | log | logerr (display transform only)
   bucket: "",             // "" => auto
   paused: false,
   metaByRun: {},          // id -> meta
@@ -324,6 +331,7 @@ const METRIC_LABELS = {
   "eval.pile_size_acc": "Decoder: pile-size accuracy",
   "eval.pending_choice_acc": "Decoder: pending-choice accuracy",
   "eval.exact_state_rate": "Decoder: exact full-state reconstruction rate",
+  "eval.state_dist": "Decoder: mean state distance (per-token-field mismatch, 0=perfect)",
 };
 function metricLabel(name) {
   const d = METRIC_LABELS[name];
@@ -365,13 +373,23 @@ async function redraw() {
       series.push({ name, points: pts });
     }
   }
+  // Display transform (scale selector). p.value stays raw for tooltips/legend; p.y drives the chart.
+  // log: log10(v) floored at 1e-6 — for MAE/distance metrics. logerr: log10(1−v) floored at 1e-4 —
+  // for rates in [0,1], where each extra "nine" of accuracy earns a full decade of axis.
+  for (const s of series) for (const p of s.points) {
+    if (state.scale === "log") p.y = Math.log10(Math.max(p.value, 1e-6));
+    else if (state.scale === "logerr") p.y = Math.log10(Math.max(1 - p.value, 1e-4));
+    else p.y = p.value;
+  }
   // assign colors in a stable order
   series.forEach((s, i) => { s.color = css(SLOT[i % SLOT.length]); });
   state.lastSeries = series;
 
   const totalPts = series.reduce((a, s) => a + s.points.length, 0);
+  const scaleNote = state.scale === "log" ? " · scale log10(x)"
+    : state.scale === "logerr" ? " · scale log10(1−x)" : "";
   status.textContent = metricLabel(state.metric) + " · " + series.length + " series · " +
-    totalPts + " points · bucket " + bucket + (state.paused ? " · PAUSED" : "");
+    totalPts + " points · bucket " + bucket + scaleNote + (state.paused ? " · PAUSED" : "");
   drawChart(series);
   drawLegend(series);
 }
@@ -387,7 +405,7 @@ function drawChart(series) {
   let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
   for (const s of series) for (const p of s.points) {
     if (p.step < xmin) xmin = p.step; if (p.step > xmax) xmax = p.step;
-    if (p.value < ymin) ymin = p.value; if (p.value > ymax) ymax = p.value;
+    if (p.y < ymin) ymin = p.y; if (p.y > ymax) ymax = p.y;
   }
   if (!isFinite(xmin)) { chart.innerHTML = '<div class="empty">No data for this metric yet.</div>'; return; }
   if (xmax === xmin) xmax = xmin + 1;
@@ -446,7 +464,7 @@ function drawChart(series) {
   // series
   for (const s of series) {
     if (!s.points.length) continue;
-    const d = s.points.map((p, i) => (i ? "L" : "M") + sx(p.step) + " " + sy(p.value)).join(" ");
+    const d = s.points.map((p, i) => (i ? "L" : "M") + sx(p.step) + " " + sy(p.y)).join(" ");
     const path = document.createElementNS(NS, "path");
     path.setAttribute("class", "serie"); path.setAttribute("d", d);
     path.setAttribute("stroke", s.color);
@@ -456,7 +474,7 @@ function drawChart(series) {
       for (const p of s.points) {
         const c = document.createElementNS(NS, "circle");
         c.setAttribute("class", "dotmark");
-        c.setAttribute("cx", sx(p.step)); c.setAttribute("cy", sy(p.value));
+        c.setAttribute("cx", sx(p.step)); c.setAttribute("cy", sy(p.y));
         c.setAttribute("r", 3); c.setAttribute("fill", s.color);
         svg.appendChild(c);
       }
@@ -551,6 +569,9 @@ document.getElementById("groupby").addEventListener("change", e => {
 document.getElementById("bucket").addEventListener("change", e => {
   state.bucket = e.target.value; redraw();
 });
+document.getElementById("scale").addEventListener("change", e => {
+  state.scale = e.target.value; redraw();
+});
 document.getElementById("pause").addEventListener("click", e => {
   state.paused = !state.paused;
   e.target.textContent = state.paused ? "Resume" : "Pause";
@@ -563,6 +584,10 @@ for (const b of document.querySelectorAll(".presets button")) {
     state.groupBy = b.dataset.group;
     document.getElementById("groupby").value = b.dataset.group;
     document.getElementById("metric").value = b.dataset.metric;
+    if (b.dataset.scale) {
+      state.scale = b.dataset.scale;
+      document.getElementById("scale").value = b.dataset.scale;
+    }
     await redraw();
   });
 }

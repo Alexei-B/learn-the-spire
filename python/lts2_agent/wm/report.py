@@ -28,7 +28,7 @@ METRIC_NAMES = [
     "card_id_top1", "card_zone_acc", "power_id_top1", "power_amount_mae",
     "creature_hp_mae", "creature_block_mae", "intent_damage_mae", "energy_acc",
     "relic_set_f1", "potion_set_f1", "hand_size_acc", "pile_size_acc",
-    "pending_choice_acc", "exact_state_rate",
+    "pending_choice_acc", "exact_state_rate", "state_dist",
 ]
 
 
@@ -47,6 +47,47 @@ def _target_arrays(batch: Dict[str, torch.Tensor]) -> List[Dict[str, np.ndarray]
             d[k] = v[b]
         out.append(d)
     return out
+
+
+def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray]) -> Tuple[float, float]:
+    """``(mismatched, total)`` token-fields between a predicted and a target array dict.
+
+    Every field (categorical column, integer-rounded numeric column, keyword block) of every token
+    is weighted equally over the union of real and predicted slots; a slot present on only one side
+    counts as fully wrong. 0/total = perfect reconstruction — the smooth companion to the
+    all-or-nothing ``exact_state_rate``.
+    """
+    num = 0.0
+    den = 0.0
+    for t in S.TYPES:
+        fields = len(t.cat_cols) + t.num_width + (1 if t.has_kw else 0)
+        if fields == 0:
+            continue
+        if t.mask_key:
+            tm = ta[t.mask_key].astype(bool)
+            pm = pa[t.mask_key].astype(bool)
+        else:
+            tm = np.ones(1, dtype=bool)
+            pm = np.ones(1, dtype=bool)
+        both = tm & pm
+        only = tm ^ pm
+        num += float(only.sum()) * fields
+        den += float(only.sum()) * fields + float(both.sum()) * fields
+        if not both.any():
+            continue
+        if t.idx_key:
+            pi = np.atleast_2d(pa[t.idx_key])[both]
+            ti = np.atleast_2d(ta[t.idx_key])[both]
+            num += float((pi != ti).sum())
+        if t.num_key:
+            pn = np.round(_symexp_np(np.atleast_2d(pa[t.num_key])[both]))
+            tn = np.round(_symexp_np(np.atleast_2d(ta[t.num_key])[both]))
+            num += float((pn != tn).sum())
+        if t.has_kw:
+            pk = (np.atleast_2d(pa["card_kw"])[both] >= 0.5)
+            tk = (np.atleast_2d(ta["card_kw"])[both] >= 0.5)
+            num += float((pk != tk).any(axis=-1).sum())   # keyword block = one field per card
+    return num, max(den, 1.0)
 
 
 def _set_f1(pred: List[int], tgt: List[int]) -> float:
@@ -108,7 +149,9 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     relic_f1 = np.zeros(B, np.float32); potion_f1 = np.zeros(B, np.float32)
     hand_ok = np.zeros(B, np.float32); pile_num = np.zeros(B, np.float32); pile_den = np.zeros(B, np.float32)
     pend_ok = np.zeros(B, np.float32); exact = np.zeros(B, np.float32)
+    dist_num = np.zeros(B, np.float32); dist_den = np.zeros(B, np.float32)
     for b in range(B):
+        dist_num[b], dist_den[b] = _state_dist(pred_arrays[b], tgt_arrays[b])
         pc = tokens.detokenize(pred_arrays[b])
         tc = tokens.detokenize(tgt_arrays[b])
         relic_f1[b] = _set_f1(pc["relics"], tc["relics"])
@@ -129,6 +172,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     pairs["pile_size_acc"] = (pile_num, pile_den)
     pairs["pending_choice_acc"] = (pend_ok, ones)
     pairs["exact_state_rate"] = (exact, ones)
+    pairs["state_dist"] = (dist_num, dist_den)
     return pairs
 
 
