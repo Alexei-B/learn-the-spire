@@ -208,6 +208,45 @@ combat recommendation now comes from the net (it declines out of combat, so the 
 drives non-combat). The model is JIT-warmed at startup so the first recommendation stays under the C#
 response timeout.
 
+## Training dashboard
+
+A local, offline web dashboard renders live and historical training charts straight from the
+trainer's event files — no pip deps, no CDNs, no external fonts/scripts (stdlib `http.server` +
+one self-contained `index.html` with hand-rolled SVG line charts). The trainer and the dashboard
+share **only** the on-disk file contract, so you can watch any run — including ones started in the
+background — with zero coordination:
+
+- Runs live under a directory (default `checkpoints/runs/`), one subdir per run.
+- `<run>/manifest.json` — `{runId, label, startedAt, kind, argv, config, gitSha, featureVersion,
+  catalogSignature}`.
+- `<run>/events.jsonl` — append-only, one JSON object per line:
+  `{ts, phase, step, name, value, tags?}`. Outcome events carry `tags` such as
+  `{act, room, character}` (fights) or `{act, room, character, mode}` (eval fights).
+
+Launch it:
+
+```sh
+python -m lts2_agent.dashboard --dir checkpoints/runs --port 8777   # also: --host (default 127.0.0.1)
+```
+
+Then open `http://127.0.0.1:8777`. The UI has a run sidebar (multi-select checkboxes to overlay
+runs; a green dot marks runs whose last event is < 10s old), a metric / group-by / bucket toolbar
+with a poll pause button (auto-refresh every 2s), and preset breakdown buttons — **Win by room**,
+**Win by act**, **HP lost by room**, **Eval greedy vs sampled win**. Every series shows its total
+sample count `n` in the legend and per-point in the tooltip, so a rate over few fights reads as
+thin as it is.
+
+HTTP API (all JSON): `GET /api/runs` (newest-first summaries), `GET /api/runs/<id>/meta`
+(metric names, tag keys, maxStep), `GET /api/runs/<id>/series?name=&group_by=<tagKey|none>&bucket=<int|auto>`
+(per-group downsampled points, each `{step, value=mean, n=count}`). Event files are tailed
+incrementally (only appended bytes are re-read) and a truncated final line mid-write is tolerated.
+
+To try it without a real run, generate synthetic data (optionally live-appending):
+
+```sh
+python -m lts2_agent.dashboard.demo --dir checkpoints/runs --live
+```
+
 ## Protocol
 
 The full wire spec lives in `docs/design/Lts2.Agent — Protocol.md`.

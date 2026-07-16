@@ -151,10 +151,18 @@ protocol-v2 explanations; any mismatch rejects loudly, exactly like `FEATURE_VER
 
 - [ ] **0.1 Metrics events**: `train_torch` (and the eval loops) emit the event stream (contract 1)
       alongside the existing stdout/CSV; outcome events tagged act/room/character.
-- [ ] **0.2 Dashboard MVP**: run list, live charts, run overlay/compare (contract 2).
-- [ ] **0.3 Breakdown views**: win % and HP-lost grouped by act and monster/elite/boss, both for
-      training outcomes and the fixed-seed eval; sample counts shown next to every rate (a 0.6
-      win-rate over 5 boss fights must look as thin as it is).
+- [x] **0.2 Dashboard MVP** — _done._ `python/lts2_agent/dashboard/` (stdlib-only, offline): a
+      ThreadingHTTPServer + one self-contained `index.html` (inline CSS/JS, hand-rolled SVG line
+      charts). Run list with live dot, checkbox multi-select overlay/compare, metric/group-by/bucket
+      toolbar, 2s polling with pause. Reads the pinned file contract (contract 2) only — incremental
+      byte-offset tailing, truncated-final-line tolerant. API: `/api/runs`, `/api/runs/<id>/meta`,
+      `/api/runs/<id>/series`. Demo generator `python -m lts2_agent.dashboard.demo [--live]`; unit
+      tests in `python/tests/test_dashboard.py`. (Consumes 0.1's event stream, being wired in
+      parallel; the two touch only the on-disk contract.)
+- [x] **0.3 Breakdown views** — _done._ Group-by any tag key (act / room / character / mode) with
+      preset buttons "Win by room", "Win by act", "HP lost by room", "Eval greedy vs sampled win";
+      covers training outcomes (`fight.*`) and fixed-seed eval (`eval_fight.*`). Sample count `n` is
+      mandatory on every series point and shown in legend + tooltip, so low-count rates read as thin.
 - [ ] **0.4 TUI ranking panel**: render the decision reply's full scored ranking (already in
       protocol v1) — sorted options with scores, the Tab pick highlighted, declines explicit.
       Works with the current PPO checkpoint and the heuristic immediately.

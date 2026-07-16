@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lts2 training dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page:        #0d0d0d;
+    --surface:     #1a1a19;
+    --panel:       #201f1e;
+    --ink:         #ffffff;
+    --ink-2:       #c3c2b7;
+    --muted:       #898781;
+    --grid:        #2c2c2a;
+    --axis:        #383835;
+    --border:      rgba(255,255,255,0.10);
+    --live:        #0ca30c;
+    /* categorical slots (dark steps, validated order) */
+    --s1:#3987e5; --s2:#008300; --s3:#d55181; --s4:#c98500;
+    --s5:#199e70; --s6:#d95926; --s7:#9085e9; --s8:#e66767;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --page:#f9f9f7; --surface:#fcfcfb; --panel:#f2f1ee;
+      --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+      --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+      --live:#0ca30c;
+      --s1:#2a78d6; --s2:#008300; --s3:#e87ba4; --s4:#eda100;
+      --s5:#1baf7a; --s6:#eb6834; --s7:#4a3aa7; --s8:#e34948;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--page); color:var(--ink); font-size:13px; }
+  a { color: var(--s1); }
+  .app { display:flex; height:100vh; overflow:hidden; }
+
+  /* Sidebar */
+  .sidebar {
+    width:280px; flex:0 0 280px; background:var(--surface);
+    border-right:1px solid var(--border); display:flex; flex-direction:column;
+  }
+  .sidebar h1 { font-size:14px; margin:0; padding:14px 16px; border-bottom:1px solid var(--border); }
+  .sidebar h1 small { color:var(--muted); font-weight:normal; display:block; font-size:11px; margin-top:2px; }
+  .runs { overflow-y:auto; flex:1; padding:6px; }
+  .run {
+    display:flex; gap:8px; align-items:flex-start; padding:8px; border-radius:6px;
+    cursor:pointer; border:1px solid transparent;
+  }
+  .run:hover { background:var(--panel); }
+  .run.sel { border-color:var(--border); background:var(--panel); }
+  .run input { margin-top:2px; }
+  .run .meta { min-width:0; }
+  .run .label { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .run .sub { color:var(--muted); font-size:11px; margin-top:2px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); display:inline-block; margin-right:4px; vertical-align:middle; }
+  .dot.live { background:var(--live); box-shadow:0 0 5px var(--live); }
+
+  /* Main */
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .toolbar {
+    display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center;
+    padding:10px 16px; border-bottom:1px solid var(--border); background:var(--surface);
+  }
+  .toolbar label { color:var(--ink-2); font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin-right:4px; }
+  select, input[type=number], button {
+    background:var(--panel); color:var(--ink); border:1px solid var(--border);
+    border-radius:5px; padding:5px 8px; font-size:13px; font-family:inherit;
+  }
+  input[type=number] { width:78px; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--muted); }
+  button.on { border-color:var(--s1); color:var(--s1); }
+  .presets { display:flex; gap:6px; flex-wrap:wrap; }
+  .presets button { font-size:12px; padding:4px 8px; }
+  .spacer { flex:1; }
+
+  .chartwrap { flex:1; overflow:auto; padding:16px; }
+  .status { color:var(--muted); padding:6px 0; font-size:12px; }
+  svg { width:100%; height:auto; display:block; background:var(--surface); border-radius:8px; border:1px solid var(--border); }
+  .grid line { stroke:var(--grid); stroke-width:1; }
+  .axis line { stroke:var(--axis); stroke-width:1; }
+  .tick { fill:var(--muted); font-size:11px; }
+  .axis-title { fill:var(--muted); font-size:11px; }
+  .serie { fill:none; stroke-width:2; }
+  .dotmark { stroke:var(--surface); stroke-width:1.5; }
+  .cross { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }
+
+  .legend { display:flex; flex-wrap:wrap; gap:6px 16px; padding:12px 4px 4px; }
+  .legend .item { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-2); }
+  .legend .sw { width:12px; height:12px; border-radius:3px; flex:0 0 auto; }
+  .legend .val { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .legend .n { color:var(--muted); }
+
+  #tip {
+    position:fixed; pointer-events:none; background:var(--panel); color:var(--ink);
+    border:1px solid var(--border); border-radius:6px; padding:6px 8px; font-size:12px;
+    display:none; z-index:10; box-shadow:0 4px 14px rgba(0,0,0,.4); white-space:nowrap;
+    font-variant-numeric:tabular-nums;
+  }
+  #tip .t-name { font-weight:600; margin-bottom:2px; }
+  .empty { color:var(--muted); padding:40px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <h1>Lts2 training<small id="rootlabel">runs</small></h1>
+    <div class="runs" id="runs"></div>
+  </aside>
+  <main class="main">
+    <div class="toolbar">
+      <span><label>metric</label><select id="metric"></select></span>
+      <span><label>group by</label><select id="groupby"></select></span>
+      <span><label>bucket</label><input type="number" id="bucket" min="1" placeholder="auto"></span>
+      <button id="pause">Pause</button>
+      <div class="spacer"></div>
+      <div class="presets">
+        <button data-metric="fight.won" data-group="room">Win by room</button>
+        <button data-metric="fight.won" data-group="act">Win by act</button>
+        <button data-metric="fight.hp_lost" data-group="room">HP lost by room</button>
+        <button data-metric="eval_fight.won" data-group="mode">Eval greedy vs sampled win</button>
+      </div>
+    </div>
+    <div class="chartwrap">
+      <div class="status" id="status"></div>
+      <div id="chart"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </main>
+</div>
+<div id="tip"></div>
+
+<script>
+"use strict";
+const SLOT = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+const state = {
+  runs: [],               // [{id,manifest,lastEventTs,sizeBytes}]
+  selected: new Set(),    // run ids selected for overlay
+  metric: null,
+  groupBy: "none",
+  bucket: "",             // "" => auto
+  paused: false,
+  metaByRun: {},          // id -> meta
+  lastSeries: [],         // rendered series for tooltip hit-testing
+};
+
+async function jget(url) {
+  const r = await fetch(url, {cache:"no-store"});
+  if (!r.ok) throw new Error(url + " -> " + r.status);
+  return r.json();
+}
+
+function fmtTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  return d.toLocaleString();
+}
+function fmtNum(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  if (Math.abs(v) >= 100) return v.toFixed(0);
+  if (Math.abs(v) >= 1) return v.toFixed(2);
+  return v.toFixed(3);
+}
+
+// ---- run list ------------------------------------------------------------
+async function refreshRuns() {
+  let runs;
+  try { runs = await jget("/api/runs"); } catch (e) { return; }
+  state.runs = runs;
+  const now = Date.now() / 1000;
+  const el = document.getElementById("runs");
+  el.innerHTML = "";
+  if (!runs.length) {
+    el.innerHTML = '<div class="empty">No runs yet.<br>Waiting for events…</div>';
+  }
+  for (const run of runs) {
+    const m = run.manifest || {};
+    const live = run.lastEventTs && (now - run.lastEventTs) < 10;
+    const row = document.createElement("label");
+    row.className = "run" + (state.selected.has(run.id) ? " sel" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = state.selected.has(run.id);
+    cb.onchange = () => {
+      if (cb.checked) state.selected.add(run.id); else state.selected.delete(run.id);
+      onSelectionChanged();
+    };
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = m.label || run.id;
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.innerHTML = '<span class="dot' + (live ? ' live' : '') + '"></span>' +
+      (m.startedAt ? new Date(m.startedAt).toLocaleString() : fmtTime(run.lastEventTs)) +
+      ' · ' + (m.kind || "?");
+    meta.appendChild(label); meta.appendChild(sub);
+    row.appendChild(cb); row.appendChild(meta);
+    el.appendChild(row);
+  }
+}
+
+async function onSelectionChanged() {
+  await rebuildMetricOptions();
+  refreshRuns();
+  await redraw();
+}
+
+// union of metric names / tag keys across selected runs
+async function rebuildMetricOptions() {
+  const metrics = new Set();
+  const tagKeys = new Set();
+  for (const id of state.selected) {
+    let meta;
+    try { meta = await jget("/api/runs/" + encodeURIComponent(id) + "/meta"); }
+    catch (e) { continue; }
+    state.metaByRun[id] = meta;
+    (meta.metrics || []).forEach(x => metrics.add(x));
+    const mm = state.metric;
+    if (mm && meta.tagKeys && meta.tagKeys[mm]) meta.tagKeys[mm].forEach(k => tagKeys.add(k));
+  }
+  const msel = document.getElementById("metric");
+  const cur = state.metric;
+  const sorted = [...metrics].sort();
+  msel.innerHTML = "";
+  for (const name of sorted) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name;
+    msel.appendChild(o);
+  }
+  if (cur && metrics.has(cur)) msel.value = cur;
+  else if (sorted.length) { state.metric = sorted[0]; msel.value = sorted[0]; }
+  else state.metric = null;
+
+  // group-by keys depend on the (possibly new) metric
+  const keys = new Set();
+  for (const id of state.selected) {
+    const meta = state.metaByRun[id];
+    if (meta && meta.tagKeys && state.metric && meta.tagKeys[state.metric])
+      meta.tagKeys[state.metric].forEach(k => keys.add(k));
+  }
+  const gsel = document.getElementById("groupby");
+  const gcur = state.groupBy;
+  gsel.innerHTML = "";
+  const noneOpt = document.createElement("option");
+  noneOpt.value = "none"; noneOpt.textContent = "none";
+  gsel.appendChild(noneOpt);
+  for (const k of [...keys].sort()) {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = k;
+    gsel.appendChild(o);
+  }
+  if (gcur !== "none" && keys.has(gcur)) gsel.value = gcur;
+  else { state.groupBy = "none"; gsel.value = "none"; }
+}
+
+// ---- fetch + assemble series --------------------------------------------
+async function redraw() {
+  const chart = document.getElementById("chart");
+  const legend = document.getElementById("legend");
+  const status = document.getElementById("status");
+  if (!state.metric || state.selected.size === 0) {
+    chart.innerHTML = '<div class="empty">Select one or more runs, then a metric.</div>';
+    legend.innerHTML = ""; status.textContent = ""; state.lastSeries = [];
+    return;
+  }
+  const bucket = state.bucket && Number(state.bucket) > 0 ? state.bucket : "auto";
+  const gb = state.groupBy || "none";
+  const multiRun = state.selected.size > 1;
+
+  const series = [];
+  for (const id of state.selected) {
+    const run = state.runs.find(r => r.id === id);
+    const runLabel = (run && run.manifest && run.manifest.label) || id;
+    let data;
+    try {
+      const q = "name=" + encodeURIComponent(state.metric) +
+                "&group_by=" + encodeURIComponent(gb) +
+                "&bucket=" + encodeURIComponent(bucket);
+      data = await jget("/api/runs/" + encodeURIComponent(id) + "/series?" + q);
+    } catch (e) { continue; }
+    const groups = (data && data.groups) || {};
+    const gnames = Object.keys(groups).sort();
+    for (const gname of gnames) {
+      const pts = groups[gname] || [];
+      let name;
+      if (gb === "none") name = multiRun ? runLabel : (state.metric);
+      else name = (multiRun ? runLabel + " · " : "") + gname;
+      series.push({ name, points: pts });
+    }
+  }
+  // assign colors in a stable order
+  series.forEach((s, i) => { s.color = css(SLOT[i % SLOT.length]); });
+  state.lastSeries = series;
+
+  const totalPts = series.reduce((a, s) => a + s.points.length, 0);
+  status.textContent = state.metric + " · " + series.length + " series · " +
+    totalPts + " points · bucket " + bucket + (state.paused ? " · PAUSED" : "");
+  drawChart(series);
+  drawLegend(series);
+}
+
+// ---- SVG line chart ------------------------------------------------------
+function drawChart(series) {
+  const chart = document.getElementById("chart");
+  const W = Math.max(chart.clientWidth || 900, 360);
+  const H = Math.min(Math.max(Math.round(W * 0.42), 300), 560);
+  const m = { l: 56, r: 18, t: 14, b: 34 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+
+  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+  for (const s of series) for (const p of s.points) {
+    if (p.step < xmin) xmin = p.step; if (p.step > xmax) xmax = p.step;
+    if (p.value < ymin) ymin = p.value; if (p.value > ymax) ymax = p.value;
+  }
+  if (!isFinite(xmin)) { chart.innerHTML = '<div class="empty">No data for this metric yet.</div>'; return; }
+  if (xmax === xmin) xmax = xmin + 1;
+  if (ymax === ymin) { ymax = ymin + 1; ymin -= 1; }
+  const pad = (ymax - ymin) * 0.08; ymin -= pad; ymax += pad;
+
+  const sx = v => m.l + (v - xmin) / (xmax - xmin) * iw;
+  const sy = v => m.t + ih - (v - ymin) / (ymax - ymin) * ih;
+
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+  // gridlines + y ticks
+  const g = document.createElementNS(NS, "g"); g.setAttribute("class", "grid");
+  const yTicks = niceTicks(ymin, ymax, 5);
+  for (const t of yTicks) {
+    const y = sy(t);
+    const ln = document.createElementNS(NS, "line");
+    ln.setAttribute("x1", m.l); ln.setAttribute("x2", m.l + iw);
+    ln.setAttribute("y1", y); ln.setAttribute("y2", y);
+    g.appendChild(ln);
+    const tx = document.createElementNS(NS, "text");
+    tx.setAttribute("class", "tick"); tx.setAttribute("x", m.l - 8);
+    tx.setAttribute("y", y + 3); tx.setAttribute("text-anchor", "end");
+    tx.textContent = fmtNum(t);
+    svg.appendChild(tx);
+  }
+  svg.appendChild(g);
+
+  // x ticks
+  const xTicks = niceTicks(xmin, xmax, 6);
+  for (const t of xTicks) {
+    const x = sx(t);
+    const tx = document.createElementNS(NS, "text");
+    tx.setAttribute("class", "tick"); tx.setAttribute("x", x);
+    tx.setAttribute("y", m.t + ih + 18); tx.setAttribute("text-anchor", "middle");
+    tx.textContent = Math.round(t);
+    svg.appendChild(tx);
+  }
+  const xt = document.createElementNS(NS, "text");
+  xt.setAttribute("class", "axis-title"); xt.setAttribute("x", m.l + iw / 2);
+  xt.setAttribute("y", H - 4); xt.setAttribute("text-anchor", "middle");
+  xt.textContent = "step";
+  svg.appendChild(xt);
+
+  // axis baseline
+  const ax = document.createElementNS(NS, "g"); ax.setAttribute("class", "axis");
+  const base = document.createElementNS(NS, "line");
+  base.setAttribute("x1", m.l); base.setAttribute("x2", m.l + iw);
+  base.setAttribute("y1", m.t + ih); base.setAttribute("y2", m.t + ih);
+  ax.appendChild(base);
+  svg.appendChild(ax);
+
+  // series
+  for (const s of series) {
+    if (!s.points.length) continue;
+    const d = s.points.map((p, i) => (i ? "L" : "M") + sx(p.step) + " " + sy(p.value)).join(" ");
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("class", "serie"); path.setAttribute("d", d);
+    path.setAttribute("stroke", s.color);
+    svg.appendChild(path);
+    // markers (skip if very dense)
+    if (s.points.length <= 120) {
+      for (const p of s.points) {
+        const c = document.createElementNS(NS, "circle");
+        c.setAttribute("class", "dotmark");
+        c.setAttribute("cx", sx(p.step)); c.setAttribute("cy", sy(p.value));
+        c.setAttribute("r", 3); c.setAttribute("fill", s.color);
+        svg.appendChild(c);
+      }
+    }
+  }
+
+  // hover crosshair + hit layer
+  const cross = document.createElementNS(NS, "line");
+  cross.setAttribute("class", "cross"); cross.setAttribute("y1", m.t); cross.setAttribute("y2", m.t + ih);
+  cross.style.display = "none";
+  svg.appendChild(cross);
+
+  const overlay = document.createElementNS(NS, "rect");
+  overlay.setAttribute("x", m.l); overlay.setAttribute("y", m.t);
+  overlay.setAttribute("width", iw); overlay.setAttribute("height", ih);
+  overlay.setAttribute("fill", "transparent");
+  svg.appendChild(overlay);
+
+  const tip = document.getElementById("tip");
+  overlay.addEventListener("mousemove", ev => {
+    const rect = svg.getBoundingClientRect();
+    const scale = W / rect.width;
+    const px = (ev.clientX - rect.left) * scale;
+    // nearest point across all series
+    let best = null, bestDx = Infinity;
+    for (const s of series) for (const p of s.points) {
+      const dx = Math.abs(sx(p.step) - px);
+      if (dx < bestDx) { bestDx = dx; best = { s, p }; }
+    }
+    if (!best) return;
+    cross.style.display = ""; cross.setAttribute("x1", sx(best.p.step)); cross.setAttribute("x2", sx(best.p.step));
+    tip.style.display = "block";
+    tip.style.left = (ev.clientX + 14) + "px";
+    tip.style.top = (ev.clientY + 12) + "px";
+    tip.innerHTML = '<div class="t-name" style="color:' + best.s.color + '">' + escapeHtml(best.s.name) + '</div>' +
+      'step ' + best.p.step + '<br>value ' + fmtNum(best.p.value) + '<br>n = ' + best.p.n;
+  });
+  overlay.addEventListener("mouseleave", () => { tip.style.display = "none"; cross.style.display = "none"; });
+
+  chart.innerHTML = "";
+  chart.appendChild(svg);
+}
+
+function drawLegend(series) {
+  const legend = document.getElementById("legend");
+  legend.innerHTML = "";
+  for (const s of series) {
+    const last = s.points.length ? s.points[s.points.length - 1] : null;
+    const totalN = s.points.reduce((a, p) => a + (p.n || 0), 0);
+    const item = document.createElement("div");
+    item.className = "item";
+    const sw = document.createElement("span");
+    sw.className = "sw"; sw.style.background = s.color;
+    const txt = document.createElement("span");
+    txt.innerHTML = escapeHtml(s.name) +
+      ' <span class="val">' + (last ? fmtNum(last.value) : "—") + '</span>' +
+      ' <span class="n">(n=' + totalN + ')</span>';
+    item.appendChild(sw); item.appendChild(txt);
+    legend.appendChild(item);
+  }
+}
+
+function niceTicks(lo, hi, count) {
+  const span = hi - lo;
+  if (span <= 0) return [lo];
+  const raw = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  let step;
+  if (norm < 1.5) step = 1; else if (norm < 3) step = 2; else if (norm < 7) step = 5; else step = 10;
+  step *= mag;
+  const out = [];
+  const start = Math.ceil(lo / step) * step;
+  for (let v = start; v <= hi + 1e-9; v += step) out.push(Number(v.toFixed(6)));
+  return out;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---- wiring --------------------------------------------------------------
+document.getElementById("metric").addEventListener("change", async e => {
+  state.metric = e.target.value;
+  await rebuildMetricOptions();   // group-by keys depend on metric
+  await redraw();
+});
+document.getElementById("groupby").addEventListener("change", e => {
+  state.groupBy = e.target.value; redraw();
+});
+document.getElementById("bucket").addEventListener("change", e => {
+  state.bucket = e.target.value; redraw();
+});
+document.getElementById("pause").addEventListener("click", e => {
+  state.paused = !state.paused;
+  e.target.textContent = state.paused ? "Resume" : "Pause";
+  e.target.classList.toggle("on", state.paused);
+});
+for (const b of document.querySelectorAll(".presets button")) {
+  b.addEventListener("click", async () => {
+    state.metric = b.dataset.metric;
+    await rebuildMetricOptions();
+    state.groupBy = b.dataset.group;
+    document.getElementById("groupby").value = b.dataset.group;
+    document.getElementById("metric").value = b.dataset.metric;
+    await redraw();
+  });
+}
+window.addEventListener("resize", () => { if (state.lastSeries.length) drawChart(state.lastSeries); });
+
+async function poll() {
+  if (!state.paused) {
+    await refreshRuns();
+    if (state.selected.size) { await rebuildMetricOptions(); await redraw(); }
+  }
+}
+(async function init() {
+  await refreshRuns();
+  // auto-select the newest run for a useful first view
+  if (state.runs.length) {
+    state.selected.add(state.runs[0].id);
+    await onSelectionChanged();
+  }
+  setInterval(poll, 2000);
+})();
+</script>
+</body>
+</html>
