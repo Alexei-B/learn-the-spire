@@ -202,9 +202,29 @@ cheap and the system under observation is well-understood.
       stack/instance type, allowNegative, varKeys). `--dump-cards` extended with `rarity`, `pool` title,
       `category`, and `colorless`/`curse`/`status` flags (from the shared `CardCatalog` classifier the
       realistic sampler uses).
-- [ ] **1.3 Transition collector + corpus store** (contract 4): mixed policies (random, heuristic,
-      current PPO) × mixed regimes (broad + realistic) × all characters × acts; target ~1M
-      transitions to start. Collection progress/composition visible on the dashboard.
+- [x] **1.3 Transition collector + corpus store** (contract 4) — _done_ (`python/lts2_agent/corpus.py`,
+      `collect.py`, `corpus_report.py` + `tests/test_corpus.py`). `corpus.CorpusWriter` writes sharded
+      gzip-JSONL under a root (default `python/data/corpus/`, gitignored) — one contract-4 record per
+      decision (`{seed, scenarioMeta, t, state, options, actionTaken, nextState, nextOptions,
+      rewardComponents, done, info}`, raw lossless wire observations; `rewardComponents` are raw
+      before/after HP/block/enemy-HP with no reward function applied). **Leak-proof split**:
+      `split_for_seed = crc32(fight seed) % 100` → 0-89 train / 90-94 val / 95-99 test, one function used by
+      writer and reader, so a fight seed can never appear in two splits (unit-tested for determinism +
+      disjointness). `python -m lts2_agent.collect` drives N parallel envs (thread pool, like the trainers)
+      over mixed regimes (`broad`=deckSpec random / `realistic` / `mixed` 50-50) × mixed policies
+      (`random` uniform-legal / `heuristic` + navigator for choices / `mixed`) × characters × acts,
+      recording combat **and** `Choice` decisions; a fight is written atomically at its end and dropped
+      cleanly (records discarded, logged, env recreated) on env error or the ~90-decision cap. Seed
+      discipline enforced structurally: fight seeds are `CORPUS-<run-label>-<env>-<counter>`, the `PROBE-`
+      namespace is refused, and `explicit` deckSpecs (closed-eval) are refused by the writer. Collection
+      streams to the dashboard as a `kind="collect"` run (`collect.transitions_total`/`fights_total`/
+      `errors_total`/`transitions_per_s` aggregates + per-fight `fight.won`/`fight.hp_lost` tagged
+      act/room/character/regime/policy). `corpus_report` renders the CP2 artifact (composition + win-rate by
+      split/regime/policy/act/room/character; realistic removal/addition histograms; realized vs configured
+      60/25/12/3 added-card pool distribution; top-20 additions; a 20-deck sample; a seed→split determinism
+      note) as text or `--json`. Original item: mixed policies (random, heuristic, current PPO) × mixed
+      regimes (broad + realistic) × all characters × acts; target ~1M transitions to start. Collection
+      progress/composition visible on the dashboard.
 - [x] **1.4 Oracle prober** — _done_ (`python/lts2_agent/oracle.py` + `tests/test_oracle.py`). A
       **probe** freezes a reproducible combat position — `{probeId, resetParams, actionPrefix, meta}`
       reached by replaying an action prefix from a seeded `reset_combat` (no mid-combat snapshots exist).
