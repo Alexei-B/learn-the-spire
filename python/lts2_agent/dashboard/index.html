@@ -374,9 +374,16 @@ function isBounded01(name) {
 }
 // Tick labels for transformed axes need more precision near the interesting ends (≈1 for rates,
 // tiny values on log) than fmtNum gives.
+// pow/nines are only defined on [0,1]: out-of-domain metrics (MAEs, losses) would clamp to the
+// transform floor and render as a frozen line at the cap (e.g. "0.9999"). Fall back to linear.
+function effectiveScale() {
+  const k = state.scale;
+  if ((k === "pow" || k === "nines") && !isBounded01(state.metric)) return "linear";
+  return k;
+}
 function fmtTick(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
-  if (state.scale !== "linear") {
+  if (effectiveScale() !== "linear") {
     if (Math.abs(v) < 1 && 1 - Math.abs(v) < 0.02) return v.toFixed(4);
     if (v !== 0 && Math.abs(v) < 0.01) return v.toExponential(1);
   }
@@ -420,15 +427,17 @@ async function redraw() {
   }
   // Display transform (scale selector). p.value stays raw for tooltips/legend; p.y (the transformed
   // value) drives point placement, while axis ticks are labeled with REAL values via the inverse.
-  const sc = SCALES[state.scale] || SCALES.linear;
+  const scKey = effectiveScale();
+  const sc = SCALES[scKey] || SCALES.linear;
   for (const s of series) for (const p of s.points) p.y = sc.fn(p.value);
+  const scNote = scKey !== state.scale ? " · scale " + state.scale + " n/a (metric not 0–1) → linear" : sc.note;
   // assign colors in a stable order
   series.forEach((s, i) => { s.color = css(SLOT[i % SLOT.length]); });
   state.lastSeries = series;
 
   const totalPts = series.reduce((a, s) => a + s.points.length, 0);
   status.textContent = metricLabel(state.metric) + " · " + series.length + " series · " +
-    totalPts + " points · bucket " + bucket + sc.note + (state.paused ? " · PAUSED" : "");
+    totalPts + " points · bucket " + bucket + scNote + (state.paused ? " · PAUSED" : "");
   drawChart(series);
   drawLegend(series);
 }
@@ -448,8 +457,8 @@ function drawChart(series) {
   }
   if (!isFinite(xmin)) { chart.innerHTML = '<div class="empty">No data for this metric yet.</div>'; return; }
   if (xmax === xmin) xmax = xmin + 1;
-  const scale = SCALES[state.scale] || SCALES.linear;
-  if (isBounded01(state.metric) && state.scale !== "log") {
+  const scale = SCALES[effectiveScale()] || SCALES.linear;
+  if (isBounded01(state.metric) && effectiveScale() !== "log") {
     // [0,1]-bounded metric: pin the axis to the full range (in transformed space), no padding —
     // progress reads against the absolute scale, not a zoomed data window.
     ymin = scale.fn(0); ymax = scale.fn(1);
@@ -479,7 +488,7 @@ function drawChart(series) {
     tx.setAttribute("class", "tick"); tx.setAttribute("x", m.l - 8);
     tx.setAttribute("y", y + 3); tx.setAttribute("text-anchor", "end");
     // Ticks are evenly spaced in transformed space but LABELED with the real value.
-    tx.textContent = fmtTick((SCALES[state.scale] || SCALES.linear).inv(t));
+    tx.textContent = fmtTick((SCALES[effectiveScale()] || SCALES.linear).inv(t));
     svg.appendChild(tx);
   }
   svg.appendChild(g);
