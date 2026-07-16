@@ -123,6 +123,7 @@
         <button data-metric="fight.won" data-group="act">Win by act</button>
         <button data-metric="fight.hp_lost" data-group="room">HP lost by room</button>
         <button data-metric="eval_fight.won" data-group="mode">Eval greedy vs sampled win</button>
+        <button data-metric="eval.exact_state_rate" data-group="none">Enc/dec accuracy</button>
       </div>
     </div>
     <div class="chartwrap">
@@ -232,7 +233,7 @@ async function rebuildMetricOptions() {
   msel.innerHTML = "";
   for (const name of sorted) {
     const o = document.createElement("option");
-    o.value = name; o.textContent = name;
+    o.value = name; o.textContent = metricLabel(name);
     msel.appendChild(o);
   }
   if (cur && metrics.has(cur)) msel.value = cur;
@@ -259,6 +260,74 @@ async function rebuildMetricOptions() {
   }
   if (gcur !== "none" && keys.has(gcur)) gsel.value = gcur;
   else { state.groupBy = "none"; gsel.value = "none"; }
+}
+
+// ---- metric display names -------------------------------------------------
+// Known metric names -> short human descriptions. Dropdown shows "Description (raw.name)";
+// unknown names fall back to the raw name so new metrics are never hidden.
+const METRIC_LABELS = {
+  // PPO trainers (ppo-scenario / ppo-tokens), per iteration
+  "train.win_rate": "Win rate per iteration (sampled policy)",
+  "train.hp_lost": "Average HP lost per fight",
+  "train.trunc_rate": "Truncated-fight rate",
+  "train.fights": "Fights finished per iteration",
+  "train.steps": "Decisions per iteration",
+  "train.flen": "Average decisions per fight",
+  "train.loss": "Total training loss",
+  "train.approx_kl": "PPO approx. KL (policy shift per update)",
+  "train.entropy": "Policy entropy (exploration level)",
+  "train.explained_var": "Value-function explained variance",
+  "train.ret_std": "Return std, raw pre-clip",
+  "train.val_std": "Value-prediction std",
+  "train.ret_mean": "Return mean, raw pre-clip",
+  "train.max_ratio": "Max PPO importance ratio",
+  "train.max_logit": "Max policy logit",
+  "train.shaping": "Dense-reward shaping coefficient",
+  "train.sps": "Environment steps per second",
+  "train.collect_s": "Rollout collection time (s)",
+  "train.update_s": "Model update time (s)",
+  // Per-fight events (group by act/room/character/regime/policy)
+  "fight.won": "Fight won (0/1; mean = win rate)",
+  "fight.hp_lost": "HP lost per fight",
+  "eval_fight.won": "Eval fight won (0/1; group by mode)",
+  "eval_fight.hp_lost": "Eval HP lost per fight (group by mode)",
+  // Fixed-seed eval aggregates
+  "eval.greedy.win": "Fixed-seed eval win rate (greedy/argmax)",
+  "eval.greedy.hp_lost": "Fixed-seed eval avg HP lost (greedy)",
+  "eval.greedy.endturn": "Fixed-seed eval EndTurn fraction (greedy)",
+  "eval.sampled.win": "Fixed-seed eval win rate (sampled)",
+  "eval.sampled.hp_lost": "Fixed-seed eval avg HP lost (sampled)",
+  "eval.sampled.endturn": "Fixed-seed eval EndTurn fraction (sampled)",
+  "bodyguard.pass": "Bodyguard-before-Unleash fixture pass (0/1)",
+  // Corpus collector
+  "collect.transitions_total": "Corpus transitions collected (running total)",
+  "collect.fights_total": "Corpus fights collected (running total)",
+  "collect.errors_total": "Collector env errors (running total)",
+  "collect.transitions_per_s": "Collection throughput (transitions/s)",
+  // World-model encoder/decoder (wm-encdec)
+  "train.loss_categorical": "Reconstruction loss: categorical fields",
+  "train.loss_numeric": "Reconstruction loss: numeric fields",
+  "train.loss_presence": "Reconstruction loss: slot presence",
+  "train.lr": "Learning rate",
+  "train.states_per_s": "Training states per second",
+  "eval.card_id_top1": "Decoder: card-identity top-1 accuracy",
+  "eval.card_zone_acc": "Decoder: card-zone accuracy",
+  "eval.power_id_top1": "Decoder: power-identity top-1 accuracy",
+  "eval.power_amount_mae": "Decoder: power-amount MAE (raw units)",
+  "eval.creature_hp_mae": "Decoder: creature-HP MAE (raw units)",
+  "eval.creature_block_mae": "Decoder: creature-block MAE (raw units)",
+  "eval.intent_damage_mae": "Decoder: intent-damage MAE (raw units)",
+  "eval.energy_acc": "Decoder: energy accuracy",
+  "eval.relic_set_f1": "Decoder: relic-set F1",
+  "eval.potion_set_f1": "Decoder: potion-set F1",
+  "eval.hand_size_acc": "Decoder: hand-size accuracy",
+  "eval.pile_size_acc": "Decoder: pile-size accuracy",
+  "eval.pending_choice_acc": "Decoder: pending-choice accuracy",
+  "eval.exact_state_rate": "Decoder: exact full-state reconstruction rate",
+};
+function metricLabel(name) {
+  const d = METRIC_LABELS[name];
+  return d ? d + " (" + name + ")" : name;
 }
 
 // ---- fetch + assemble series --------------------------------------------
@@ -301,7 +370,7 @@ async function redraw() {
   state.lastSeries = series;
 
   const totalPts = series.reduce((a, s) => a + s.points.length, 0);
-  status.textContent = state.metric + " · " + series.length + " series · " +
+  status.textContent = metricLabel(state.metric) + " · " + series.length + " series · " +
     totalPts + " points · bucket " + bucket + (state.paused ? " · PAUSED" : "");
   drawChart(series);
   drawLegend(series);
