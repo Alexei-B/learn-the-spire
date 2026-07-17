@@ -146,6 +146,13 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=384)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument("--beta2", type=float, default=0.999,
+                    help="AdamW beta2. The 0.999 default is the textbook late-collapse ingredient at "
+                         "sustained LR (stale second moments); 0.95-0.98 is transformer practice and "
+                         "raises the stable-LR ceiling.")
+    ap.add_argument("--loss-balance", default="term", choices=["term", "expert"],
+                    help="factored arch only: 'expert' gives every expert an equal gradient share "
+                         "(fixes relic/orb starvation under the per-term default).")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--buffer", type=int, default=16384, help="shuffle-buffer size (states)")
     ap.add_argument("--val-every", type=int, default=500)
@@ -243,7 +250,8 @@ def main() -> int:
                                simnorm_group=args.simnorm_group, cat_dim=args.cat_dim, n_mem=args.n_mem,
                                latent_mode=args.latent_mode, latent_k=args.latent_k,
                                num_head=args.num_head, relic_head=args.relic_head).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
+                            betas=(0.9, args.beta2))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
 
     def save_fn(path, **kw):
@@ -258,7 +266,8 @@ def main() -> int:
                                             expect_num_head=args.num_head,
                                             expect_relic_head=args.relic_head)
         model = model.to(device)
-        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
+                            betas=(0.9, args.beta2))
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
         if os.path.exists(args.ckpt + ".train"):
             ts = torch.load(args.ckpt + ".train", map_location=device)
@@ -282,7 +291,7 @@ def main() -> int:
     # Loss closure — factored sums the per-expert losses; mono uses the shared reconstruction loss.
     def loss_fn(batch_, out_):
         if factored:
-            return MF.compute_losses(batch_, out_, model)
+            return MF.compute_losses(batch_, out_, model, balance=args.loss_balance)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.

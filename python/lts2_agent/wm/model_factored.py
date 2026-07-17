@@ -118,13 +118,27 @@ def _masked_mean(per_slot: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 
 def compute_losses(batch: Dict[str, torch.Tensor],
                    outputs: Dict[str, Dict[str, torch.Tensor]],
-                   model: FactoredWorldModelAE) -> Dict[str, torch.Tensor]:
-    """The three reconstruction losses (categorical / numeric / presence) + their sum, summed over the
-    learned experts. Numerics are range-bin cross-entropy (per field, over present slots); the scalar
-    expert contributes nothing (exact by construction, no parameters)."""
+                   model: FactoredWorldModelAE,
+                   balance: str = "term") -> Dict[str, torch.Tensor]:
+    """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
+    range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
+    (exact by construction, no parameters).
+
+    ``balance`` controls gradient allocation across experts:
+    - ``"term"`` (legacy): every loss term weighs equally, so an expert's gradient share scales with
+      how many terms it owns — cards (~9 terms) drowned relics (1 term) in the first T3 run
+      (relics/orbs never learned).
+    - ``"expert"``: terms are meaned within each expert first, then experts are meaned — every
+      expert gets an equal gradient share regardless of term count.
+    """
     cat_terms: List[torch.Tensor] = []
     num_terms: List[torch.Tensor] = []
     pres_terms: List[torch.Tensor] = []
+    owner: Dict[int, str] = {}   # id(tensor) -> expert name, for expert-balanced grouping
+
+    def _tag(ename, lst, t):
+        owner[id(t)] = ename
+        lst.append(t)
 
     for ename, ex in model.experts.items():
         if ename == "relics":
@@ -136,13 +150,13 @@ def compute_losses(batch: Dict[str, torch.Tensor],
             tgt = torch.zeros_like(logits)
             b_sel, s_sel = torch.where(m)
             tgt[b_sel, idx[b_sel, s_sel].clamp(0, logits.shape[-1] - 1)] = 1.0
-            cat_terms.append(F.binary_cross_entropy_with_logits(logits, tgt))
+            _tag(ename, cat_terms, F.binary_cross_entropy_with_logits(logits, tgt))
             continue
         for t in ex.types:
             o = outputs[t.name]
             mask = batch[t.mask_key]
-            pres_terms.append(F.binary_cross_entropy_with_logits(o["presence"],
-                                                                 mask.to(o["presence"].dtype)))
+            _tag(ename, pres_terms, F.binary_cross_entropy_with_logits(
+                o["presence"], mask.to(o["presence"].dtype)))
             if t.cat_cols:
                 tgt_idx = batch[t.idx_key]
                 for c in range(len(t.cat_cols)):
@@ -150,7 +164,7 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                     ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
                                          tgt_idx[..., c].reshape(-1), reduction="none")
                     ce = ce.reshape(tgt_idx.shape[:-1])
-                    cat_terms.append(_masked_mean(ce, mask))
+                    _tag(ename, cat_terms, _masked_mean(ce, mask))
             if "num_bin_logits" in o:
                 head: E.RangeBinHeads = ex.heads[t.name]
                 tgt_bins = head.bin_targets(batch[t.num_key])            # [B, slots, W]
@@ -160,15 +174,25 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                                          tgt_bins[..., f].reshape(-1), reduction="none")
                     field_ce.append(ce.reshape(tgt_bins.shape[:-1]))
                 ce = torch.stack(field_ce, dim=0).mean(dim=0)           # [B, slots]
-                num_terms.append(_masked_mean(ce, mask))
+                _tag(ename, num_terms, _masked_mean(ce, mask))
             if t.has_kw:
                 bce = F.binary_cross_entropy_with_logits(o["kw"], batch["card_kw"],
                                                          reduction="none").mean(dim=-1)
-                cat_terms.append(_masked_mean(bce, mask))
+                _tag(ename, cat_terms, _masked_mean(bce, mask))
 
-    loss_cat = torch.stack(cat_terms).mean()
-    loss_num = torch.stack(num_terms).mean()
-    loss_pres = torch.stack(pres_terms).mean()
+    def _reduce(terms: List[torch.Tensor]) -> torch.Tensor:
+        if not terms:
+            return torch.zeros((), device=next(model.parameters()).device)
+        if balance == "expert":
+            by_expert: Dict[str, List[torch.Tensor]] = {}
+            for t in terms:
+                by_expert.setdefault(owner[id(t)], []).append(t)
+            return torch.stack([torch.stack(ts).mean() for ts in by_expert.values()]).mean()
+        return torch.stack(terms).mean()
+
+    loss_cat = _reduce(cat_terms)
+    loss_num = _reduce(num_terms)
+    loss_pres = _reduce(pres_terms)
     total = loss_cat + loss_num + loss_pres
     return {"loss": total, "loss_categorical": loss_cat, "loss_numeric": loss_num,
             "loss_presence": loss_pres}
