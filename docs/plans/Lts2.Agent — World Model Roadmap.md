@@ -1,6 +1,17 @@
 # Lts2.Agent — World-Model Roadmap (implementation backlog)
 
-Status: **M0–M2 done (CP1–CP3 approved). Next: M3 encoder/decoder.** CP3 verdict: PPO-on-tokens
+Status: **M0–M3 done (CP1–CP3 approved; CP4 package assembled, pending review).** M3 headline:
+the M4 start-gate is PASSED — gate-run best checkpoint (`wm_gate_v2.pt.best`, step 73.5k: tokens
+latent + tokenizer-v2 + twohot + lr 6e-4, plain cosine) reconstructs held-out states at
+`state_dist` 0.0297 = **action-SNR 5.74** (gate ≥4), card-id 0.992, zone/power-id/energy ≈1.0,
+HP MAE 0.96, first nonzero exact reconstructions (mech 0.0013). Legal actions derived from
+*decoded* states: exact-set 0.876 / F1 0.972 (true-state bound 0.998/0.999). Residual mismatch:
+creatures 35% / cards 35% / **relics 19%** (relic slots decode with duplicates — F1 0.905, the
+next structural target). Findings: gate-run-v1 collapsed at step 63k under sustained mid-LR on
+the stretched schedule (its step-51k best was lost to in-place checkpointing — best-val `.best`
+sidecar now prevents recurrence); LR ladder says 6e-4 is the ceiling (1e-3+ degrade smoothly);
+EMA at 0.999 was neutral-to-slightly-worse (run still improving at end). Corpus doubled to 2.0M
+transitions (corpus-v1b); combined 4M-state cache building. CP3 verdict below: PPO-on-tokens
 overlaps the baseline on the live dashboard comparison — parity confirms the tokenizer carries at
 least the hand-features' signal with zero feature engineering (the synergy payoff is expected from
 the supervised M3/M4 modules, not from PPO); the comparison run was stopped early at the product
