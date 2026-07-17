@@ -47,6 +47,20 @@ from . import catalog
 # ==================================================================================================
 
 # Bump whenever the token layout / vocab semantics change so stale artifacts reject loudly.
+# v4 / "v3.1" (2026-07): **representational well-posedness fix** (roadmap M3.5). A set encoder pools its
+# category permutation-invariantly, so a POSITION-SPECIFIC target that varies with input order but is not
+# carried in any per-token field is ill-posed (proven: permuted potion belts encode byte-identically while
+# their per-slot targets differ). The fix is per-expert by SEMANTICS:
+#   * potions — slot identity is decision-irrelevant (options key on potion id), so position is
+#     CANONICALIZED AWAY: the belt is LEFT-PACKED (non-empty potions first, sorted by catalog index, then
+#     index-0 empties), preserving belt SIZE. detokenize emits the same left-packed layout, so a rare
+#     non-left-packed raw belt (e.g. [empty, empty, X]) round-trips to its canonical [X, empty, empty].
+#   * orbs — position IS semantic (evoke order), so it is made VISIBLE: each orb token gains an explicit
+#     `slot` categorical (0..MAX_ORBS-1) the set encoder can represent.
+#   * creatures / relics — CANONICALIZED (sorted by content) so their per-slot targets are a function of
+#     the multiset, not the wire order (combatId already carries a creature's identity; a relic set is
+#     order-free). This removes the same trap the permutation well-posedness test guards against.
+# The card population rows were already content-sorted (well-posed) and are unchanged.
 # v3 (2026-07): **factored population rows** — the T3 "expert-per-category" redesign (roadmap M3.5).
 # `zone` leaves the card grouping key: one row per distinct card CONTENT (id + every dynamic field +
 # keywords), carrying a **count-per-zone vector** (`count_hand/draw/discard/exhaust/offered`) instead of
@@ -60,7 +74,7 @@ from . import catalog
 # a per-field decoder bins against); the tokenizer keeps symlog storage for cache/decoder compat.
 # v2 (2026-07): count-grouped card tokens WITH zone in the grouping key (one `count` per zone-scoped row).
 # v1: raw per-instance card tokens.
-TOKENIZER_VERSION = 3
+TOKENIZER_VERSION = 4
 
 _CARDS = catalog.load("cards")
 _POWERS = catalog.load("powers")
@@ -180,7 +194,10 @@ POWER_NUM = ["amount"]
 INTENT_IDX = ["type", "parent"]
 INTENT_NUM = ["hasDamage", "damage", "baseDamage", "hasHits", "hits"]
 
-ORB_IDX = ["orb"]
+# v4: `slot` is the orb's belt POSITION (0..MAX_ORBS-1). Orb order is semantic (evoke order) but the orb
+# expert is a permutation-invariant set encoder, so position must be an explicit per-token field for the
+# encoder to represent it (see the well-posedness note in the version header).
+ORB_IDX = ["orb", "slot"]
 ORB_NUM = ["passiveValue", "evokeValue"]
 
 RELIC_IDX = ["relicIndex"]
@@ -361,6 +378,15 @@ def _creature_canonical(kind: str, identity: int, cur: int, mx: int, block: int,
     }
 
 
+def _creature_sort_key(cr: Dict[str, Any]) -> Tuple:
+    """Canonical creature order key (v4): kind first (keeps player < osty < enemy), then combatId (a
+    creature's stable identity) and the scalar fields as a deterministic tiebreak. Powers/intents are
+    excluded — they are sorted within a creature and follow it via the parent-slot flatten in
+    :func:`tokenize`."""
+    return (cr["kind"], cr["combatId"], cr["identity"], cr["currentHp"], cr["maxHp"],
+            cr["block"], cr["active"])
+
+
 def _players(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     return state.get("players") or []
 
@@ -427,20 +453,38 @@ def _canonical_from_state(state: Dict[str, Any]) -> Dict[str, Any]:
                 "osty", 0, int(osty.get("currentHp") or 0), int(osty.get("maxHp") or 0),
                 int(osty.get("block") or 0), 1 if osty.get("isAlive") else 0, 0,
                 osty.get("powers") or [], []))
+        # Orbs carry an explicit `slot` (belt position) so the permutation-invariant orb expert can
+        # represent the semantic evoke order (v4). Slot is the running index across the belt.
         for orb in (cs.get("orbs") or []):
-            orbs.append({"orb": _orb(orb.get("orbId")),
+            orbs.append({"orb": _orb(orb.get("orbId")), "slot": len(orbs),
                          "passiveValue": _q(orb.get("passiveValue")),
                          "evokeValue": _q(orb.get("evokeValue"))})
         for rid in (pl.get("relics") or []):
             relics.append(_RELICS.index_of(rid))
-        for slot in (pl.get("potions") or []):
-            potions.append(_POTIONS.index_of(slot))
+        # Potions: LEFT-PACK the belt (v4) — non-empty potions first (sorted by catalog index for a
+        # deterministic canonical order), then the index-0 empty slots, preserving the belt SIZE. Slot
+        # identity is decision-irrelevant (options key on potion id), so canonicalizing position away
+        # makes the per-slot target a function of the belt MULTISET, not its wire order.
+        belt = [_POTIONS.index_of(slot) for slot in (pl.get("potions") or [])]
+        n_empty = sum(1 for pid in belt if pid == 0)
+        potions.extend(sorted(pid for pid in belt if pid != 0))
+        potions.extend([0] * n_empty)
     for enemy in (combat.get("enemies") or []):
         creatures.append(_creature_canonical(
             "enemy", _mon(enemy.get("monsterId")), int(enemy.get("currentHp") or 0),
             int(enemy.get("maxHp") or 0), int(enemy.get("block") or 0),
             1 if enemy.get("isHittable") else 0, int(enemy.get("combatId") or 0),
             enemy.get("powers") or [], enemy.get("intents") or []))
+
+    # Canonicalize the creature order (v4): sort by a content key (kind keeps player<osty<enemy grouping;
+    # combatId + the scalar fields make it deterministic). The set encoder pools creatures permutation-
+    # invariantly and the decoder reconstructs per fixed slot, so a wire-order-dependent slot target is
+    # ill-posed; sorting makes slot a function of content. combatId already carries a creature's identity,
+    # so its order is not independently semantic. Powers/intents flatten to parent = list index in
+    # `tokenize`, so their creature association follows this order automatically.
+    creatures.sort(key=_creature_sort_key)
+    # Relics are an order-free set (uniqueness is a game rule): sort so the per-slot target is canonical.
+    relics.sort()
 
     return {"global": g, "pending": pending, "cards": cards, "creatures": creatures,
             "orbs": orbs, "relics": relics, "potions": potions}
@@ -560,7 +604,7 @@ def tokenize(state: Dict[str, Any], *, strict: bool = True) -> Dict[str, np.ndar
     orb_num = np.zeros((MAX_ORBS, len(ORB_NUM)), dtype=np.float32)
     orb_mask = np.zeros(MAX_ORBS, dtype=bool)
     for i, orb in enumerate(orbs[:MAX_ORBS]):
-        orb_idx[i] = [orb["orb"]]
+        orb_idx[i] = [orb["orb"], min(orb["slot"], MAX_ORBS - 1)]
         orb_num[i] = [symlog(orb["passiveValue"]), symlog(orb["evokeValue"])]
         orb_mask[i] = True
     out["orb_idx"], out["orb_num"], out["orb_mask"] = orb_idx, orb_num, orb_mask
@@ -687,8 +731,8 @@ def detokenize(tok: Dict[str, np.ndarray]) -> Dict[str, Any]:
     oi, on, om = tok["orb_idx"], tok["orb_num"], tok["orb_mask"]
     for i in range(len(om)):
         if om[i]:
-            orbs.append({"orb": int(oi[i, 0]), "passiveValue": _int(on[i, 0]),
-                         "evokeValue": _int(on[i, 1])})
+            orbs.append({"orb": int(oi[i, 0]), "slot": int(oi[i, 1]),
+                         "passiveValue": _int(on[i, 0]), "evokeValue": _int(on[i, 1])})
 
     relics = [int(tok["relic_idx"][i, 0]) for i in range(len(tok["relic_mask"]))
               if tok["relic_mask"][i]]

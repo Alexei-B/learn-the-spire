@@ -130,16 +130,55 @@ def test_coverage_no_lost_fields():
 
 
 def test_null_potion_slot_round_trips():
+    # v4: the belt LEFT-PACKS — a rare non-left-packed raw belt [empty, ATTACK, empty] canonicalizes to
+    # [ATTACK, empty, empty], preserving belt SIZE (3 slots). Slot identity is decision-irrelevant.
     st = _state(potions=[None, "ATTACK_POTION", None])
     got = tokens.detokenize(tokens.tokenize(st))
-    # slot order preserved, empty slots -> index 0, the real potion -> its catalog index.
-    assert got["potions"][0] == 0 and got["potions"][2] == 0
-    assert got["potions"][1] == catalog.load("potions").index_of("ATTACK_POTION")
+    assert len(got["potions"]) == 3            # belt size preserved
+    assert got["potions"][0] == catalog.load("potions").index_of("ATTACK_POTION")
+    assert got["potions"][1] == 0 and got["potions"][2] == 0   # empties trail
+
+
+def test_potion_belt_is_left_pack_canonical_over_permutations():
+    # THE potions well-posedness property: every wire permutation of the same belt multiset tokenizes to
+    # ONE canonical (left-packed, id-sorted) potion array — byte-identical tokens for equal multisets.
+    belt = ["ATTACK_POTION", None, "BLOCK_POTION", None]
+    base = tokens.tokenize(_state(potions=list(belt)))
+    for seed in range(6):
+        perm = list(belt)
+        random.Random(seed).shuffle(perm)
+        t = tokens.tokenize(_state(potions=perm))
+        assert np.array_equal(base["potion_idx"], t["potion_idx"]), seed
+        assert np.array_equal(base["potion_mask"], t["potion_mask"]), seed
+    # Non-empty potions come first, sorted by catalog index; empties (id 0) trail; size preserved.
+    got = tokens.detokenize(base)
+    ids = got["potions"]
+    assert len(ids) == 4
+    nonempty = [x for x in ids if x != 0]
+    assert nonempty == sorted(nonempty) and ids[len(nonempty):] == [0] * (4 - len(nonempty))
+
+
+def test_orb_tokens_carry_explicit_slot_position():
+    # v4: orbs gain a `slot` categorical (belt position) so the permutation-invariant orb expert can
+    # represent evoke order. Present orb i has slot == i, and the round-trip preserves it exactly.
+    st = _state(orbs=[{"orbId": "Lightning", "passiveValue": 3, "evokeValue": 8},
+                      {"orbId": "Frost", "passiveValue": 2, "evokeValue": 5},
+                      {"orbId": "Dark", "passiveValue": 6, "evokeValue": 12}])
+    tok = tokens.tokenize(st)
+    slot_col = tokens.ORB_IDX.index("slot")
+    assert "slot" in tokens.ORB_IDX
+    present = int(tok["orb_mask"].sum())
+    assert present == 3
+    assert list(tok["orb_idx"][:present, slot_col]) == [0, 1, 2]
+    ok, diff = tokens.round_trip(st)
+    assert ok, "orb round-trip mismatch at " + str(diff)
+    got = tokens.detokenize(tok)
+    assert [o["slot"] for o in got["orbs"]] == [0, 1, 2]
 
 
 def test_version_and_signature_stable():
     assert isinstance(tokens.TOKENIZER_VERSION, int)
-    assert tokens.TOKENIZER_VERSION == 3  # v3 = factored population rows (zone-count vector)
+    assert tokens.TOKENIZER_VERSION == 4  # v4 = well-posedness fix (left-packed potions, orb slot column)
     sig = tokens.tokenizer_signature()
     assert sig == tokens.tokenizer_signature()
     assert sig.startswith("tok-v" + str(tokens.TOKENIZER_VERSION))

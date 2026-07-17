@@ -80,8 +80,10 @@ TYPES: List[TypeSpec] = [
              [("type", _enum_size(tokens.INTENT_TYPES)),
               ("parent", tokens.MAX_CREATURES)],
              len(tokens.INTENT_NUM), tokens.MAX_INTENTS, "", False),
+    # v4: `slot` (orb belt position) is an explicit categorical over MAX_ORBS so the permutation-invariant
+    # orb expert can represent the semantic evoke order (ill-posed otherwise — see tokens.py version note).
     TypeSpec("orb", "orb_idx", "orb_num", "orb_mask",
-             [("orb", tokens.ORB_VOCAB)],
+             [("orb", tokens.ORB_VOCAB), ("slot", tokens.MAX_ORBS)],
              len(tokens.ORB_NUM), tokens.MAX_ORBS, "", False),
     TypeSpec("relic", "relic_idx", "", "relic_mask",
              [("relicIndex", _RELICS_N)], 0, tokens.MAX_RELICS, "relics", False),

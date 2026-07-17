@@ -45,13 +45,18 @@ METRIC_NAMES = [
 # Median fraction of token-fields changed by ONE real action (state -> nextState, the same
 # _state_dist metric). Re-measure with `python -m lts2_agent.wm.footprint` if the tokenizer layout or
 # corpus changes materially (the field universe sets both the numerator and denominator).
+#   v4 (well-posedness fix: left-packed potions + orb slot column + canonical creatures/relics;
+#      data/corpus2 val, 2026-07-17, 3,000 transitions): PlayCard median 0.0403, EndTurn 0.2342,
+#      SelectCards 0.2814, UsePotion 0.0492, DiscardPotion 0.0041, overall median 0.1105. Adding the orb
+#      `slot` column widened the field universe slightly and canonicalization removed a few order-churn
+#      fields, nudging the overall median down from v3's 0.1224.
 #   v3 (factored population rows, zone-count vector, 2026-07-17, 3,000 val transitions): PlayCard
 #      median 0.0502, EndTurn 0.2432, SelectCards 0.2707, UsePotion 0.1166, DiscardPotion 0.0043,
 #      overall median 0.1224. A PlayCard now usually shifts counts between two zone columns of a single
 #      shared row (draw->discard) instead of moving a whole card token, so its footprint dropped sharply.
 #   v2 (count-grouped cards, zone in key, 3,000 val): PlayCard 0.1409, EndTurn 0.2684, overall 0.1704.
 #   v1 (per-instance card tokens): PlayCard 0.108, EndTurn 0.213, overall 0.1303.
-ACTION_FOOTPRINT = 0.1224
+ACTION_FOOTPRINT = 0.1105
 
 
 def _symexp_np(y: np.ndarray) -> np.ndarray:

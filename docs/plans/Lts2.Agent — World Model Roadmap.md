@@ -609,6 +609,69 @@ pretty-printer on random held-out states — do decoded states read as *the same
       the baseline). twohot's payoff is on the numeric-heavy experts (creature/card HP), not orbs' two small
       fields. The remaining floor at ~0.18 is orbs' presence-calibration + per-state capacity, the next lever.
 
+- [x] **3.9 Synthetic-space training for the finite experts** — _done (`wm/synth.py` per-expert generators;
+      `train_encdec --data real|synth|mixed:R`; seeded synthetic coverage-val emitted tagged
+      `{expert, val:"coverage"}` beside the real val; `tests/test_wm_synth.py` +18; README + dashboard
+      labels)._ **Product decision (owner):** a finite-space expert (potions / relics / orbs, and — as
+      coverage insurance — creatures / cards) is decoupled from game data and trained on **synthetic
+      uniform configurations generated mechanically in tokenizer-array space** — no cache/corpus once
+      decoupled. Rationale: the decoder is the predictor's API and must decode **any valid configuration**,
+      not just the game-frequent ones; uniform coverage kills the rare-tail floors game-frequency training
+      leaves (measured: potions capped at `expert_exact` **0.995** by ~3 rare belt configs — non-left-packed
+      belts, empty-slot interleavings), replaces `--focus-present`, and fixes relic frequency imbalance.
+      - **Generators** (`wm/synth.py`, per expert, uniformly-with-design, seeded): every array convention
+        preserved exactly — left-packed presence + zeroed padding; **potion index-0 = empty belt slot at any
+        position** (non-left-packed + fully-empty belts); **relic ids distinct** (uniqueness = game rule);
+        catalog/enum/hashed id ranges; **symlog storage** inside the measured `spec.NUMERIC_RANGES` (reusing
+        the tokenizer's encoding so the training target recovers the exact integer). Creatures fold
+        powers/intents with **valid parent refs**; cards keep a **game-shaped population structure** (row
+        count + per-zone count vector from measured marginals) with uniform ids/dynamic-numerics.
+      - **Trainer**: `--data real` (default) | `synth` (generator batches, no corpus) | `mixed:R` (fraction
+        R synthetic per batch, 1−R real from the cache). Factored **solo** only. **Val always runs both
+        yardsticks**: the real fixed val (deployment) AND a fixed seeded 2000-config synthetic **coverage
+        val**, the latter emitted a second time tagged `{expert, val:"coverage"}`.
+      - **Probes** (6k steps, batch 512, seed 0, corpus_tok_v3, `--num-targets twohot --loss-balance
+        expert --fac-relic-head slots`; real runs add `--focus-present 0.9`). `expert_exact` ↑ on the real
+        val (deployment) and the synthetic coverage val:
+        <!-- PROBE_TABLE -->
+      - **Verdicts:** <!-- VERDICTS -->
+
+- [x] **3.10 Representational well-posedness — tokenizer v4 (`TOKENIZER_VERSION = 4`, "v3.1")** — _done
+      (`tokens.py` + `wm/spec.py` + `wm/synth.py`; `tests/test_tokens_wellposed.py` new + updated
+      potion/orb tokenize tests; README + this amendment)._ **Measured diagnosis:** each per-category
+      expert is a **permutation-invariant set encoder**, so a per-slot target that varies with input order
+      but is carried in **no per-token field** is ill-posed — the encoder maps every permutation of a
+      multiset to the same latent while the targets differ. Proven cleanly: permuted potion belts encoded
+      **byte-identically** while their per-slot targets differed, and a slice-width A/B (128 vs 256) moved
+      the potions `expert_exact` **not at all** (pinned 0.458/0.459); real data masked it only because game
+      belts arrive canonically packed. The fix is per-expert **by semantics**:
+      - **Potions — canonicalize position away (left-pack).** Slot identity is decision-irrelevant (options
+        key on potion id), so the belt is emitted **non-empty first (sorted by catalog index), then index-0
+        empties**, preserving belt SIZE. `detokenize` emits the same layout, so a rare non-left-packed raw
+        belt (`[empty, empty, STRENGTH]`) round-trips to its canonical `[STRENGTH, empty, empty]`. The
+        canonical-dict `potions` list ORDER therefore changes to the left-packed form — an accepted
+        canonicalization (id-based consumers `statefmt`/`legal_actions`/corpus are unaffected; every such
+        test still passes). Measured in `data/corpus2`: **82** rare non-left-packed raw belts now
+        canonicalize; potion-belt tokens are **20000/20000 permutation-identical**.
+      - **Orbs — position is semantic (evoke order): add a positional categorical.** Each orb token gains a
+        `slot` column (0..MAX_ORBS−1) the set encoder can represent; synth keeps the learnable positions
+        (left-packed slot == index). **3762** orb-bearing player-states in `data/corpus2` exercise it.
+      - **Creatures / relics — canonicalized (sorted by content).** Audit finding: creatures were emitted in
+        WIRE order (player, osty, enemies-as-listed) and the set encoder cannot see slot position, while the
+        decoder reconstructs per fixed slot and powers/intents join by parent-slot index — the SAME trap for
+        multi-enemy fights. combatId already carries a creature's identity, so order is not independently
+        semantic → sort by `(kind, combatId, identity, hp, maxHp, block, active)` (kind keeps
+        player<osty<enemy; parents follow the sort automatically via the tokenize flatten). Relics are an
+        order-free set → sorted (also aligns the target with the set-head's sorted decode). **Cards were
+        already content-sorted (well-posed) and are unchanged** — confirmed by the permutation test.
+      - **Well-posedness suite** (`test_tokens_wellposed.py`): for **every** variable token type, assert it
+        is EITHER canonical-order-invariant to wire permutations (cards/creatures/powers/intents/relics/
+        potions) OR carries an explicit slot-index column (orbs). The regression guard.
+      - **Cache/footprint:** rebuilt into `data/corpus_tok_v31` (v4 signature invalidates v3 loudly);
+        re-measured `ACTION_FOOTPRINT` on `data/corpus2` → **0.1105** (v3 was 0.1224). Round-trip stays
+        exact (8000/8000 real corpus2 states).
+      - **Canary probes** (6k steps, batch 512, val-every 50, `data/corpus_tok_v31`): <!-- WELLPOSED_PROBES -->
+
 ### M4 — Predictor (design P3) — the heart, and the main research risk
 
 - [ ] **4.1 Afterstate step**: K-step unrolled training with latent-consistency loss + SimNorm,

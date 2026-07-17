@@ -360,12 +360,27 @@ python -m lts2_agent.tokens --check python/data/corpus            # add --limit 
   **per-zone count vector** `count_{hand,draw,discard,exhaust,offered}` instead of a zone id — see the v3
   note below); one **creature** token per
   player/Osty/enemy (hp/maxHp/block/active + identity); **power** tokens (power-catalog index + amount,
-  parented to a creature); **intent** tokens (type/damage/hits, parented to an enemy); **orb**, **relic**
-  (relic-catalog index), **potion** (potion-catalog index, per belt slot incl. empty), and a **pending-
+  parented to a creature); **intent** tokens (type/damage/hits, parented to an enemy); **orb** (orb id +
+  an explicit **`slot`** belt-position column, v4), **relic** (relic-catalog index), **potion** (potion-
+  catalog index, per belt slot incl. empty — the belt is **left-packed/canonical**, v4), and a **pending-
   choice** token (min/max select + upgrade flag). Fixed-shape padded arrays + boolean masks batch cleanly.
 - **The draw pile (and every card zone) is an unordered MULTISET.** Card population rows are sorted by
   their full content tuple, so the wire's shuffle order can *never* leak. Two shuffles of the same pile
   produce byte-identical tokens (`test_tokens.test_draw_pile_is_unordered_multiset`).
+- **Representational well-posedness (v4).** Each per-category expert is a **permutation-invariant set
+  encoder**, so a per-slot target that varies with wire order but is carried in no per-token field is
+  *ill-posed* (proven: permuted potion belts encoded byte-identically while their targets differed —
+  `expert_exact` pinned near 0.46). The fix is per-type by semantics: **potions** left-pack (non-empty
+  first, sorted by catalog id, then index-0 empties, belt size preserved — position is decision-
+  irrelevant); **orbs** gain an explicit `slot` column (evoke order IS semantic, so it is made visible to
+  the encoder); **creatures/relics** are content-sorted (combatId already carries a creature's identity; a
+  relic set is order-free). `tests/test_tokens_wellposed.py` asserts, for **every** variable token type,
+  that it is either canonical-order-invariant to wire permutations OR carries an explicit slot-index
+  column — the regression guard against reintroducing the trap.
+- **`TOKENIZER_VERSION = 4` — representational well-posedness (left-packed potions · orb `slot` column ·
+  canonical creatures/relics).** See the well-posedness bullet above; the v4 signature invalidates v3
+  caches/checkpoints loudly, so rebuild the cache into `data/corpus_tok_v31`. The card population rows
+  (below) are unchanged from v3.
 - **`TOKENIZER_VERSION = 3` — factored population rows (the T3 "expert-per-category" data layer).** Zone
   leaves the card grouping key: there is **one row per distinct card CONTENT** (catalog id + every live
   dynamic field + keywords), carrying a **per-zone count vector** `count_{hand,draw,discard,exhaust,
@@ -547,10 +562,10 @@ forward+backward itself caps this box at **~470 states/s** (fp32, no flash-atten
 build), i.e. ~11-12 h for a 50k×384 run. **Rebuild the cache whenever the corpus changes or the
 tokenizer/catalog signature bumps** (`TOKENIZER_VERSION` or any catalog); it is gitignored
 (`python/data/corpus_tok/`). Build into a **new** dir on a version bump rather than overwriting the old
-one — e.g. **tokenizer v3** (factored population rows) needs
-`python -m lts2_agent.wm.cache build --corpus data/corpus2 --out data/corpus_tok_v3 --workers 8`
-(then `train_encdec --cache data/corpus_tok_v3`). The old v1/v2 caches stay intact and reject
-loudly if a v3 run points at one.
+one — e.g. **tokenizer v4** (well-posedness fix) needs
+`python -m lts2_agent.wm.cache build --corpus data/corpus2 --out data/corpus_tok_v31 --workers 12`
+(then `train_encdec --cache data/corpus_tok_v31`). The old v1/v2/v3 caches stay intact and reject
+loudly if a v4 run points at one.
 
 Metrics land as a `kind="wm-encdec"` run under `checkpoints/runs/`. **Per train step-window**
 (phase=`train`): `train.loss`, `train.loss_categorical`, `train.loss_numeric`, `train.loss_presence`,
@@ -570,10 +585,9 @@ decoder can learn it, but the slot-assignment ambiguity makes these a conservati
 the decoder can still resolve. The footprint is measured in `state_dist` token-field units, which the
 tokenizer's field universe defines, so it is **re-measured per tokenizer version** (cross-tokenizer
 comparisons use `action_snr`, not raw `state_dist`): `python -m lts2_agent.wm.footprint --corpus
-data/corpus --n 3000` prints per-kind medians and the constant to set. Current `ACTION_FOOTPRINT = 0.1224`
-(tokenizer v3; v2 was 0.1704, v1 0.1303 — v3's per-zone count vector means a PlayCard usually just shifts
-counts between two columns of one shared row instead of moving a whole card token, so its footprint fell
-sharply: PlayCard median 0.050).
+data/corpus2 --n 3000` prints per-kind medians and the constant to set. Current `ACTION_FOOTPRINT = 0.1105`
+(tokenizer v4, data/corpus2; v3 was 0.1224, v2 0.1704, v1 0.1303 — v4's orb `slot` column + canonical
+creatures/relics nudged the overall median down slightly from v3; PlayCard median 0.040).
 
 ### Factored expert autoencoder (`--arch factored`, roadmap M3.5)
 
@@ -672,6 +686,41 @@ problem than cards):
   states/s, so the batch-384 default gives needlessly noisy gradients. `--batch` is respected as-is; the
   probes below use **1536** for the small experts (well under the 3090's VRAM), with LR scaled ~√(batch)
   (`3e-4 → 6e-4` at 4× batch — √-scaling is steadier than linear at this ratio).
+
+**Synthetic-space training (`--data`, roadmap M3.5).** A finite-space expert is **decoupled from game
+data** and trained on **synthetic uniform configurations generated mechanically in tokenizer-array space**
+(`wm/synth.py`). Rationale: the decoder is the predictor's API and must decode **any valid configuration**,
+not only the game-frequent ones. Uniform coverage kills the rare-tail floors that game-frequency training
+leaves behind — measured: **potions capped at `expert_exact` 0.995** by ~3 rare belt configs
+(non-left-packed belts, empty-slot interleavings), and relics starved by frequency imbalance. It also
+replaces `--focus-present` (the generator sets presence by design) and needs **no cache or corpus** once an
+expert is decoupled.
+
+- **`--data real`** (default) — the pre-tokenized corpus cache (the deployment distribution).
+- **`--data synth`** — 100 % synthetic batches. Each generator samples that expert's category
+  uniformly-with-design over its array space, respecting every convention exactly: left-packed presence,
+  zeroed padding, **potion index-0 = empty belt slot at any position** (non-left-packed + fully-empty belts
+  included), **relic ids distinct** (uniqueness is a game rule), catalog/enum/hashed id ranges, and
+  **symlog storage** inside the measured `spec.NUMERIC_RANGES` (reusing the tokenizer's encoding, so the
+  training target recovers the exact integer). Cards keep a **game-shaped population structure** (row count
+  + per-zone count vector sampled from measured marginals) with uniform ids/dynamic-numerics — coverage
+  insurance for the largest slice, not the primary signal.
+- **`--data mixed:R`** — a fraction `R` synthetic per batch, `1−R` real (e.g. `mixed:0.5`, `mixed:0.25`).
+  The real-heavy mixes are the recommended default for **cards** (game decks are the structured workload
+  the card slice is sized for; uniform populations are a harder super-problem).
+
+`--data` applies to factored **solo** runs only. **Validation always runs both yardsticks**: the standard
+real-data fixed val (the deployment yardstick, emitted as today) **and** a fixed, seeded 2000-config
+**synthetic coverage val** — the latter emitted a second time tagged `{"expert": …, "val": "coverage"}` so
+the dashboard overlays the two (group by `val`). So a `--data synth` run is still scored on real game states
+every val, and a `--data real` run is still scored on uniform coverage.
+
+```sh
+# Potions on pure synthetic space — clears the 0.995 rare-belt coverage floor, no cache needed for training.
+python -m lts2_agent.train_encdec --arch factored --train-experts potions --data synth \
+    --val-experts trained-only --cache data/corpus_tok_v3 --corpus data/corpus2 --steps 6000 --batch 512 \
+    --ckpt checkpoints/potions_synth.pt --run-label potions-synth
+```
 
 **Overfit-one-batch gate** — `python -m lts2_agent.wm.overfit --expert all` trains each expert alone on a
 single fixed (present-heavy) batch and reports the step at which its `expert_dist` drops below `0.01`.
