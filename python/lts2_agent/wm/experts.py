@@ -387,6 +387,12 @@ class RelicExpert(nn.Module):
                                                batch_first=True, norm_first=True, activation="gelu")
         self.dec_trunk = nn.TransformerDecoder(dec_layer, dec_layers)
         self.set_head = nn.Linear(d_model, self.tspec.cat_cols[0][1])
+        # Cardinality as its own small classification (0..max_slots). Decouples "how many relics"
+        # from the membership sigmoids, whose calibration pos_weight deliberately distorts —
+        # k = round(sum sigmoid) exploded once pos_weight inflated the probabilities (measured:
+        # relic dist ~0.99, F1 falling, in wm-t3-v2). Membership becomes calibration-free
+        # top-k-by-logit; pos_weight now serves ranking only.
+        self.count_head = nn.Linear(d_model, self.tspec.max_slots + 1)
 
     def encode(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         B = batch["relic_idx"].shape[0]
@@ -408,4 +414,6 @@ class RelicExpert(nn.Module):
         mem = self.mem_norm(self.from_slice(z).reshape(B, self.n_mem, self.d_model))
         q = self.slot_queries.unsqueeze(0).expand(B, -1, -1)
         h = self.dec_trunk(q, mem)
-        return {"relic": {"set_logits": self.set_head(h.mean(dim=1))}}
+        pooled = h.mean(dim=1)
+        return {"relic": {"set_logits": self.set_head(pooled),
+                          "count_logits": self.count_head(pooled)}}

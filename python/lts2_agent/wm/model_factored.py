@@ -120,7 +120,7 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                    outputs: Dict[str, Dict[str, torch.Tensor]],
                    model: FactoredWorldModelAE,
                    balance: str = "term",
-                   relic_pos_weight: float = 30.0) -> Dict[str, torch.Tensor]:
+                   relic_pos_weight: float = 5.0) -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
     range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
     (exact by construction, no parameters).
@@ -158,6 +158,9 @@ def compute_losses(batch: Dict[str, torch.Tensor],
             pw = torch.full((), float(relic_pos_weight), device=logits.device)
             _tag(ename, cat_terms,
                  F.binary_cross_entropy_with_logits(logits, tgt, pos_weight=pw))
+            if "count_logits" in o:
+                true_k = m.sum(dim=1).long().clamp(0, o["count_logits"].shape[-1] - 1)
+                _tag(ename, cat_terms, F.cross_entropy(o["count_logits"], true_k))
             continue
         for t in ex.types:
             o = outputs[t.name]

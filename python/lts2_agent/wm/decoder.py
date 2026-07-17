@@ -240,7 +240,12 @@ def _decode_set_head(o: Dict[str, torch.Tensor], max_slots: int) -> "tuple[np.nd
     B, vocab = probs.shape
     idx = np.zeros((B, max_slots), dtype=np.int32)
     mask = np.zeros((B, max_slots), dtype=bool)
-    card = probs.sum(axis=1)
+    if "count_logits" in o:
+        # Dedicated cardinality head: k by argmax, immune to membership-probability calibration
+        # (pos_weight inflates sigmoids and would explode round(sum p)).
+        card = o["count_logits"].detach().argmax(dim=-1).cpu().numpy().astype(np.float64)
+    else:
+        card = probs.sum(axis=1)
     for b in range(B):
         k = int(np.clip(round(float(card[b])), 0, max_slots))
         if k <= 0:
