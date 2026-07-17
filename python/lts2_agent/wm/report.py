@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from collections import Counter
+
 import numpy as np
 import torch
 
@@ -29,7 +31,7 @@ METRIC_NAMES = [
     "creature_hp_mae", "creature_block_mae", "intent_damage_mae", "energy_acc",
     "relic_set_f1", "potion_set_f1", "hand_size_acc", "pile_size_acc",
     "pending_choice_acc", "exact_state_rate", "exact_mech_rate", "state_dist", "field_acc",
-    "action_snr",
+    "action_snr", "canon_dist",
 ]
 
 
@@ -101,6 +103,57 @@ def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray]) -> Tuple[f
     return num, max(den, 1.0)
 
 
+def _canon_leaf_count(x: Any) -> int:
+    """Number of leaf fields in a canonical-dict fragment (dicts recurse; lists sum; scalars = 1)."""
+    if isinstance(x, dict):
+        return sum(_canon_leaf_count(v) for v in x.values())
+    if isinstance(x, (list, tuple)):
+        return sum(_canon_leaf_count(v) for v in x) if x else 0
+    return 1
+
+
+def _canon_dist(tc: Any, pc: Any) -> Tuple[float, float]:
+    """``(mismatched, total)`` leaf fields between two CANONICAL dicts — the tokenizer-version-
+    independent reconstruction distance (both decoders emit the same canonical schema, so this is
+    the cross-architecture comparator; ``state_dist`` is tokenizer-array-space and is not).
+
+    Dicts recurse over the union of keys (a missing side counts all its leaves wrong). Lists are
+    matched as content multisets: identical elements pair up, and each unpaired element counts all
+    its leaves wrong (against the larger side's leaf total). Scalars compare by equality.
+    """
+    if isinstance(tc, dict) and isinstance(pc, dict):
+        num = den = 0.0
+        for k in set(tc) | set(pc):
+            if k in tc and k in pc:
+                n, d = _canon_dist(tc[k], pc[k])
+            else:
+                d = float(_canon_leaf_count(tc.get(k, pc.get(k))))
+                n = d
+            num += n
+            den += d
+        return num, den
+    if isinstance(tc, (list, tuple)) and isinstance(pc, (list, tuple)):
+        # Multiset match on serialized content; unpaired elements are fully wrong.
+        import json as _json
+        ta = Counter(_json.dumps(x, sort_keys=True, default=str) for x in tc)
+        pa = Counter(_json.dumps(x, sort_keys=True, default=str) for x in pc)
+        leaves_by_key: Dict[str, int] = {}
+        for x in list(tc) + list(pc):
+            key = _json.dumps(x, sort_keys=True, default=str)
+            leaves_by_key.setdefault(key, max(1, _canon_leaf_count(x)))
+        num = den = 0.0
+        for key in set(ta) | set(pa):
+            matched = min(ta.get(key, 0), pa.get(key, 0))
+            unpaired_t = ta.get(key, 0) - matched
+            unpaired_p = pa.get(key, 0) - matched
+            den += matched * leaves_by_key[key]
+            # Unpaired target elements are misses; unpaired predicted are spurious — both wrong.
+            num += (unpaired_t + unpaired_p) * leaves_by_key[key]
+            den += (unpaired_t + unpaired_p) * leaves_by_key[key]
+        return num, max(den, 1.0)
+    return (0.0, 1.0) if tc == pc else (1.0, 1.0)
+
+
 def _set_f1(pred: List[int], tgt: List[int]) -> float:
     ps, ts = set(pred), set(tgt)
     if not ps and not ts:
@@ -166,6 +219,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     pend_ok = np.zeros(B, np.float32); exact = np.zeros(B, np.float32)
     exact_mech = np.zeros(B, np.float32)
     dist_num = np.zeros(B, np.float32); dist_den = np.zeros(B, np.float32)
+    cd_num = np.zeros(B, np.float32); cd_den = np.zeros(B, np.float32)
     for b in range(B):
         dist_num[b], dist_den[b] = _state_dist(pred_arrays[b], tgt_arrays[b])
         pc = tokens.detokenize(pred_arrays[b])
@@ -180,6 +234,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
         pend_ok[b] = 1.0 if (pc["pending"] is None) == (tc["pending"] is None) else 0.0
         ok, _ = tokens._deep_diff("", tc, pc)
         exact[b] = 1.0 if ok else 0.0
+        cd_num[b], cd_den[b] = _canon_dist(tc, pc)
         # Mechanical exactness: strict minus the run-bookkeeping integers (score/gold), which are
         # high-entropy, combat-irrelevant, and by far the hardest fields to regress to the exact
         # integer — they gate the strict metric long after the fight itself reconstructs perfectly.
@@ -201,6 +256,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     # The ascending complement: fraction of token-fields correctly decoded (1 - state_dist),
     # an accuracy so it pins to the 0..1 axis and suits the top-end display scales.
     pairs["field_acc"] = (dist_den - dist_num, dist_den)
+    pairs["canon_dist"] = (cd_num, cd_den)
     # Signal-to-noise for the M4 gate: how many times larger is a MEDIAN action's state-change
     # footprint than the decoder's reconstruction error, in the same token-field distance.
     # SNR 1 = reconstruction noise equals a whole action; the roadmap gate is >=~4 to start the

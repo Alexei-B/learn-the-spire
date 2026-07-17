@@ -336,6 +336,7 @@ const METRIC_LABELS = {
   "eval.exact_mech_rate": "Decoder: exact mechanical-state rate (strict minus score/gold)",
   "eval.field_acc": "Decoder: fields correctly decoded (1 − state distance)",
   "eval.action_snr": "Decoder: action signal-to-noise (median action footprint ÷ state distance; M4 gate ≥≈4)",
+  "eval.canon_dist": "Decoder: canonical-field error rate (tokenizer-version independent)",
 };
 function metricLabel(name) {
   const d = METRIC_LABELS[name];
