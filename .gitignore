@@ -38,3 +38,8 @@ python/lts2_agent/data/*
 python/data/corpus/
 # Pre-tokenized corpus cache (derived from the corpus by lts2_agent.wm.cache; large, regenerable)
 python/data/corpus_tok/
+
+# Data output
+*.jsonl
+*.gz
+*.npz
