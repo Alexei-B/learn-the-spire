@@ -295,6 +295,7 @@ def main() -> int:
     win_t0 = time.perf_counter()
     model.train()
     step = start_step
+    best_dist = float("inf")   # lowest val state_dist so far (drives the .best checkpoint)
     try:
         for step in range(start_step + 1, args.steps + 1):
             if args.halt_step and step > args.halt_step:
@@ -358,6 +359,15 @@ def main() -> int:
                             mw.emit("eval", step, f"eval.{name}", met[name], tags={"act": act})
                     for k in vloss:
                         mw.emit("eval", step, f"eval.{k}", vloss[k])
+                # Best-val checkpoint: the periodic checkpoint overwrites in place, so a late-run
+                # divergence used to destroy the best weights of the run (learned the hard way: the
+                # first gate run collapsed at step ~63k and took its step-51k best with it). Keep the
+                # lowest-val-state_dist model in a separate .best sidecar, always retrievable.
+                if args.ckpt and overall["state_dist"] < best_dist:
+                    best_dist = overall["state_dist"]
+                    M.save_checkpoint(args.ckpt + ".best", model, step=step, optimizer=None,
+                                      extra=dict(_ckpt_extra(), best_state_dist=best_dist),
+                                      ema_state=ema.state_dict() if ema is not None else None)
                 win_t0 = time.perf_counter()  # don't count val time against sps
 
             if args.ckpt and step % args.ckpt_every == 0:
