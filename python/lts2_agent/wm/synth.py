@@ -206,10 +206,15 @@ def _fill_potions(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) ->
         mask[b, :k] = True
 
 
+RELIC_MAX_SET = 10   # game states hold 1..8 relics (measured corpus max 8) + margin; sampling up to
+                     # the 24-slot PADDED cap made the synthetic task combinatorially harder than any
+                     # real state and misaligned real-val (slots-synth: F1 0.99 but real exact ~0.3).
+
+
 def _fill_relics(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
-    """Relic set: random subset size 0..MAX_RELICS of DISTINCT relic ids (uniqueness is a game rule).
-    Ids drawn 1..N-1 (a present relic slot is a real relic)."""
-    cap = tokens.MAX_RELICS
+    """Relic set: random subset size 0..RELIC_MAX_SET of DISTINCT relic ids (uniqueness is a game
+    rule). Ids drawn 1..N-1 (a present relic slot is a real relic)."""
+    cap = RELIC_MAX_SET
     n_relics = S.TYPE_BY_NAME["relic"].cat_cols[0][1]
     counts = rng.integers(0, cap + 1, size=B)
     idx = z["relic_idx"]
