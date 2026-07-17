@@ -366,7 +366,7 @@ def main() -> int:
                 if args.ckpt and overall["state_dist"] < best_dist:
                     best_dist = overall["state_dist"]
                     M.save_checkpoint(args.ckpt + ".best", model, step=step, optimizer=None,
-                                      extra=dict(_ckpt_extra(), best_state_dist=best_dist),
+                                      extra=dict(_ckpt_extra() or {}, best_state_dist=best_dist),
                                       ema_state=ema.state_dict() if ema is not None else None)
                 win_t0 = time.perf_counter()  # don't count val time against sps
 
