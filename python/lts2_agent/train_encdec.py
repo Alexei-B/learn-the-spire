@@ -150,6 +150,9 @@ def main() -> int:
                     help="AdamW beta2. The 0.999 default is the textbook late-collapse ingredient at "
                          "sustained LR (stale second moments); 0.95-0.98 is transformer practice and "
                          "raises the stable-LR ceiling.")
+    ap.add_argument("--relic-pos-weight", type=float, default=30.0,
+                    help="factored arch: pos_weight for the relic set-membership BCE (rare-positive "
+                         "rebalance; ~neg/pos ratio. 1.0 = off).")
     ap.add_argument("--loss-balance", default="term", choices=["term", "expert"],
                     help="factored arch only: 'expert' gives every expert an equal gradient share "
                          "(fixes relic/orb starvation under the per-term default).")
@@ -291,7 +294,8 @@ def main() -> int:
     # Loss closure — factored sums the per-expert losses; mono uses the shared reconstruction loss.
     def loss_fn(batch_, out_):
         if factored:
-            return MF.compute_losses(batch_, out_, model, balance=args.loss_balance)
+            return MF.compute_losses(batch_, out_, model, balance=args.loss_balance,
+                                      relic_pos_weight=args.relic_pos_weight)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.

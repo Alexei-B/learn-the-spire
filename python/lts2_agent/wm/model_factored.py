@@ -119,7 +119,8 @@ def _masked_mean(per_slot: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 def compute_losses(batch: Dict[str, torch.Tensor],
                    outputs: Dict[str, Dict[str, torch.Tensor]],
                    model: FactoredWorldModelAE,
-                   balance: str = "term") -> Dict[str, torch.Tensor]:
+                   balance: str = "term",
+                   relic_pos_weight: float = 30.0) -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
     range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
     (exact by construction, no parameters).
@@ -150,7 +151,13 @@ def compute_losses(batch: Dict[str, torch.Tensor],
             tgt = torch.zeros_like(logits)
             b_sel, s_sel = torch.where(m)
             tgt[b_sel, idx[b_sel, s_sel].clamp(0, logits.shape[-1] - 1)] = 1.0
-            _tag(ename, cat_terms, F.binary_cross_entropy_with_logits(logits, tgt))
+            # Rare-positive multi-label (about 5 of 298 ids present): unweighted BCE collapses
+            # toward predict-nothing (measured: relic F1 stuck ~0.58 while every other expert
+            # learned). pos_weight rebalances the positive-class gradient DIRECTION, which per-
+            # parameter Adam scale-invariance cannot recover on its own.
+            pw = torch.full((), float(relic_pos_weight), device=logits.device)
+            _tag(ename, cat_terms,
+                 F.binary_cross_entropy_with_logits(logits, tgt, pos_weight=pw))
             continue
         for t in ex.types:
             o = outputs[t.name]
