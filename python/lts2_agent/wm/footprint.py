@@ -7,8 +7,9 @@ by the decoder's per-field distance — so "how many actions' worth of change ca
 apart?" is a scale-free number.
 
 The footprint is a **function of the tokenizer's field universe**, so it must be re-measured whenever the
-tokenizer layout changes (e.g. v1 per-instance card tokens -> v2 count-grouped tokens: grouping removes
-duplicate card tokens and adds a `count` field, changing both the numerator and denominator of every
+tokenizer layout changes (e.g. v2 count-grouped tokens -> v3 factored population rows: zone leaves the
+grouping key and becomes a per-zone count vector, so a PlayCard mostly shifts counts between two columns
+of one row instead of moving a whole card token — changing both the numerator and denominator of every
 transition's field distance). This module streams a split, tokenizes both states of each transition under
 the CURRENT tokenizer, computes the per-transition footprint, and reports the median overall + per action
 kind, printing the constant to paste into :data:`report.ACTION_FOOTPRINT`.

@@ -224,7 +224,10 @@ class TokenActorCritic(nn.Module):
 
         cd = cat_dim
         # --- Card embedder (shared: state card tokens AND option cards) -------------------------------
-        card_sizes = [catalog.load("cards").size, _enum_size(tokens.ZONES),
+        # v3: `zone` is no longer a card categorical column (it moved into the per-zone count vector in
+        # CARD_NUM), so card_sizes tracks CARD_IDX = [cardIndex, type, rarity, targetType, enchant,
+        # afflict].
+        card_sizes = [catalog.load("cards").size,
                       _enum_size(tokens.CARD_TYPES), _enum_size(tokens.CARD_RARITIES),
                       _enum_size(tokens.TARGET_TYPES), tokens.ENCHANT_VOCAB, tokens.AFFLICT_VOCAB]
         self.card_cat = _MultiEmbed(card_sizes, cd)

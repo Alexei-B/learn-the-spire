@@ -164,12 +164,15 @@ def test_overfit_one_batch_decreases_loss():
     assert last < 0.5 * first, f"loss did not drop enough: {first:.3f} -> {last:.3f}"
 
 
-def test_card_spec_num_width_includes_count():
-    # v2: the card numeric block grew by the count column; the spec follows tokens.CARD_NUM
-    # mechanically, so the decoder's card num head widens automatically.
+def test_card_spec_num_width_includes_zone_counts():
+    # v3: the card numeric block carries the per-zone count vector (5 count_<zone> columns) and zone
+    # left the categorical block; the spec follows tokens.CARD_* mechanically, so the decoder heads
+    # widen/narrow automatically.
     card = S.TYPE_BY_NAME["card"]
     assert card.num_width == len(tokens.CARD_NUM)
-    assert "count" in tokens.CARD_NUM
+    assert tokens.ZONE_COUNT_FIELDS == ["count_" + z for z in tokens.ZONES]
+    assert all(f in tokens.CARD_NUM for f in tokens.ZONE_COUNT_FIELDS)
+    assert [c[0] for c in card.cat_cols] == tokens.CARD_IDX  # zone no longer a categorical column
     # The decoder emits a num vector of exactly that width for the card type.
     batch = _batch([_state()])
     model = _small_model()

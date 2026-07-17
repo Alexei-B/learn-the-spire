@@ -38,11 +38,13 @@ METRIC_NAMES = [
 # Median fraction of token-fields changed by ONE real action (state -> nextState, the same
 # _state_dist metric). Re-measure with `python -m lts2_agent.wm.footprint` if the tokenizer layout or
 # corpus changes materially (the field universe sets both the numerator and denominator).
-#   v2 (tokenizer count-grouped cards, 2026-07-16, 3,000 val transitions): PlayCard median 0.1409,
-#      EndTurn 0.2684, SelectCards 0.2343, overall median 0.1704. Grouping shrinks the card-field
-#      count, so each changed field is a larger share -> the footprint rose vs v1.
+#   v3 (factored population rows, zone-count vector, 2026-07-17, 3,000 val transitions): PlayCard
+#      median 0.0502, EndTurn 0.2432, SelectCards 0.2707, UsePotion 0.1166, DiscardPotion 0.0043,
+#      overall median 0.1224. A PlayCard now usually shifts counts between two zone columns of a single
+#      shared row (draw->discard) instead of moving a whole card token, so its footprint dropped sharply.
+#   v2 (count-grouped cards, zone in key, 3,000 val): PlayCard 0.1409, EndTurn 0.2684, overall 0.1704.
 #   v1 (per-instance card tokens): PlayCard 0.108, EndTurn 0.213, overall 0.1303.
-ACTION_FOOTPRINT = 0.1704
+ACTION_FOOTPRINT = 0.1224
 
 
 def _symexp_np(y: np.ndarray) -> np.ndarray:
@@ -196,8 +198,24 @@ def report_pairs(batch: Dict[str, torch.Tensor],
         err = (pred_raw - tgt_raw).abs() * mask.to(pred_raw.dtype)
         return err.sum(dim=1).cpu().numpy(), mask.sum(dim=1).float().cpu().numpy()
 
+    def card_zone_counts_acc() -> Tuple[np.ndarray, np.ndarray]:
+        """v3 card_zone_acc: fraction of present card population rows whose FULL per-zone count vector
+        (the five count_<zone> numeric columns, integer-rounded) is reconstructed exactly. Replaces the
+        v2 single categorical zone column — zone membership is now the count vector."""
+        t = S.TYPE_BY_NAME["card"]
+        mask = batch[t.mask_key]                                   # [B, slots]
+        cols = S.CARD_COUNT_COLS
+        pred = outputs["card"]["num"][..., cols]                  # [B, slots, 5]
+        tgt = batch[t.num_key][..., cols]
+        pred_i = torch.round(torch.sign(pred) * torch.expm1(pred.abs()))
+        tgt_i = torch.round(torch.sign(tgt) * torch.expm1(tgt.abs()))
+        match = (pred_i == tgt_i).all(dim=-1) & mask              # [B, slots]
+        correct = match.sum(dim=1).float().cpu().numpy()
+        den = mask.sum(dim=1).float().cpu().numpy()
+        return correct, den
+
     pairs["card_id_top1"] = slot_acc("card", 0)
-    pairs["card_zone_acc"] = slot_acc("card", S.CARD_ZONE_COL)
+    pairs["card_zone_acc"] = card_zone_counts_acc()
     pairs["power_id_top1"] = slot_acc("power", 0)
     pairs["power_amount_mae"] = slot_mae("power", S.POWER_AMOUNT_IDX)
     pairs["creature_hp_mae"] = slot_mae("creature", S.CREATURE_HP_IDX)

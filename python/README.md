@@ -353,33 +353,49 @@ python -m lts2_agent.tokens --check python/data/corpus            # add --limit 
 ```
 
 - **Token types** (each token carries a token-type id): a **global** token (phase/side/turn-phase +
-  act/floor/ascension/score/energy/stars/turn/gold/…); one **card** token per card in hand, draw, discard,
-  exhaust, and the offered cards of a pending choice (zone id + card-catalog index + the live `CardView`
-  dynamic fields: cost/costsX/starCost/damage/baseDamage/block/baseBlock/summon/upgraded/canPlay/
-  replayCount/enchant/affliction + a hashed multi-hot of `addedKeywords`); one **creature** token per
+  act/floor/ascension/score/energy/stars/turn/gold/…); one **card** population row per distinct card
+  CONTENT across hand/draw/discard/exhaust + the offered cards of a pending choice (card-catalog index +
+  the live `CardView` dynamic fields: cost/costsX/starCost/damage/baseDamage/block/baseBlock/summon/
+  upgraded/canPlay/replayCount/enchant/affliction + a hashed multi-hot of `addedKeywords`), carrying a
+  **per-zone count vector** `count_{hand,draw,discard,exhaust,offered}` instead of a zone id — see the v3
+  note below); one **creature** token per
   player/Osty/enemy (hp/maxHp/block/active + identity); **power** tokens (power-catalog index + amount,
   parented to a creature); **intent** tokens (type/damage/hits, parented to an enemy); **orb**, **relic**
   (relic-catalog index), **potion** (potion-catalog index, per belt slot incl. empty), and a **pending-
   choice** token (min/max select + upgrade flag). Fixed-shape padded arrays + boolean masks batch cleanly.
-- **The draw pile (and every card zone) is an unordered MULTISET.** Card tokens within a zone are sorted
-  by their full content tuple, so the wire's shuffle order can *never* leak. Two shuffles of the same pile
+- **The draw pile (and every card zone) is an unordered MULTISET.** Card population rows are sorted by
+  their full content tuple, so the wire's shuffle order can *never* leak. Two shuffles of the same pile
   produce byte-identical tokens (`test_tokens.test_draw_pile_is_unordered_multiset`).
-- **`TOKENIZER_VERSION = 2` — count-grouped card tokens.** Identical-content card instances within a zone
-  (e.g. 5× Strike in the draw pile) collapse to **one** card token carrying an integer `count` (symlog,
-  the trailing `CARD_NUM` column). Cards differing in any field — upgraded, enchanted, a different live
-  cost/damage preview — stay separate tokens (grouping is by the full content tuple, zone included).
-  `detokenize` expands each token back into `count` per-instance dicts, so the **canonical dict is
-  byte-identical to v1's** and every canonical-dict consumer (`statefmt`, `legal_actions`, the report
-  card) is untouched. Measured over the full 2.0M-state corpus: mean 14.1 instances → 10.9 grouped tokens
-  (1.30× shorter), grouped worst case 42 vs v1 instance max 82, so `MAX_CARDS` drops 200→64 — faster attention, fewer slots,
-  and it removes duplicate-permutation ambiguity from pile reconstruction (the decoder regresses "how many
-  Strikes" as one small integer). Round-trip/coverage contract is unchanged: 0 lost fields, 0 mismatches.
+- **`TOKENIZER_VERSION = 3` — factored population rows (the T3 "expert-per-category" data layer).** Zone
+  leaves the card grouping key: there is **one row per distinct card CONTENT** (catalog id + every live
+  dynamic field + keywords), carrying a **per-zone count vector** `count_{hand,draw,discard,exhaust,
+  offered}` (symlog, the trailing five `CARD_NUM` columns) in place of a zone id. A content that occupies
+  several piles is a single row whose counts spread across zones; a card whose live fields differ across
+  zones (a cost-reduced copy in hand vs its full-cost twin in draw) stays a *separate* row — divergence is
+  correct. Rationale: population membership becomes **structural** — a card moving hand→discard is the same
+  row with the count shifting between two columns, so the future predictor expresses zone transitions as
+  count arithmetic and creation/transform as rows appearing/disappearing. `detokenize` expands the count
+  vector back into per-instance-per-zone dicts, so the **canonical dict is byte-identical to v1/v2's** and
+  every canonical-dict consumer (`statefmt`, `legal_actions`, the report card) is untouched. Measured
+  (shard-strided 336k-state scan of `data/corpus`): mean 14.2 instances → 10.2 rows (1.39× shorter), v3
+  rows worst case 32 (v2 zone-scoped grouped max 42, v1 instance max 82); `MAX_CARDS` stays 64 (generous
+  slack). Round-trip/coverage contract unchanged: 0 lost fields, 0 mismatches. (v2 was count-grouped
+  tokens *with* zone in the key; v1 was raw per-instance tokens.)
+- **Per-field integer ranges — the v3 exactness contract.** Every numeric column carries a measured
+  `(lo, hi, resolution)` range in `wm/spec.py` (`NUMERIC_RANGES`), scanned from the corpus by `python -m
+  lts2_agent.wm.ranges` (footprint's streaming pattern) — e.g. energy 0..40, creature HP 0..1000 (the
+  `999999999` sentinel caps loud), gold 0..5000, per-zone counts 0..40. These are the exact per-field
+  domains a **future per-field decoder** bins against (`(hi−lo)//resolution+1` bins) instead of regressing
+  one shared symlog float. The tokenizer itself still **stores symlog** (cache/decoder compat), so the
+  integer round-trip stays exact via `round(symexp)` inside the ±`NUM_CLIP` clamp; the ranges are the
+  *decode* contract, and `spec.clamp_to_range` clamps any out-of-`[lo,hi]` value **loudly** (the documented
+  out-of-distribution signal).
 - **Numerics use symlog** (`sign(x)·log1p|x|`, DreamerV3-style) with a ±`NUM_CLIP` (1e5) clamp — bounded
   (no encoder blow-ups) and **exactly invertible** for integer game quantities, which is what makes the
   round-trip validator exact. The clamp only saturates the game's `999999999` "no maximum" select sentinel
   and any pathological scaling outlier. Every categorical is a **catalog index** (cards/powers/relics/
-  potions — exact inverse) or a small **fixed enum** (zones, token/intent/target/card types, phases —
-  enumerated from `GameState.cs`).
+  potions — exact inverse) or a small **fixed enum** (token/intent/target/card types, phases — enumerated
+  from `GameState.cs`).
 - **Catalogs** (`lts2_agent.catalog`, generalizing `card_catalog`): each of cards/powers/relics/potions
   gets a stable dense id→index (0 = none/unknown), a static multi-hot table (categorical one-hots ++ flags
   ++ tags/keywords/var-keys), and a content signature. Null-tolerant: on a fresh clone with no dump, falls
@@ -531,10 +547,10 @@ forward+backward itself caps this box at **~470 states/s** (fp32, no flash-atten
 build), i.e. ~11-12 h for a 50k×384 run. **Rebuild the cache whenever the corpus changes or the
 tokenizer/catalog signature bumps** (`TOKENIZER_VERSION` or any catalog); it is gitignored
 (`python/data/corpus_tok/`). Build into a **new** dir on a version bump rather than overwriting the old
-one — e.g. **tokenizer v2** (count-grouped card tokens) needs
-`python -m lts2_agent.wm.cache build --corpus data/corpus --out data/corpus_tok_v2 --workers 8`
-(then `train_encdec --cache data/corpus_tok_v2`). The old `data/corpus_tok` (v1) stays intact and rejects
-loudly if a v2 run points at it.
+one — e.g. **tokenizer v3** (factored population rows) needs
+`python -m lts2_agent.wm.cache build --corpus data/corpus2 --out data/corpus_tok_v3 --workers 8`
+(then `train_encdec --cache data/corpus_tok_v3`). The old v1/v2 caches stay intact and reject
+loudly if a v3 run points at one.
 
 Metrics land as a `kind="wm-encdec"` run under `checkpoints/runs/`. **Per train step-window**
 (phase=`train`): `train.loss`, `train.loss_categorical`, `train.loss_numeric`, `train.loss_presence`,
@@ -554,9 +570,10 @@ decoder can learn it, but the slot-assignment ambiguity makes these a conservati
 the decoder can still resolve. The footprint is measured in `state_dist` token-field units, which the
 tokenizer's field universe defines, so it is **re-measured per tokenizer version** (cross-tokenizer
 comparisons use `action_snr`, not raw `state_dist`): `python -m lts2_agent.wm.footprint --corpus
-data/corpus --n 3000` prints per-kind medians and the constant to set. Current `ACTION_FOOTPRINT = 0.1704`
-(tokenizer v2; v1 was 0.1303 — grouping shrinks the card-field count so each changed field is a larger
-share).
+data/corpus --n 3000` prints per-kind medians and the constant to set. Current `ACTION_FOOTPRINT = 0.1224`
+(tokenizer v3; v2 was 0.1704, v1 0.1303 — v3's per-zone count vector means a PlayCard usually just shifts
+counts between two columns of one shared row instead of moving a whole card token, so its footprint fell
+sharply: PlayCard median 0.050).
 
 ## Decoded-state printer + diff (roadmap 3.2)
 

@@ -382,7 +382,8 @@ fixed-seed eval (expectation: ≥ baseline).
       200→64, `CARD_NUM` gains a symlog `count` column, canonical dict byte-unchanged (all consumers
       untouched), and `ACTION_FOOTPRINT` re-measured 0.1303→0.1704 via `python -m lts2_agent.wm.footprint`.
       A v2 cache is a fresh dir (`--out data/corpus_tok_v2`); the v1 cache/checkpoints reject on the
-      signature bump (correct). **Probe flags shipped (default OFF, byte-identical when off, compose independently):
+      signature bump (correct). **(Superseded by tokenizer v3 — factored population rows with a per-zone
+      count vector — see M3.5.)** **Probe flags shipped (default OFF, byte-identical when off, compose independently):
       `--num-head twohot` (64-bin symlog two-hot numeric heads), `--card-ce balanced` (1/sqrt(freq)
       card-identity CE, signature-cached), `--ema DECAY` (weight EMA; val + `.pt.ema` checkpoints);
       tests in `tests/test_wm_encdec.py`.**
@@ -417,6 +418,48 @@ fixed-seed eval (expectation: ≥ baseline).
 
 **CP4 (manual review):** held-out reconstruction dashboard (~exact expected); a session with the
 pretty-printer on random held-out states — do decoded states read as *the same fight* to a human?
+
+### M3.5 — T3 factored architecture: tokenizer v3 (the data layer for the expert-per-category redesign)
+
+- [x] **3.5 Tokenizer v3 — factored population rows + per-field ranges** — _done (tokenizer + spec-level
+      range data + cache path + coverage/round-trip PASS + tests; the follow-up agent rebuilds
+      `wm.encoder`/`decoder`/`model` experts on this spec)._ Agreed with the product owner as the data
+      layer for a factored "expert-per-category" autoencoder redesign. Two changes to
+      `lts2_agent.tokens` (`TOKENIZER_VERSION=3`):
+      1. **Card population rows.** `zone` leaves the card grouping key. There is now **one row per
+         distinct card CONTENT** (catalog id + every live dynamic field + keywords) carrying a **per-zone
+         count vector** `count_{hand,draw,discard,exhaust,offered}` (`CARD_NUM` tail; `zone` removed from
+         `CARD_IDX`) instead of a single `count`. Population membership is structural: a card moving
+         hand→discard is the *same* row with the count shifting between two columns (the predictor
+         expresses zone transitions as count arithmetic; creation/transform as rows appearing/
+         disappearing). Cross-zone live-field divergence (a cost-reduced copy in hand vs its twin in draw)
+         naturally splits into separate rows. `detokenize` expands the vector back to per-instance-per-zone
+         canonical dicts, so the **canonical dict is byte-identical to v1/v2** — `statefmt`/`legal_actions`/
+         `corpus`/report consumers untouched (verified by their green suites and the `_canon_dist`
+         cross-version metric staying schema-identical).
+      2. **Per-field integer ranges.** Every numeric column gains a measured `(lo, hi, resolution)` range
+         in `wm/spec.py` (`NUMERIC_RANGES` + `RangeSpec` + `clamp_to_range`), scanned by a new streaming
+         CLI `python -m lts2_agent.wm.ranges` (footprint's pattern; `--shard-stride` for cheap full-corpus
+         breadth). These are the exact per-field domains a future per-field decoder bins against; the
+         tokenizer keeps symlog storage (cache/decoder compat, exact `round(symexp)` round-trip), and
+         out-of-range values clamp **loudly** (documented). `wm/spec.py` restructured for the zone-count
+         columns + ranges while keeping `TYPES`/`TypeSpec` recognizable; `report.card_zone_acc` redefined
+         to score the whole per-zone count vector; `model_tokens` (PPO) card embedder dropped the zone
+         categorical column (its featurize is layout-driven, so otherwise unchanged).
+      **Measured** (shard-strided 336k-state scan of `data/corpus`, `--shard-stride 12`; corpus2 was still
+      collecting, so ranges/maxima used data/corpus with generous slack + loud clamping): population rows
+      mean **10.21/state** (vs 14.21 instances → **1.39× shorter** sequences), rows **max 32** (v2
+      zone-scoped grouped max 42, v1 instance max 82) → `MAX_CARDS` stays 64. Interesting ranges: energy
+      0..40, per-zone counts 0..40, gold 0..5000, power amount −30..250, creature HP capped 0..1000 (the
+      game's `999999999` sentinel clamps loud); `act`/`floor`/`ascension`/`score` widened past this act-0
+      corpus's homogeneity (re-measure on corpus2). **v3 `ACTION_FOOTPRINT` re-measured 0.1704→0.1224**
+      (`wm.footprint`, 3k val transitions; PlayCard median fell 0.141→0.050 because a play now mostly
+      shifts counts between two columns of one row). Coverage CLI over the corpus: **0 lost fields, 0
+      round-trip mismatches**. Tests added to `tests/test_tokens.py` (population grouping; same card in 3
+      zones → one row with zone counts; zone-count expansion exactness; cross-zone divergence → separate
+      rows; shuffle invariance under grouping; version==3; range-spec presence + loud clamping) and
+      `tests/test_wm_encdec.py` updated for the v3 card spec. A v3 cache is a fresh dir
+      (`--out data/corpus_tok_v3`); v1/v2 caches/checkpoints reject on the signature bump (correct).
 
 ### M4 — Predictor (design P3) — the heart, and the main research risk
 

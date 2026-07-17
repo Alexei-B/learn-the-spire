@@ -139,7 +139,7 @@ def test_null_potion_slot_round_trips():
 
 def test_version_and_signature_stable():
     assert isinstance(tokens.TOKENIZER_VERSION, int)
-    assert tokens.TOKENIZER_VERSION == 2  # v2 = count-grouped card tokens
+    assert tokens.TOKENIZER_VERSION == 3  # v3 = factored population rows (zone-count vector)
     sig = tokens.tokenizer_signature()
     assert sig == tokens.tokenizer_signature()
     assert sig.startswith("tok-v" + str(tokens.TOKENIZER_VERSION))
@@ -148,69 +148,96 @@ def test_version_and_signature_stable():
 
 
 # --------------------------------------------------------------------------------------------------
-# v2: count-grouped card tokens.
+# v3: factored population rows — one row per card CONTENT, with a per-zone count vector (zone removed
+# from the grouping key).
 # --------------------------------------------------------------------------------------------------
 
-def _count_col():
-    return tokens.CARD_NUM.index("count")
+def _count_cols():
+    return [tokens.CARD_NUM.index(f) for f in tokens.ZONE_COUNT_FIELDS]
 
 
-def _token_counts(tok):
-    """(count-column value) for each present card token."""
-    cc = _count_col()
-    return [tokens._int(tok["card_num"][i, cc]) for i in range(tokens.MAX_CARDS)
-            if tok["card_mask"][i]]
+def _row_zone_counts(tok):
+    """For each present card row: a dict {zone: count} decoded from the count-vector columns."""
+    cols = {z: tokens.CARD_NUM.index("count_" + z) for z in tokens.ZONES}
+    rows = []
+    for i in range(tokens.MAX_CARDS):
+        if not tok["card_mask"][i]:
+            continue
+        rows.append({z: max(0, tokens._int(tok["card_num"][i, c])) for z, c in cols.items()})
+    return rows
 
 
-def test_count_column_exists():
-    assert "count" in tokens.CARD_NUM
-    # v2 numeric block is exactly the v1 block + one count column.
-    assert tokens.CARD_NUM[-1] == "count"
+def test_count_vector_columns_exist():
+    # v3: zone left CARD_IDX; the five count_<zone> columns are the CARD_NUM tail.
+    assert "zone" not in tokens.CARD_IDX
+    assert tokens.ZONE_COUNT_FIELDS == ["count_" + z for z in tokens.ZONES]
+    assert tokens.CARD_NUM[-len(tokens.ZONES):] == tokens.ZONE_COUNT_FIELDS
 
 
-def test_identical_cards_group_into_one_token_with_count():
+def test_identical_cards_group_into_one_row_with_zone_count():
     draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(5)]
     st = _state(draw=draw, enemies=[_enemy("JawWorm", 40)])
     tok = tokens.tokenize(st)
-    # Five identical strikes collapse to ONE token carrying count 5.
+    # Five identical strikes collapse to ONE population row carrying count_draw = 5.
     assert int(tok["card_mask"].sum()) == 1
-    assert _token_counts(tok) == [5]
+    counts = _row_zone_counts(tok)[0]
+    assert counts["draw"] == 5
+    assert sum(counts.values()) == 5
 
 
-def test_mixed_upgrades_stay_separate_tokens():
-    # 5 plain strikes + 2 upgraded strikes (different content) -> two grouped tokens, counts 5 and 2.
+def test_same_card_in_three_zones_is_one_row_with_zone_counts():
+    # THE core v3 change: identical content in hand + draw + discard -> ONE row, counts spread by zone.
+    st = _state(hand=[_card("StrikeIronclad", damage=6, baseDamage=6)],
+                draw=[_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(2)],
+                discard=[_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(2)],
+                enemies=[_enemy("JawWorm", 40)])
+    tok = tokens.tokenize(st)
+    assert int(tok["card_mask"].sum()) == 1
+    counts = _row_zone_counts(tok)[0]
+    assert counts == {"hand": 1, "draw": 2, "discard": 2, "exhaust": 0, "offered": 0}
+
+
+def test_cross_zone_live_field_divergence_stays_separate_rows():
+    # A cost-reduced copy in hand vs its full-cost twin in draw differ in a live field (energyCost),
+    # so they remain TWO distinct population rows — divergence is correct, not merged.
+    st = _state(hand=[_card("StrikeIronclad", energyCost=0, damage=6, baseDamage=6)],
+                draw=[_card("StrikeIronclad", energyCost=1, damage=6, baseDamage=6)],
+                enemies=[_enemy("JawWorm", 40)])
+    tok = tokens.tokenize(st)
+    assert int(tok["card_mask"].sum()) == 2
+    rows = _row_zone_counts(tok)
+    # One row lives entirely in hand, the other entirely in draw (no merge).
+    zones_used = sorted(tuple(sorted(z for z, n in r.items() if n)) for r in rows)
+    assert zones_used == [("draw",), ("hand",)]
+
+
+def test_mixed_upgrades_stay_separate_rows():
+    # 5 plain strikes + 2 upgraded strikes (different content) -> two rows, count_draw 5 and 2.
     draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(5)]
     draw += [_card("StrikeIronclad", damage=9, baseDamage=6, upgraded=True) for _ in range(2)]
     st = _state(draw=draw, enemies=[_enemy("JawWorm", 40)])
     tok = tokens.tokenize(st)
     assert int(tok["card_mask"].sum()) == 2
-    assert sorted(_token_counts(tok)) == [2, 5]
+    assert sorted(r["draw"] for r in _row_zone_counts(tok)) == [2, 5]
 
 
-def test_same_card_in_different_zones_stays_separate():
-    # Zone is part of the grouping key: identical strikes in hand vs draw are distinct tokens.
-    st = _state(hand=[_card("StrikeIronclad", damage=6, baseDamage=6)],
-                draw=[_card("StrikeIronclad", damage=6, baseDamage=6)],
-                enemies=[_enemy("JawWorm", 40)])
-    tok = tokens.tokenize(st)
-    assert int(tok["card_mask"].sum()) == 2
-    assert _token_counts(tok) == [1, 1]
-
-
-def test_detokenize_expands_counts_exactly():
-    # A pile of duplicates + a couple of variants round-trips exactly through count expansion.
-    draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(7)]
-    draw += [_card("DefendIronclad", type="Skill", targetType="Self", block=5, baseBlock=5)
-             for _ in range(4)]
+def test_detokenize_expands_zone_counts_exactly():
+    # Duplicates spread across zones round-trip exactly through zone-count expansion.
+    strikes_hand = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(3)]
+    strikes_draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(7)]
+    defends = [_card("DefendIronclad", type="Skill", targetType="Self", block=5, baseBlock=5)
+               for _ in range(4)]
     discard = [_card("Bash", damage=8, baseDamage=8) for _ in range(3)]
-    st = _state(draw=draw, discard=discard, enemies=[_enemy("JawWorm", 40)])
+    st = _state(hand=strikes_hand, draw=strikes_draw + defends, discard=discard,
+                enemies=[_enemy("JawWorm", 40)])
     ok, diff = tokens.round_trip(st)
     assert ok, "round-trip mismatch at " + str(diff)
     got = tokens.detokenize(tokens.tokenize(st))
-    # Instance counts restored per zone (expansion is exact), even though tokens were grouped.
+    # Instances restored per zone exactly (strikes merge across hand+draw into one row).
+    assert len(got["cards"]["hand"]) == 3
     assert len(got["cards"]["draw"]) == 11
     assert len(got["cards"]["discard"]) == 3
-    # And the grouped token count is far below the instance count (the sequence-length win).
+    # Strikes are ONE row (hand+draw) + Defend row + Bash row = 3 rows for 21 instances.
     assert int(tokens.tokenize(st)["card_mask"].sum()) == 3
 
 
@@ -226,6 +253,25 @@ def test_grouping_preserves_shuffle_invariance():
         t = tokens.tokenize(_state(draw=shuffled, enemies=[_enemy("JawWorm", 40)]))
         for k in ("card_idx", "card_num", "card_kw", "card_mask"):
             assert np.array_equal(base[k], t[k]), (k, seed)
+
+
+def test_numeric_ranges_present_and_clamp():
+    # v3 exactness contract: the spec carries a measured integer range per numeric column, and
+    # out-of-range values clamp loudly.
+    from lts2_agent.wm import spec as S
+    assert S.NUMERIC_RANGES, "spec must carry measured per-field ranges"
+    # Core fields every corpus has.
+    energy = S.NUMERIC_RANGES["global"]["energy"]
+    assert energy.lo <= 0 <= energy.hi and energy.resolution >= 1
+    assert energy.n_bins == (energy.hi - energy.lo) // energy.resolution + 1
+    hp = S.NUMERIC_RANGES["creature"]["currentHp"]
+    # An absurd HP clamps to the measured hi and reports the clamp; an in-range value passes through.
+    clamped, was = S.clamp_to_range("creature", "currentHp", hp.hi + 10_000)
+    assert clamped == hp.hi and was is True
+    ok_val, was2 = S.clamp_to_range("creature", "currentHp", hp.hi)
+    assert ok_val == hp.hi and was2 is False
+    # Card per-zone count columns carry ranges too (the v3 population vector).
+    assert "count_draw" in S.NUMERIC_RANGES["card"]
 
 
 def test_catalog_hash_fallback():
