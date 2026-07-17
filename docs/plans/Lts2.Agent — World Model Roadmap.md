@@ -7,7 +7,12 @@ latent + tokenizer-v2 + twohot + lr 6e-4, plain cosine) reconstructs held-out st
 HP MAE 0.96, first nonzero exact reconstructions (mech 0.0013). Legal actions derived from
 *decoded* states: exact-set 0.876 / F1 0.972 (true-state bound 0.998/0.999). Residual mismatch:
 creatures 35% / cards 35% / **relics 19%** (relic slots decode with duplicates — F1 0.905, the
-next structural target). Findings: gate-run-v1 collapsed at step 63k under sustained mid-LR on
+next structural target). _Relic fix landed:_ a decode-time greedy-by-confidence dedup
+(`reconstruct_arrays(dedup=True)` / `eval_encdec --dedup`) lifts the gate checkpoint's
+`relic_set_f1` 0.920→0.995 on 2k val states with no training change; a `--relic-head set` multi-hot
+alternative (top-k, duplicate-free by construction; stamped in meta) awaits its probe. Corpus scan:
+0.67% of states legitimately hold a duplicate relic, which top-k cannot represent (noted limitation).
+Findings: gate-run-v1 collapsed at step 63k under sustained mid-LR on
 the stretched schedule (its step-51k best was lost to in-place checkpointing — best-val `.best`
 sidecar now prevents recurrence); LR ladder says 6e-4 is the ceiling (1e-3+ degrade smoothly);
 EMA at 0.999 was neutral-to-slightly-worse (run still improving at end). Corpus doubled to 2.0M

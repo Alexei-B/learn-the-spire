@@ -174,6 +174,12 @@ def main() -> int:
                          "DreamerV3 two-hot classification over a 64-bin symlog grid per numeric column "
                          "(CE loss; expectation-decoded, so reconstruction/report are unchanged). "
                          "Stamped in checkpoint meta; --resume rejects a mismatch.")
+    ap.add_argument("--relic-head", default="slots", choices=["slots", "set"],
+                    help="relic decode: 'slots' (default) is 24 independent per-slot categoricals over "
+                         "the relic catalog (can decode duplicate relics under uncertainty); 'set' is ONE "
+                         "multi-hot head over the catalog (BCE loss; top-k-by-cardinality decode, "
+                         "duplicate-free by construction — the CP4 relic-error fix). Stamped in "
+                         "checkpoint meta; --resume rejects a mismatch.")
     ap.add_argument("--card-ce", default="plain", choices=["plain", "balanced"],
                     help="card-identity (card column 0) cross-entropy weighting: 'plain' (default) or "
                          "'balanced' = per-class 1/sqrt(freq), computed once from the corpus card-index "
@@ -222,14 +228,16 @@ def main() -> int:
                            dec_layers=args.dec_layers, n_pool_layers=args.pool_layers,
                            n_latents=args.latents, z_dim=args.z_dim, simnorm_group=args.simnorm_group,
                            cat_dim=args.cat_dim, n_mem=args.n_mem, latent_mode=args.latent_mode,
-                           latent_k=args.latent_k, num_head=args.num_head).to(device)
+                           latent_k=args.latent_k, num_head=args.num_head,
+                           relic_head=args.relic_head).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
 
     start_step = 0
     if args.resume and args.ckpt and os.path.exists(args.ckpt):
         model, meta = M.load_checkpoint(args.ckpt, device, expect_latent_mode=args.latent_mode,
-                                        expect_num_head=args.num_head)
+                                        expect_num_head=args.num_head,
+                                        expect_relic_head=args.relic_head)
         model = model.to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))

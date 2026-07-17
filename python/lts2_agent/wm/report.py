@@ -115,8 +115,12 @@ def _set_f1(pred: List[int], tgt: List[int]) -> float:
 
 @torch.no_grad()
 def report_pairs(batch: Dict[str, torch.Tensor],
-                 outputs: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Per-sample ``(numerator, denominator)`` arrays for every contract metric (length B each)."""
+                 outputs: Dict[str, Dict[str, torch.Tensor]],
+                 dedup: bool = False) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Per-sample ``(numerator, denominator)`` arrays for every contract metric (length B each).
+
+    ``dedup`` forwards to :func:`reconstruct_arrays` — a pure decode-time relic-slot dedup that lifts
+    ``relic_set_f1`` (and ``state_dist``) for the slot-head model without any training change."""
     B = batch["global_idx"].shape[0]
     pairs: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
@@ -155,7 +159,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     pairs["energy_acc"] = ((pred_ei == tgt_ei).astype(np.float32), np.ones(B, dtype=np.float32))
 
     # Canonical-dict-derived metrics (relic/potion sets, sizes, pending, exact-state).
-    pred_arrays = reconstruct_arrays(outputs)
+    pred_arrays = reconstruct_arrays(outputs, dedup=dedup)
     tgt_arrays = _target_arrays(batch)
     relic_f1 = np.zeros(B, np.float32); potion_f1 = np.zeros(B, np.float32)
     hand_ok = np.zeros(B, np.float32); pile_num = np.zeros(B, np.float32); pile_den = np.zeros(B, np.float32)

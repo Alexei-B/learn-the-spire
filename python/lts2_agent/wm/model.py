@@ -79,22 +79,25 @@ class WorldModelAE(nn.Module):
     def __init__(self, d_model: int = 256, n_heads: int = 4, enc_layers: int = 4,
                  dec_layers: int = 3, n_pool_layers: int = 2, n_latents: int = 8,
                  z_dim: int = 512, simnorm_group: int = 8, cat_dim: int = 24, n_mem: int = 16,
-                 latent_mode: str = "flat", latent_k: int = 16, num_head: str = "mse"):
+                 latent_mode: str = "flat", latent_k: int = 16, num_head: str = "mse",
+                 relic_head: str = "slots"):
         super().__init__()
         self.cfg = dict(d_model=d_model, n_heads=n_heads, enc_layers=enc_layers,
                         dec_layers=dec_layers, n_pool_layers=n_pool_layers, n_latents=n_latents,
                         z_dim=z_dim, simnorm_group=simnorm_group, cat_dim=cat_dim, n_mem=n_mem,
-                        latent_mode=latent_mode, latent_k=latent_k, num_head=num_head)
+                        latent_mode=latent_mode, latent_k=latent_k, num_head=num_head,
+                        relic_head=relic_head)
         self.latent_mode = latent_mode
         self.latent_k = latent_k
         self.num_head = num_head
+        self.relic_head = relic_head
         self.encoder = Encoder(d_model=d_model, n_heads=n_heads, n_layers=enc_layers,
                                n_pool_layers=n_pool_layers, n_latents=n_latents, z_dim=z_dim,
                                simnorm_group=simnorm_group, cat_dim=cat_dim,
                                latent_mode=latent_mode, latent_k=latent_k)
         self.decoder = Decoder(z_dim=z_dim, d_model=d_model, n_heads=n_heads, n_layers=dec_layers,
                                n_mem=n_mem, latent_mode=latent_mode, latent_k=latent_k,
-                               num_head=num_head)
+                               num_head=num_head, relic_head=relic_head)
 
     def forward(self, batch: Dict[str, torch.Tensor]):
         z = self.encoder(batch)
@@ -129,6 +132,19 @@ def compute_losses(batch: Dict[str, torch.Tensor],
 
     for t in S.TYPES:
         o = outputs[t.name]
+        # Relic set head (--relic-head set): ONE multi-hot BCE over the relic catalog replaces the
+        # relic per-slot identity CE AND the relic per-slot presence BCE (identity + cardinality are
+        # fused into the multi-hot). Added to the categorical bucket as one unweighted multi-label BCE
+        # term; the relic type contributes nothing to the presence bucket in this mode.
+        if "set_logits" in o:
+            logits = o["set_logits"]                                  # [B, vocab]
+            idx = batch[t.idx_key][..., 0]                            # [B, slots]
+            m = batch[t.mask_key]                                     # [B, slots] bool
+            tgt = torch.zeros_like(logits)
+            b_sel, s_sel = torch.where(m)
+            tgt[b_sel, idx[b_sel, s_sel].clamp_(0, logits.shape[-1] - 1)] = 1.0
+            cat_terms.append(F.binary_cross_entropy_with_logits(logits, tgt))
+            continue
         if t.mask_key:
             mask = batch[t.mask_key]                                  # [B, slots] bool
         else:
@@ -275,6 +291,8 @@ def save_checkpoint(path: str, m: WorldModelAE, *, step: int = 0,
         "latent_k": m.cfg.get("latent_k", 16),
         # Numeric-head recipe, surfaced top-level (mse | twohot).
         "num_head": m.cfg.get("num_head", "mse"),
+        # Relic-head recipe, surfaced top-level (slots | set).
+        "relic_head": m.cfg.get("relic_head", "slots"),
         "tokenizer_version": tokens.TOKENIZER_VERSION,
         "tokenizer_signature": tokens.tokenizer_signature(),
         "catalog_signatures": tokens.CATALOG_SIGNATURES,
@@ -287,12 +305,15 @@ def save_checkpoint(path: str, m: WorldModelAE, *, step: int = 0,
 
 def load_checkpoint(path: str, device="cpu",
                     expect_latent_mode: Optional[str] = None,
-                    expect_num_head: Optional[str] = None) -> Tuple[WorldModelAE, dict]:
+                    expect_num_head: Optional[str] = None,
+                    expect_relic_head: Optional[str] = None) -> Tuple[WorldModelAE, dict]:
     """Load ``(model, meta)``, rejecting a checkpoint whose tokenizer/catalog signature no longer
     matches (a stale corpus/catalog), exactly like the PPO checkpoints do. When ``expect_latent_mode``
     is given, also reject loudly if the checkpoint's ``latent_mode`` differs (a flat/tokens A/B mixup —
     e.g. resuming a flat run under ``--latent-mode tokens``); ``expect_num_head`` does the same for the
-    mse/twohot numeric-head recipe (resuming under a different ``--num-head``)."""
+    mse/twohot numeric-head recipe (resuming under a different ``--num-head``), and
+    ``expect_relic_head`` for the slots/set relic-head recipe (resuming under a different
+    ``--relic-head``)."""
     with open(path + ".meta.json") as f:
         meta = json.load(f)
     want = tokens.tokenizer_signature()
@@ -310,6 +331,11 @@ def load_checkpoint(path: str, device="cpu",
         raise ValueError(
             f"Checkpoint {path} num_head={ckpt_num_head!r} does not match requested "
             f"num_head={expect_num_head!r}; the mse and twohot numeric heads are not interchangeable.")
+    ckpt_relic_head = meta["config"].get("relic_head", "slots")
+    if expect_relic_head is not None and ckpt_relic_head != expect_relic_head:
+        raise ValueError(
+            f"Checkpoint {path} relic_head={ckpt_relic_head!r} does not match requested "
+            f"relic_head={expect_relic_head!r}; the slots and set relic heads are not interchangeable.")
     m = WorldModelAE(**meta["config"])
     m.load_state_dict(torch.load(path, map_location=device))
     m.to(device)

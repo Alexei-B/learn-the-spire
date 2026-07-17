@@ -85,14 +85,31 @@ class _TypeHeads(nn.Module):
     (a ``Linear -> num_width``); ``"twohot"`` classifies each numeric column over ``num_bins`` symlog
     bins (a ``Linear -> num_width*num_bins``) and exposes both the classification ``num_logits`` (for
     the CE loss) and the expectation-decoded ``num`` (identical shape to the MSE head, so downstream is
-    unchanged)."""
+    unchanged).
+
+    ``relic_head`` (relic type only) selects the relic decode: ``"slots"`` (default) is the per-slot
+    categorical-over-catalog head shared by every type; ``"set"`` replaces the relic branch with ONE
+    multi-hot head over the whole relic catalog (mean-pool the relic slot outputs -> ``Linear ->
+    relic_vocab``), emitting ``set_logits`` ``[B, relic_vocab]`` and no per-slot cat/presence. The set
+    head structurally forbids duplicate relics (each catalog id is one output unit), which the 24
+    independent slot-categoricals could not — the CP4 residual-error target."""
 
     def __init__(self, tspec: S.TypeSpec, d_model: int, num_head: str = "mse",
-                 num_bins: int = NUM_BINS):
+                 num_bins: int = NUM_BINS, relic_head: str = "slots"):
         super().__init__()
         self.spec = tspec
         self.num_mode = num_head
         self.num_bins = num_bins
+        self.relic_set = (tspec.name == "relic" and relic_head == "set")
+        if self.relic_set:
+            # One multi-hot head over the relic catalog; no per-slot cat/num/presence/kw.
+            self.set_head = nn.Linear(d_model, tspec.cat_cols[0][1])
+            self.cat_heads = nn.ModuleList()
+            self.num_head = None
+            self.presence_head = None
+            self.kw_head = None
+            return
+        self.set_head = None
         self.cat_heads = nn.ModuleList(nn.Linear(d_model, v) for _, v in tspec.cat_cols)
         if tspec.num_width:
             out_dim = tspec.num_width * num_bins if num_head == "twohot" else tspec.num_width
@@ -103,6 +120,9 @@ class _TypeHeads(nn.Module):
         self.kw_head = nn.Linear(d_model, tokens.KW_BUCKETS) if tspec.has_kw else None
 
     def forward(self, h: torch.Tensor) -> Dict[str, torch.Tensor]:
+        if self.relic_set:
+            # Mean-pool the relic slot outputs into one representation -> multi-hot catalog logits.
+            return {"set_logits": self.set_head(h.mean(dim=1))}     # [B, relic_vocab]
         out: Dict[str, torch.Tensor] = {}
         out["cat"] = [head(h) for head in self.cat_heads]           # list of [B, slots, vocab]
         if self.num_head is not None:
@@ -125,12 +145,14 @@ class _TypeHeads(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, z_dim: int = 512, d_model: int = 256, n_heads: int = 4, n_layers: int = 3,
                  n_mem: int = 16, ff_mult: int = 2, latent_mode: str = "flat", latent_k: int = 16,
-                 num_head: str = "mse"):
+                 num_head: str = "mse", relic_head: str = "slots"):
         super().__init__()
         if latent_mode not in ("flat", "tokens"):
             raise ValueError(f"latent_mode must be 'flat' or 'tokens', got {latent_mode!r}")
         if num_head not in ("mse", "twohot"):
             raise ValueError(f"num_head must be 'mse' or 'twohot', got {num_head!r}")
+        if relic_head not in ("slots", "set"):
+            raise ValueError(f"relic_head must be 'slots' or 'set', got {relic_head!r}")
         self.d_model = d_model
         self.n_mem = n_mem
         self.latent_mode = latent_mode
@@ -153,7 +175,8 @@ class Decoder(nn.Module):
         layer = nn.TransformerDecoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
                                            batch_first=True, norm_first=True, activation="gelu")
         self.trunk = nn.TransformerDecoder(layer, n_layers)
-        self.heads = nn.ModuleDict({t.name: _TypeHeads(t, d_model, num_head=num_head)
+        self.heads = nn.ModuleDict({t.name: _TypeHeads(t, d_model, num_head=num_head,
+                                                       relic_head=relic_head)
                                     for t in S.TYPES})
 
     def forward(self, z: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
@@ -179,19 +202,82 @@ class Decoder(nn.Module):
 # Array reconstruction — decoder outputs -> the tokenizer's array dict, for detokenize + exact-state.
 # ==================================================================================================
 
-def reconstruct_arrays(outputs: Dict[str, Dict[str, torch.Tensor]]) -> List[Dict[str, np.ndarray]]:
+def _dedup_slot_ids(logits: torch.Tensor, present: np.ndarray) -> np.ndarray:
+    """Greedy-by-confidence deduplicated slot ids for a single categorical column (CP4 relic fix 1).
+
+    ``logits`` ``[B, slots, vocab]``, ``present`` ``[B, slots]`` bool. Absent slots keep their plain
+    argmax (masked out downstream). Present slots are assigned in DESCENDING max-softmax-probability
+    order: each takes its highest-probability id among those not yet claimed by a more-confident slot,
+    so the most-confident assignment always wins and no id repeats within a state. This is a pure
+    decode-time reassignment of the EXISTING slot head — no training effect, no new parameters."""
+    probs = torch.softmax(logits.detach(), dim=-1).cpu().numpy()   # [B, slots, vocab]
+    out = probs.argmax(axis=-1).astype(np.int32)                   # default: plain argmax
+    B = probs.shape[0]
+    for b in range(B):
+        pres = np.nonzero(present[b])[0]
+        # Most-confident present slot first (its argmax is safe to keep).
+        order = sorted(pres.tolist(), key=lambda s: float(probs[b, s].max()), reverse=True)
+        taken: List[int] = []
+        for s in order:
+            row = probs[b, s]
+            if taken:
+                row = row.copy()
+                row[taken] = -1.0
+            cid = int(row.argmax())
+            out[b, s] = cid
+            taken.append(cid)
+    return out
+
+
+def _decode_set_head(o: Dict[str, torch.Tensor], max_slots: int) -> "tuple[np.ndarray, np.ndarray]":
+    """Decode a multi-hot relic set head (``relic_head=set``) into the standard slot arrays.
+
+    ``k = clamp(round(sum sigmoid(logits)), 0, max_slots)`` sets the cardinality; the ``k`` highest-
+    probability catalog ids (excluding index 0 = none) are emitted, sorted by catalog index, into
+    ``[max_slots]`` idx + presence-mask arrays so detokenize/report consume them unchanged. Top-k over
+    distinct catalog units cannot produce a duplicate. Returns ``(idx [B, max_slots], mask [B, max_slots])``."""
+    probs = torch.sigmoid(o["set_logits"].detach()).cpu().numpy()  # [B, vocab]
+    B, vocab = probs.shape
+    idx = np.zeros((B, max_slots), dtype=np.int32)
+    mask = np.zeros((B, max_slots), dtype=bool)
+    card = probs.sum(axis=1)
+    for b in range(B):
+        k = int(np.clip(round(float(card[b])), 0, max_slots))
+        if k <= 0:
+            continue
+        p = probs[b].copy()
+        p[0] = -1.0                                                # never emit index 0 (none)
+        top = np.argpartition(p, -k)[-k:]                          # k highest-prob ids (unordered)
+        ids = np.sort(top)                                         # emit sorted by catalog index
+        idx[b, :k] = ids
+        mask[b, :k] = True
+    return idx, mask
+
+
+def reconstruct_arrays(outputs: Dict[str, Dict[str, torch.Tensor]],
+                       dedup: bool = False) -> List[Dict[str, np.ndarray]]:
     """Turn a batched decoder output into a list (one per batch element) of numpy array dicts in
     :data:`tokens.TOKEN_KEYS` layout — argmax categoricals, regressed numerics, thresholded presence /
-    keywords — ready for :func:`tokens.detokenize`."""
+    keywords — ready for :func:`tokens.detokenize`.
+
+    ``dedup`` (relic slot head only) applies :func:`_dedup_slot_ids` to the relic-identity column so the
+    decoded relic set carries no duplicate ids — a pure decode-time option, no effect on training or on
+    the ``relic_head=set`` path (which is duplicate-free by construction)."""
     # Materialize predictions on CPU once.
     pred: Dict[str, Dict[str, np.ndarray]] = {}
+    set_decoded: Dict[str, "tuple[np.ndarray, np.ndarray]"] = {}
     for name, o in outputs.items():
+        if "set_logits" in o:                                     # relic set head
+            set_decoded[name] = _decode_set_head(o, S.TYPE_BY_NAME[name].max_slots)
+            continue
         entry: Dict[str, np.ndarray] = {}
         entry["cat"] = [c.detach().argmax(dim=-1).cpu().numpy() for c in o["cat"]]  # each [B, slots]
-        if "num" in o:
-            entry["num"] = o["num"].detach().cpu().numpy()                    # [B, slots, w]
         if "presence" in o:
             entry["presence"] = (torch.sigmoid(o["presence"].detach()) >= 0.5).cpu().numpy()
+        if dedup and name == "relic" and o["cat"]:
+            entry["cat"][0] = _dedup_slot_ids(o["cat"][0], entry["presence"])
+        if "num" in o:
+            entry["num"] = o["num"].detach().cpu().numpy()                    # [B, slots, w]
         if "kw" in o:
             entry["kw"] = (torch.sigmoid(o["kw"].detach()) >= 0.5).cpu().numpy().astype(np.float32)
         pred[name] = entry
@@ -201,6 +287,11 @@ def reconstruct_arrays(outputs: Dict[str, Dict[str, torch.Tensor]]) -> List[Dict
     for b in range(B):
         arr: Dict[str, np.ndarray] = {}
         for t in S.TYPES:
+            if t.name in set_decoded:                             # relic set head -> slot arrays
+                s_idx, s_mask = set_decoded[t.name]
+                arr[t.idx_key] = s_idx[b].reshape(t.max_slots, len(t.cat_cols)).astype(np.int32)
+                arr[t.mask_key] = s_mask[b].astype(bool)
+                continue
             p = pred[t.name]
             n_cols = len(t.cat_cols)
             if t.idx_key:

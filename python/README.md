@@ -486,6 +486,22 @@ an exponential moving average of the weights updated every step; **val passes ev
 (`ema_decay` in meta) that `--resume` restores alongside the raw state. The flags compose (e.g.
 `--num-head twohot --ema 0.999`).
 
+**Relic decode (CP4 fix).** The relic set is the decoder's worst structural field: 24 independent per-slot
+categoricals over the ~298-relic catalog, so under uncertainty several slots argmax onto the same corpus-
+common relic — a duplicate that no real run can hold (and a rare relic gets dropped). Two independent fixes
+address this. (1) A **decode-time dedup** (`reconstruct_arrays(dedup=True)`, `eval_encdec --dedup`) reassigns
+present relic slots greedily by confidence: order slots by their max softmax probability, and give each its
+highest-probability id among those not yet claimed. It is pure inference — no training effect, applies to any
+existing slot-head checkpoint — and lifts the gate checkpoint's `relic_set_f1` from **0.920 → 0.995** over
+2000 val states (`state_dist`/`action_snr` unchanged: 0.0291→0.0289, 5.86→5.89). (2) **`--relic-head set`**
+(default `slots` = the per-slot head, byte-identical) replaces the relic branch with ONE multi-hot head over
+the catalog: `logits [B, relic_vocab]`, trained with BCE against the multi-hot of present relic ids (folded
+into the categorical-loss bucket, replacing both the relic identity-CE and relic presence terms), and decoded
+as top-`k` for `k = clamp(round(Σ sigmoid), 0, MAX_RELICS)` — duplicate-free by construction. Stamped in the
+checkpoint meta; `--resume` rejects a slots/set mismatch. It composes with `--num-head`/`--card-ce`/`--ema`.
+Limitation: a top-`k` set cannot represent a genuine *duplicate* relic, and ~0.67 % of corpus states do hold
+one (e.g. `INFUSED_CORE`, `TOUCH_OF_OROBAS`, `BLACK_BLOOD`); those states lose the repeat.
+
 ```sh
 # Train (streams the train split; per-field reconstruction metrics stream live to the dashboard).
 python -m lts2_agent.train_encdec --steps 50000 --batch 384 --val-every 500 \

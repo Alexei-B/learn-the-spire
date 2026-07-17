@@ -23,35 +23,45 @@ from .wm import model as M
 from .wm import report
 
 
-def evaluate(ckpt: str, corpus_root: str, split: str, batch_size: int, device, limit: int = 0):
+def evaluate(ckpt: str, corpus_root: str, split: str, batch_size: int, device, limit: int = 0,
+             dedup: bool = False, cache_dir: str = ""):
     model, meta = M.load_checkpoint(ckpt, device)
     model.eval()
     accum: Dict[str, Any] = {}
     n = 0
     t0 = time.perf_counter()
-    # Stream the whole split (no shuffle) in eval batches.
-    feats, acts = [], []
-    for state, act in D.iter_states(corpus_root, split):
-        f = D._featurize_safe(state)
-        if f is None:
-            continue
-        feats.append(f)
-        acts.append(act)
-        if len(feats) >= batch_size:
-            batch = M.to_tensors(M.collate(feats), device)
-            with torch.no_grad():
-                _z, out = model(batch)
-            report.merge_pairs(accum, report.report_pairs(batch, out), acts)
-            n += len(acts)
-            feats, acts = [], []
-            if limit and n >= limit:
-                break
-    if feats:
+
+    def _emit(feats, acts):
         batch = M.to_tensors(M.collate(feats), device)
         with torch.no_grad():
             _z, out = model(batch)
-        report.merge_pairs(accum, report.report_pairs(batch, out), acts)
-        n += len(acts)
+        report.merge_pairs(accum, report.report_pairs(batch, out, dedup=dedup), acts)
+
+    # Read pre-tokenized shards when a cache is given (fast, CPU-friendly); else stream + tokenize.
+    if cache_dir:
+        stacked, acts = D.load_fixed_sample_from_cache(cache_dir, split, limit or 10 ** 9)
+        for batch, b_acts in D.iter_fixed_batches(stacked, acts, batch_size, device):
+            with torch.no_grad():
+                _z, out = model(batch)
+            report.merge_pairs(accum, report.report_pairs(batch, out, dedup=dedup), b_acts)
+            n += len(b_acts)
+    else:
+        feats, acts = [], []
+        for state, act in D.iter_states(corpus_root, split):
+            f = D._featurize_safe(state)
+            if f is None:
+                continue
+            feats.append(f)
+            acts.append(act)
+            if len(feats) >= batch_size:
+                _emit(feats, acts)
+                n += len(acts)
+                feats, acts = [], []
+                if limit and n >= limit:
+                    break
+        if feats:
+            _emit(feats, acts)
+            n += len(acts)
     overall, by_act = report.finalize(accum)
     dt = time.perf_counter() - t0
     return overall, by_act, n, meta, dt
@@ -64,6 +74,11 @@ def main() -> int:
     ap.add_argument("--split", default="val", choices=("train", "val", "test"))
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--limit", type=int, default=0, help="cap states scanned (0 = whole split)")
+    ap.add_argument("--cache", default="", help="pre-tokenized cache dir to read the split from (fast); "
+                                                "empty = stream + tokenize the corpus")
+    ap.add_argument("--dedup", action="store_true",
+                    help="decode-time relic-slot dedup (slot-head models): greedy-by-confidence unique "
+                         "relic assignment. No effect on the relic_head=set model (already dup-free).")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
@@ -73,7 +88,7 @@ def main() -> int:
     device = torch.device(args.device)
 
     overall, by_act, n, meta, dt = evaluate(args.ckpt, args.corpus, args.split, args.batch, device,
-                                            args.limit)
+                                            args.limit, dedup=args.dedup, cache_dir=args.cache)
     if args.json:
         print(json.dumps({"ckpt": args.ckpt, "split": args.split, "n_states": n,
                           "step": meta.get("step"), "overall": overall, "by_act": by_act}, indent=2))
