@@ -695,12 +695,40 @@ public static class CombatScenario
         }
     }
 
+    /// <summary>
+    /// Reset the player's relics to a <b>clean slate</b> — exactly the character's plain starting relic(s),
+    /// nothing else — so a soft reenter starts each fight from the identical relic state a fresh
+    /// <see cref="Create"/> sees. Two steps:
+    /// <list type="number">
+    /// <item><b>Strip</b> every relic that is not one of the character's plain starting relics. This clears
+    /// the prior fight's random relics <em>and</em> the Orobas residue: Touch of Orobas plus the upgraded
+    /// starter form its <c>RelicCmd.Replace</c> swaps in (Black Blood / Ring of the Drake / …). Those upgrades
+    /// carry the <see cref="RelicRarity.Starter"/> rarity but a <em>different</em> id, so a plain-starter-id
+    /// filter removes them (a rarity filter alone would keep them and let them accumulate).</item>
+    /// <item><b>Restore</b> any plain starter relic a prior Orobas fight replaced away — after stripping the
+    /// upgraded form the player would otherwise hold no starter at all, and the next fight's Orobas/normal
+    /// state would silently degrade. Re-added silently as a mutable clone (Burning Blood et al. have no
+    /// on-obtain effect — their only behavior is a combat hook that reads the live relic list), consuming no
+    /// rng, so determinism and the downstream stream are unchanged. In the common case (starter still present)
+    /// this is a no-op, and in a fresh <see cref="Create"/> the starter is always present, so that path is
+    /// byte-identical to before.</item>
+    /// </list>
+    /// </summary>
     private static void NormalizeRelics(Player player, CharacterModel character)
     {
         var starterIds = character.StartingRelics.Select(r => r.Id.Entry).ToHashSet();
         foreach (RelicModel r in player.Relics.Where(r => !starterIds.Contains(r.Id.Entry)).ToList())
         {
             player.RemoveRelicInternal(r, silent: true);
+        }
+
+        var present = player.Relics.Select(r => r.Id.Entry).ToHashSet();
+        foreach (RelicModel canon in character.StartingRelics)
+        {
+            if (present.Add(canon.Id.Entry))
+            {
+                player.AddRelicInternal(canon.ToMutable(), silent: true);
+            }
         }
     }
 

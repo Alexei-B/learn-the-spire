@@ -375,6 +375,74 @@ public sealed class DeckSpecTests
         Assert.Empty(relics);   // relics:[0,0] and no starter relic => no relics at all
     }
 
+    /// <summary>The relic ids the player currently holds, read straight off the live run.</summary>
+    private static List<string> LiveRelicIds(GameHost host) =>
+        host.Run.Players[0].Relics.Select(r => r.Id.Entry).ToList();
+
+    private static void AssertNoDuplicateRelics(GameHost host, int fight)
+    {
+        List<string> relics = LiveRelicIds(host);
+        List<string> dups = relics.GroupBy(id => id).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+        Assert.True(dups.Count == 0, $"fight {fight}: duplicate relic ids [{string.Join(", ", dups)}] in [{string.Join(", ", relics)}]");
+    }
+
+    [Fact]
+    public void Reenter_Orobas_NoDuplicateRelics_AndExpectedComposition_AcrossManyReenters()
+    {
+        GameRuntime.EnsureInitialized();
+        CombatScenario.PoolWeights w = CombatScenario.DeckSpec.DefaultWeights;
+        // Force Orobas every fight, plus one random relic. Expected per fight: upgraded starter (BLACK_BLOOD)
+        // + TOUCH_OF_OROBAS + the granted random — no plain starter, and no duplicate ids.
+        var spec = new CombatScenario.DeckSpec.Realistic(0, 0, 0, 0, w, 1, 1, 0, 0, 0.0, 1.0);
+        var rng = new Random(4242);
+
+        (GameHost host, CombatScenario.Spec first) = CombatScenario.Create(
+            "REORO", rng, "IRONCLAD", elitePct: 0.0, bossPct: 0.0, act: 0, deckSpec: spec);
+        AssertOrobasComposition(host, first, 0);
+
+        for (int i = 1; i <= 6; i++)
+        {
+            CombatScenario.Spec s = CombatScenario.Reenter(host, rng, 0.0, 0.0, act: 0, deckSpec: spec);
+            AssertOrobasComposition(host, s, i);
+        }
+    }
+
+    private static void AssertOrobasComposition(GameHost host, CombatScenario.Spec s, int fight)
+    {
+        AssertNoDuplicateRelics(host, fight);
+        Assert.Equal("orobas", s.StarterRelicState);
+        List<string> relics = LiveRelicIds(host);
+        var expected = new HashSet<string>(s.AddedRelics!) { "TOUCH_OF_OROBAS", s.UpgradedStarterRelicId! };
+        Assert.True(expected.SetEquals(relics),
+            $"fight {fight}: relics [{string.Join(", ", relics)}] != expected [{string.Join(", ", expected)}]");
+        Assert.DoesNotContain("BURNING_BLOOD", relics);   // plain starter replaced, never lingers
+    }
+
+    [Fact]
+    public void Reenter_BroadRandom_NoDuplicateRelics_AndStableCount_AcrossManyReenters()
+    {
+        GameRuntime.EnsureInitialized();
+        CharacterModel ironclad = ModelDb.AllCharacters.First(
+            c => c.Id.Entry.Contains("IRONCLAD", StringComparison.OrdinalIgnoreCase));
+        int starterRelicCount = ironclad.StartingRelics.Count();
+
+        // Broad-random path: starter relic(s) + 5 random relics, every fight.
+        var spec = new CombatScenario.DeckSpec.Random(15);
+        var rng = new Random(1717);
+
+        (GameHost host, CombatScenario.Spec _) = CombatScenario.Create(
+            "RERND", rng, "IRONCLAD", elitePct: 0.0, bossPct: 0.0, act: 0, deckSpec: spec);
+        AssertNoDuplicateRelics(host, 0);
+        Assert.Equal(starterRelicCount + 5, LiveRelicIds(host).Count);
+
+        for (int i = 1; i <= 6; i++)
+        {
+            CombatScenario.Reenter(host, rng, 0.0, 0.0, act: 0, deckSpec: spec);
+            AssertNoDuplicateRelics(host, i);
+            Assert.Equal(starterRelicCount + 5, LiveRelicIds(host).Count);
+        }
+    }
+
     [Fact]
     public void Realistic_StarterHeal_FollowsStarterRelicState()
     {
