@@ -747,6 +747,22 @@ agent lost — does the plan view make the improvement (or remaining failures) l
   distributions (broad or realistic), never fixed instances. Enforced structurally: collectors
   refuse `explicit` deckSpecs.
 
+## Known M4 consideration — draw-pile stacking vs the information-set boundary
+
+Some cards place chosen cards ON TOP of the draw pile (e.g. Regent's Photon Cut, colorless
+Thinking Ahead), making the next draw(s) deterministic *to the player*. The tokenizer's draw-pile
+multiset canonicalization is correct as an anti-leak default (the agent must not see shuffle
+order) but it also discards this *legitimate* knowledge — the target representation is the
+player's INFORMATION SET (multiset + known placements), and "which cards are known" is a function
+of history (stack effect since last shuffle), not derivable from one wire state. Plan when M4
+lands: (a) within-plan knowledge (stack effect played inside the current search) is carried by
+the predictor's recurrent latent through the unroll — design the predictor latent to support
+short-horizon private state and add this as an explicit predictor test case; (b) across-the-root
+knowledge needs either a harness-computed `knownTopCards` wire field (track pile manipulation
+since last shuffle) or an accepted, MEASURED error — seed the oracle probe set with
+positions immediately after stack-the-pile effects to quantify it before deciding; (c) the value
+function absorbs residual EV error either way. Owner-flagged 2026-07-18.
+
 ## Sequencing notes & watch-items
 
 - M0 and M1 are independent and can interleave; M2+ is strictly ordered. The TUI prediction
