@@ -531,14 +531,22 @@ pretty-printer on random held-out states — do decoded states read as *the same
 
         | variant | config | expert_dist ↓ | relic_set_f1 ↑ | expert_exact ↑ |
         |---|---|---|---|---|
-        | a. set+count, pw 1  | `--fac-relic-head set --relic-pos-weight 1`   | RESULT_PW1 |
-        | a. set+count, pw 5  | `--relic-pos-weight 5`                        | RESULT_PW5 |
-        | a. set+count, pw 15 | `--relic-pos-weight 15`                       | RESULT_PW15 |
-        | b. set+count, deep dec | `--relic-pos-weight 5 --relic-dec-layers 3` | RESULT_DEEP |
-        | c. set+count, lr 1e-3 | `--relic-pos-weight 5 --lr 1e-3`            | RESULT_LR |
-        | **d. slots + dedup** | `--fac-relic-head slots`                     | RESULT_SLOTS |
+        | a. set+count, pw 1     | `--fac-relic-head set --relic-pos-weight 1`   | 0.906 | 0.365 | 0.120 |
+        | a. set+count, pw 5     | `--relic-pos-weight 5`                        | 0.893 | 0.370 | 0.120 |
+        | a. set+count, pw 15    | `--relic-pos-weight 15`                       | 0.877 | 0.415 | 0.220 |
+        | b. set+count, deep dec | `--relic-pos-weight 5 --relic-dec-layers 3`   | 0.883 | 0.453 | 0.220 |
+        | c. set+count, lr 1e-3  | `--relic-pos-weight 5 --lr 1e-3`              | 0.920 | 0.328 | 0.109 |
+        | **d. slots + dedup**   | `--fac-relic-head slots`                      | **0.645** | **0.657** | **0.334** |
 
-        RESULT_VERDICT
+        **Winner: (d) slots + inference dedup — decisively, on all three metrics** (expert_exact 0.334 vs
+        the best set-head 0.220; relic_set_f1 0.657 vs 0.453; expert_dist 0.645 vs 0.877). The set head
+        does **not** beat slots+dedup at matched budget; higher `pos_weight`/deeper decoder help it only
+        marginally (pw 15 / deep tie at exact 0.220) and higher LR hurts. **Per the owner's standing rule
+        — the set head ships only if it BEATS slots+dedup — the recommendation is to revert the factored
+        relic expert to `--fac-relic-head slots` (the monolith path that reached 0.995 F1 with longer
+        training).** These 6k-step solo numbers are all still below that bar (slots needs more steps to
+        converge), but the *ranking* is unambiguous. Solo states/s across the sweep: **~12.0 k median
+        (10.8–13.3 k)** — ~8× the ~1.5 k joint run, confirming the freeze/skip win.
 
 ### M4 — Predictor (design P3) — the heart, and the main research risk
 
