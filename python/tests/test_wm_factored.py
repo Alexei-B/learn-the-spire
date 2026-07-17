@@ -9,12 +9,18 @@ round-trip through reconstruct_arrays -> detokenize; slice-layout stamp + mismat
 
 from __future__ import annotations
 
+import os
+import random
+
 import numpy as np
 import torch
 
 from lts2_agent import tokens
+from lts2_agent.wm import cache as C
+from lts2_agent.wm import data as D
 from lts2_agent.wm import model as M
 from lts2_agent.wm import model_factored as MF
+from lts2_agent.wm import overfit as OF
 from lts2_agent.wm import report
 from lts2_agent.wm import spec as S
 from lts2_agent.wm.decoder import reconstruct_arrays
@@ -513,6 +519,169 @@ def test_trained_only_report_emits_focused_metrics():
     ov = report.aggregate(pairs)
     assert 0.0 <= ov["expert_exact::relics"] <= 1.0
     assert 0.0 <= ov["relic_set_f1"] <= 1.0
+
+
+# ==================================================================================================
+# Two-hot (distance-aware) range-bin targets — solo-dynamics fix (M3.5).
+# ==================================================================================================
+
+def _stored_num_block(head, values_by_field):
+    """Build a [1,1,W] stored numeric block from integer values (raw cols raw, others symlog), matching
+    the tokenizer/head encoding so head.bin_targets recovers exactly these bins."""
+    W = len(head.num_cols)
+    block = np.zeros((1, 1, W), np.float32)
+    for f, col in enumerate(head.num_cols):
+        v = float(values_by_field[f])
+        is_raw = bool(head._is_raw[f].item())
+        block[0, 0, f] = v if is_raw else np.sign(v) * np.log1p(abs(v))
+    return torch.tensor(block)
+
+
+def test_twohot_targets_sum_to_one_and_expectation_recovers_value():
+    m = _small()
+    head = m.experts["creatures"].heads["creature"]
+    W = len(head.num_cols)
+    # Interior integer per field (>= half_width from both ends), so the symmetric kernel is untruncated.
+    vals = []
+    for f in range(W):
+        lo = int(head._lo[f].item()); nb = int(head._nbins[f].item())
+        vals.append(lo + min(nb - 1, max(0, nb // 3)))     # comfortably interior for the real ranges
+    num = _stored_num_block(head, vals)
+    centers = head.bin_targets(num)[0, 0]                   # [W] true bin index per field
+    soft = head.soft_bin_targets(num)                      # list W of [1,1,nb_f]
+    for f in range(W):
+        dist = soft[f][0, 0]
+        nb = int(head._nbins[f].item())
+        # A proper distribution over this field's bins.
+        assert dist.shape == (nb,)
+        assert torch.allclose(dist.sum(), torch.tensor(1.0), atol=1e-6)
+        # Expectation over bin centers recovers the true bin exactly (symmetric, interior).
+        exp_bin = (dist * torch.arange(nb, dtype=dist.dtype)).sum()
+        if nb > 2:                                          # flags (nb<=2) stay one-hot
+            assert abs(float(exp_bin) - float(centers[f])) < 1e-5
+            # Peak mass sits on the exact bin (argmax decode stays exact) with spread to neighbours.
+            assert int(dist.argmax()) == int(centers[f])
+            assert dist[int(centers[f])] < 1.0             # genuinely soft, not one-hot
+
+
+def test_twohot_flag_fields_and_half_width_one_stay_one_hot():
+    m = _small()
+    head = m.experts["cards"].heads["card"]
+    # Find a flag field (n_bins <= 2) — its soft target must remain one-hot.
+    num = torch.zeros(1, 1, len(head.num_cols))
+    soft = head.soft_bin_targets(num)
+    centers = head.bin_targets(num)[0, 0]
+    for f in range(len(head.num_cols)):
+        if int(head._nbins[f].item()) <= 2:
+            oh = soft[f][0, 0]
+            assert float(oh[int(centers[f])]) == 1.0       # boolean never smeared
+    # half_width=1 reproduces the hard one-hot for every field.
+    soft1 = head.soft_bin_targets(num, half_width=1)
+    for f in range(len(head.num_cols)):
+        assert float(soft1[f][0, 0][int(centers[f])]) == 1.0
+
+
+def test_twohot_and_hard_losses_both_finite_and_differ():
+    torch.manual_seed(0)
+    batch = _batch([_state(n_hand=2, n_enemies=2), _state(n_enemies=1)])
+    m = _small()
+    _z, out = m(batch)
+    hard = MF.compute_losses(batch, out, m, num_targets="hard")
+    two = MF.compute_losses(batch, out, m, num_targets="twohot")
+    assert all(torch.isfinite(v) for v in hard.values())
+    assert all(torch.isfinite(v) for v in two.values())
+    # Same logits, different numeric target geometry -> different numeric loss (hard is legacy default).
+    assert float(hard["loss_numeric"]) != float(two["loss_numeric"])
+
+
+# ==================================================================================================
+# Focus-present sampler — ratio + determinism (M3.5).
+# ==================================================================================================
+
+def _write_synthetic_shard(cache_dir, n, seed, empty_orbs_first):
+    stacked = OF.synthetic_batch(n, seed=seed)
+    stacked["orb_mask"] = stacked["orb_mask"].copy()
+    stacked["orb_mask"][:empty_orbs_first] = False           # controlled present fraction for orbs
+    feats = [{k: stacked[k][i] for k in M.BATCH_KEYS} for i in range(n)]
+    split_dir = os.path.join(cache_dir, "train")
+    os.makedirs(split_dir, exist_ok=True)
+    C._write_shard(os.path.join(split_dir, "shard-00000.npz"), feats, [None] * n)
+
+
+def test_expert_present_mask_unions_type_masks():
+    stacked = OF.synthetic_batch(8, seed=0)
+    stacked["orb_mask"] = stacked["orb_mask"].copy()
+    stacked["orb_mask"][:4] = False
+    pm = D.expert_present_mask(stacked, ["orbs"])
+    assert pm.dtype == bool and pm.shape == (8,)
+    assert not pm[:4].any() and pm[4:].all()
+
+
+def test_focus_present_sampler_ratio_and_determinism(tmp_path):
+    _write_synthetic_shard(str(tmp_path), n=400, seed=1, empty_orbs_first=200)
+    B = 64
+    n_present = round(0.9 * B)                                # 58 of 64
+    g = D.focus_present_batches_cpu(str(tmp_path), "train", B, random.Random(0), ["orbs"], 0.9)
+    b1, _ = next(g)
+    b2, _ = next(g)
+    for b in (b1, b2):
+        assert int(D.expert_present_mask(b, ["orbs"]).sum()) == n_present   # exact target ratio
+    # Same seed -> byte-identical stream (determinism).
+    g2 = D.focus_present_batches_cpu(str(tmp_path), "train", B, random.Random(0), ["orbs"], 0.9)
+    c1, _ = next(g2)
+    assert np.array_equal(b1["orb_idx"], c1["orb_idx"])
+    assert np.array_equal(b1["orb_mask"], c1["orb_mask"])
+
+
+# ==================================================================================================
+# Overfit-one-batch diagnostic — smoke on synthetic (the CLI wiring gate).
+# ==================================================================================================
+
+def test_overfit_batch_smoke_learns_on_synthetic():
+    torch.manual_seed(0)
+    m = _small()
+    stacked = OF.synthetic_batch(16, seed=0)
+    batch = M.to_tensors(stacked, torch.device("cpu"))
+    res = OF.overfit_batch(m, batch, "orbs", steps=40, lr=3e-3, thresh=0.0,
+                           num_targets="twohot", report_every=10, verbose=False)
+    dists = [d for _, d, _ in res["history"]]
+    assert all(np.isfinite(d) for d in dists)
+    assert dists[-1] <= dists[0] + 1e-6                       # training reduces (never inflates) the dist
+    # The numeric decode comparison runs and returns argmax/expectation fractions for the orb numerics.
+    dec = OF.numeric_decode_compare(m, batch, "orbs")
+    assert "orb" in dec and all(0.0 <= v <= 1.0 for v in dec["orb"])
+
+
+def test_solo_expert_overfits_and_latent_not_collapsed():
+    # Regression for the SimNorm saturation-runaway collapse (M3.5): the unbounded to_slice logits used to
+    # run away in magnitude and saturate the grouped softmax to a state-INDEPENDENT one-hot (latent std ->
+    # 0), so a solo expert could not overfit even a handful of distinct states. LayerNorm-before-SimNorm
+    # fixes it — distinct states keep distinct latents and the reconstruction distance actually falls.
+    torch.manual_seed(0)
+    m = _small()
+    st = OF.synthetic_batch(8, seed=2)
+    st["orb_mask"] = np.zeros_like(st["orb_mask"])
+    st["orb_mask"][:, :2] = True                     # 8 distinct 2-orb states
+    batch = M.to_tensors(st, torch.device("cpu"))
+    res = OF.overfit_batch(m, batch, "orbs", steps=500, lr=3e-3, thresh=0.0,
+                           num_targets="hard", report_every=100, verbose=False)
+    dists = [d for _, d, _ in res["history"]]
+    assert dists[-1] < 0.5 * dists[0], f"solo overfit stalled (collapse?): {dists}"
+    m.eval()
+    with torch.no_grad():
+        sl = m.experts["orbs"].encode(batch)
+    assert float(sl.std(0).mean()) > 1e-3, "latent collapsed: distinct states share one slice"
+
+
+def test_slice_norm_keeps_simplex_and_bounds_logits():
+    # LayerNorm-before-SimNorm keeps the grouped-simplex contract AND bounds the pre-SimNorm input.
+    m = _small()
+    batch = _batch([_state(n_hand=2, n_enemies=2), _state(n_enemies=1)])
+    slices = m.encode_slices(batch)
+    for name in ("creatures", "cards", "relics", "potions", "orbs"):
+        g = slices[name].reshape(slices[name].shape[0], -1, m.cfg["simnorm_group"])
+        assert torch.allclose(g.sum(-1), torch.ones_like(g.sum(-1)), atol=1e-5)  # still simplices
+    assert m.experts["orbs"].slice_norm.elementwise_affine is False              # no decay-shrinkable scale
 
 
 def test_mono_arch_unchanged_default_state_dict():

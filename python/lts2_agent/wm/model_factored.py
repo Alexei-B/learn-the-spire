@@ -186,10 +186,17 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                    model: FactoredWorldModelAE,
                    balance: str = "term",
                    relic_pos_weight: float = 5.0,
-                   active: Optional[Iterable[str]] = None) -> Dict[str, torch.Tensor]:
+                   active: Optional[Iterable[str]] = None,
+                   num_targets: str = "hard") -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
     range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
     (exact by construction, no parameters).
+
+    ``num_targets`` picks the range-bin target geometry: ``"hard"`` (legacy) is one-hot CE on the exact
+    bin — no partial credit for a near-miss, which loses the numeric metric structure; ``"twohot"`` is a
+    distance-aware symmetric triangular target (:meth:`experts.RangeBinHeads.soft_bin_targets`) that
+    rewards nearby-bin predictions, restoring the ordinal geometry (the M3.5 solo-dynamics fix). Decode
+    is unchanged (argmax → exact bin) in both.
 
     ``balance`` controls gradient allocation across experts:
     - ``"term"`` (legacy): every loss term weighs equally, so an expert's gradient share scales with
@@ -261,12 +268,19 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                     _tag(ename, cat_terms, _masked_mean(ce, mask))
             if "num_bin_logits" in o:
                 head: E.RangeBinHeads = ex.heads[t.name]
-                tgt_bins = head.bin_targets(batch[t.num_key])            # [B, slots, W]
                 field_ce = []
-                for f, logits in enumerate(o["num_bin_logits"]):
-                    ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
-                                         tgt_bins[..., f].reshape(-1), reduction="none")
-                    field_ce.append(ce.reshape(tgt_bins.shape[:-1]))
+                if num_targets == "twohot":
+                    soft = head.soft_bin_targets(batch[t.num_key])      # list W of [B, slots, n_bins_f]
+                    for f, logits in enumerate(o["num_bin_logits"]):
+                        ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
+                                             soft[f].reshape(-1, soft[f].shape[-1]), reduction="none")
+                        field_ce.append(ce.reshape(logits.shape[:-1]))
+                else:
+                    tgt_bins = head.bin_targets(batch[t.num_key])       # [B, slots, W]
+                    for f, logits in enumerate(o["num_bin_logits"]):
+                        ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
+                                             tgt_bins[..., f].reshape(-1), reduction="none")
+                        field_ce.append(ce.reshape(tgt_bins.shape[:-1]))
                 ce = torch.stack(field_ce, dim=0).mean(dim=0)           # [B, slots]
                 _tag(ename, num_terms, _masked_mean(ce, mask))
             if t.has_kw:

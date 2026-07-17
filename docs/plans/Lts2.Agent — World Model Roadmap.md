@@ -548,6 +548,67 @@ pretty-printer on random held-out states — do decoded states read as *the same
         converge), but the *ranking* is unambiguous. Solo states/s across the sweep: **~12.0 k median
         (10.8–13.3 k)** — ~8× the ~1.5 k joint run, confirming the freeze/skip win.
 
+- [x] **3.8 Solo-run dynamics fixes + the collapse bug** — _done (`wm/experts.py` LayerNorm-before-SimNorm;
+      `--num-targets twohot|hard`; `--focus-present R` + `wm/data.focus_present_batches_cpu`;
+      `wm/overfit.py` gate; `tests/test_wm_factored.py` +6)._ The product owner measured slow, spiky,
+      **non-log** solo curves (orbs improved only 0.40→0.27 over 12 k steps despite being far simpler than
+      cards). Building the **overfit-one-batch gate** (`python -m lts2_agent.wm.overfit`) surfaced the root
+      cause: **SimNorm representation collapse**. The learned experts' `to_slice` Linear is unbounded, so
+      training runs its magnitude away (measured: pre-SimNorm latent std 0.1 → **217** across states) and
+      the grouped softmax **saturates to a state-INDEPENDENT one-hot** whose gradient vanishes — every
+      distinct state encodes to the *same* latent (post-SimNorm std → exactly **0.0**), so no expert could
+      overfit even a handful of states (orbs stuck at `expert_dist` 0.77, creatures 0.65 — dead flat). The
+      existing `test_..._overfits_one_batch` only asserted a 40 % loss drop, so it never caught this.
+      **Fix: a `LayerNorm(elementwise_affine=False)` before SimNorm** in `SetExpert`/`RelicExpert` — it
+      bounds the logits so SimNorm stays sensitive to the state (output is still a concatenation of
+      probability simplices, SimNorm's contract; no affine so weight-decay can't shrink a scale back toward
+      the uniform-softmax collapse; no new state-dict keys). **Overfit gate after the fix** (batch 256,
+      ≤2500 steps, twohot; pre-fix all were dead-flat at the noted floors):
+
+      | expert | pre-fix (flat) | post-fix final `expert_dist` | steps→<0.01 |
+      |---|---|---|---|
+      | relics    | ~0.6 | **0.0011** | **1750** |
+      | potions   | ~0.6 | **0.0192** | (≈, more steps) |
+      | creatures | 0.646 | **0.0331** | capacity/steps |
+      | cards     | ~0.6 | 0.153 | capacity/steps |
+      | orbs      | 0.77 | 0.170 | capacity/steps |
+
+      relics **passes**; every expert now **descends steeply** instead of flatlining (a fixed batch of 8
+      distinct orb states overfits to `expert_dist` 0.0 — impossible pre-fix). The rich/multi-item cases
+      (cards, orbs) need more than 2500 steps at batch 256 to cross <0.01 — a per-state bottleneck-capacity
+      limit, not a wiring bug. **Numeric decode is argmax**, not expectation: the gate measures both and
+      argmax's exact-bin rate is ≥ expectation's on every numeric type (e.g. orb 0.927/0.850, card
+      0.908/0.845) — argmax lands the exact bin; a soft expectation straddles and rounds to a neighbour.
+      Two further knobs (each independently toggleable; twohot default-on, the rest opt-in):
+      - **`--num-targets twohot`** (default): distance-aware symmetric triangular range-bin targets
+        ({0.25,0.50,0.25}) restore the numeric metric structure the monolith's two-hot gave (the fine
+        integer grid makes a literal two-adjacent-bin split a no-op, so a small kernel is the faithful
+        generalization). Flag fields stay one-hot.
+      - **`--focus-present R`** (solo only): oversample states with a present trained-expert token (orbs are
+        present in only ~19 % of states, so ~81 % of a solo batch was empty slots); a bounded two-pool
+        sampler draws R present + 1−R empty, and is a cheap no-op for dense experts (creatures/potions).
+      **Streaming probe finding (orbs canary, 6 k steps):** the collapse fix is *necessary for the fixed-
+      batch overfit / capacity* but does **not** by itself change the streaming orbs curve — pre-fix and
+      post-fix both plateau ~0.31 with the same early lag (the hard all-or-nothing `expert_dist` sits at
+      1.0 while the loss falls, then flips once the argmax decode becomes correct). The streaming plateau is
+      governed by **presence sparsity + batch noise**, which `--focus-present` / larger batch target.
+      **Streaming probe table** (orbs solo, `expert_dist` ↓ at the step; 6 k steps, val-every 250):
+
+      | variant | recipe | ~1k | ~2k | ~4k | note |
+      |---|---|---|---|---|---|
+      | a0 pre-fix        | b384 hard, no focus            | 1.00 | 0.37 | 0.35 | stuck→plateau, spiky (the reported bad curve) |
+      | a  fix baseline   | b384 hard, no focus            | 1.00 | 0.27 | 0.31 | ≈ a0 — the collapse fix does **not** move the streaming curve |
+      | b  +twohot        | b384 twohot                    | 0.69 | 0.37 | — | knob alone: stuck ~as long as baseline, ≈ baseline plateau |
+      | d  +big batch     | b1536 hard                     | 1.00 | 0.65@1.25k | — | knob alone: still stuck early, smoother |
+      | c  **+focus**     | b384 hard, focus 0.9           | **0.27** | **0.18** | **0.12** | escapes ~2× earlier and keeps falling well below the baseline plateau |
+      | e  **all**        | b1536 twohot, focus 0.9        | 0.23 | — | — | fastest escape (0.30 by step 750, 0.23 by 1k) |
+
+      **Verdict:** the dynamics ARE fixed. The **collapse fix** is the correctness/capacity foundation (the
+      overfit gate went from impossible to passing); **`--focus-present`** is what restores the *log-shaped
+      early ramp* on the sparse streaming curve (twohot and big-batch alone do not — they stay stuck like
+      the baseline). twohot's payoff is on the numeric-heavy experts (creature/card HP), not orbs' two small
+      fields. The remaining floor at ~0.18 is orbs' presence-calibration + per-state capacity, the next lever.
+
 ### M4 — Predictor (design P3) — the heart, and the main research risk
 
 - [ ] **4.1 Afterstate step**: K-step unrolled training with latent-consistency loss + SimNorm,

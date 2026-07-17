@@ -164,6 +164,16 @@ def main() -> int:
     ap.add_argument("--loss-balance", default="term", choices=["term", "expert"],
                     help="factored arch only: 'expert' gives every expert an equal gradient share "
                          "(fixes relic/orb starvation under the per-term default).")
+    ap.add_argument("--num-targets", default="twohot", choices=["twohot", "hard"],
+                    help="factored arch only: range-bin numeric target geometry. 'twohot' (default) is a "
+                         "distance-aware symmetric triangular target that rewards near-miss bins "
+                         "(restores the numeric metric structure — the M3.5 solo-dynamics fix); 'hard' is "
+                         "the legacy one-hot CE (no partial credit). Decode stays argmax either way.")
+    ap.add_argument("--focus-present", type=float, default=0.0,
+                    help="factored SOLO runs only (--train-experts set): oversample states where a "
+                         "trained expert has >=1 present token. Fraction R of each batch is drawn from "
+                         "present states, 1-R from empty states (kept for presence calibration). 0 = off "
+                         "(default). Needs the pre-tokenized cache; e.g. 0.9 for a sparse expert (orbs).")
     # Per-expert training (roadmap M3.5 sequential strategy). Train one/few experts at a time; the rest
     # are FROZEN (excluded from the optimizer) and their encode/decode is SKIPPED — a solo small-expert
     # run pays only that expert's compute (very high states/s).
@@ -365,7 +375,8 @@ def main() -> int:
     def loss_fn(batch_, out_, active=None):
         if factored:
             return MF.compute_losses(batch_, out_, model, balance=args.loss_balance,
-                                      relic_pos_weight=args.relic_pos_weight, active=active)
+                                      relic_pos_weight=args.relic_pos_weight, active=active,
+                                      num_targets=args.num_targets)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Relic slots variant decodes with inference dedup (the bake-off's slots+dedup path).
@@ -425,8 +436,20 @@ def main() -> int:
     if mw.enabled:
         print(f"[train_encdec] metrics -> {mw.run_dir}", flush=True)
 
+    # Focus-present sampling (solo runs only): oversample states with a present trained-expert token.
+    focus_experts = (train_active if (factored and args.focus_present > 0.0
+                                      and train_active is not None) else None)
+    if args.focus_present > 0.0 and focus_experts is None:
+        print("[train_encdec] --focus-present ignored: it applies only to factored SOLO runs "
+              "(--train-experts set).", flush=True)
+    if focus_experts is not None:
+        nat = float(D.expert_present_mask(val_stacked, focus_experts).mean())
+        print(f"[train_encdec] focus-present R={args.focus_present:.2f} experts={focus_experts}: "
+              f"natural present-state fraction (val) {nat:.3f} -> per-batch target {args.focus_present:.3f}",
+              flush=True)
     stream = D.train_batches(args.corpus, "train", args.batch, args.buffer, device, rng,
-                             cache_dir=cache_dir)
+                             cache_dir=cache_dir, focus_experts=focus_experts,
+                             focus_present=args.focus_present)
 
     win = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0}
     win_states = 0
@@ -496,8 +519,8 @@ def main() -> int:
                                   f"exact={overall['expert_exact::' + n]:.4f}" for n in train_active)
                     extra_f1 = (f" relic_f1={overall['relic_set_f1']:.4f}"
                                 if "relic_set_f1" in overall else "")
-                    print(f"         VAL[{len(val_acts)}] loss={vloss['loss']:.3f} {ee}{extra_f1}",
-                          flush=True)
+                    print(f"         VAL[{len(val_acts)}] step={step} loss={vloss['loss']:.3f} "
+                          f"{ee}{extra_f1}", flush=True)
                     # .best driven by the trained experts' mean reconstruction distance.
                     sel = float(np.mean([overall[f"expert_dist::{n}"] for n in train_active]))
                 else:

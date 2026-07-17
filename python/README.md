@@ -649,6 +649,37 @@ struggling. Three CLI seams make this a workflow:
 **"done" bar**: the fraction of val states whose slice-owned token types reconstruct *exactly* (array
 space, integer-rounded, presence included). Train an expert until its `expert_exact` plateaus, then keep it.
 
+**Solo-run dynamics (roadmap M3.5).** Three knobs fix the slow, spiky, near-linear solo learning curves
+(the log-shaped early ramp was missing; e.g. orbs barely moved over 12 k steps despite being a far simpler
+problem than cards):
+
+- **`--num-targets twohot|hard`** (factored; default **`twohot`**) sets the range-bin numeric target
+  geometry. `hard` is one-hot CE on the exact integer bin — a near-miss (bin *k*±1) costs exactly as much
+  as bin *k*±100, so the head never learns the numbers' **ordinal** structure. `twohot` is a distance-aware
+  symmetric triangular target centred on the true bin (`{0.25, 0.50, 0.25}` over the three central bins),
+  so nearby-bin predictions get partial credit — restoring the metric structure the monolith's two-hot
+  gave. (The factored heads bin at *integer* resolution, so a literal two-adjacent-bin split would degrade
+  to one-hot; the small symmetric kernel is the faithful generalization for a fine grid.) **Decode stays
+  argmax** — it preserves the exact-bin contract, whereas an expectation over a soft prediction can straddle
+  and round to a neighbour (measured: argmax's exact-bin rate ≫ expectation's).
+- **`--focus-present R`** (factored **solo** runs only) oversamples states where a trained expert has ≥1
+  present token: a fraction `R` of each batch is drawn from present states, `1−R` from empty ones (kept so
+  the presence head stays calibrated). A sparse expert (orbs is present in only ~13 % of states) otherwise
+  spends ~87 % of every batch on empty slots, starving its id/numeric heads. The sampler bounds both pools
+  (present + empty), so a dense expert (creatures/potions, ~always present) is a cheap no-op. Needs the
+  pre-tokenized cache.
+- **Batch scaling.** Solo runs are tiny in VRAM (a single small expert) and the cache streams ~12 k
+  states/s, so the batch-384 default gives needlessly noisy gradients. `--batch` is respected as-is; the
+  probes below use **1536** for the small experts (well under the 3090's VRAM), with LR scaled ~√(batch)
+  (`3e-4 → 6e-4` at 4× batch — √-scaling is steadier than linear at this ratio).
+
+**Overfit-one-batch gate** — `python -m lts2_agent.wm.overfit --expert all` trains each expert alone on a
+single fixed (present-heavy) batch and reports the step at which its `expert_dist` drops below `0.01`.
+Memorizing one batch is the easiest possible task, so an expert that *can't* has a **wiring bug** — this is
+the primary correctness gate for the solo path. It also prints each numeric type's exact-bin rate under the
+two decodes (argmax / expectation), the evidence for the argmax decode choice. `--synthetic` runs it with
+a random in-range batch (no corpus/GPU) — the CLI smoke path.
+
 Once each expert is trained, **compose** the kept slices into one standard full factored checkpoint (the
 artifact the M4 predictor consumes):
 

@@ -37,10 +37,31 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .. import catalog, tokens
 from . import spec as S
 from .encoder import _PoolLayer, _TypeEmbedder, simnorm
+
+# Two-hot / distance-aware numeric target (roadmap M3.5 solo-dynamics fix).
+#
+# The monolith restored metric structure to numeric decoding with DreamerV3 two-hot over a COARSE 64-bin
+# symlog grid: real values fall BETWEEN bin centers, so the two-adjacent-bin split genuinely interpolates
+# and nearby-bin predictions get partial credit. The factored `RangeBinHeads` instead bin each field at
+# integer resolution (`spec.NUMERIC_RANGES`, resolution 1), so every integer target lands EXACTLY on a
+# bin center — a literal two-adjacent-bin two-hot degenerates to one-hot and gives no partial credit
+# (hard CE's failure mode: predicting bin k±1 costs the same as bin k±100, so the head never learns the
+# ordinal geometry — the measured slow, spiky, near-linear ramps).
+#
+# The faithful generalization for a fine integer grid is a small SYMMETRIC triangular kernel centered on
+# the true bin: weights fall off linearly with |bin - center| and renormalize to sum 1. It (a) still puts
+# most mass on the exact bin (so argmax decode stays exact — the exact-bin contract), (b) spreads the
+# remaining mass to the immediate neighbours so a near-miss is rewarded (restores metric structure), and
+# (c) keeps `expectation == center` exactly for a symmetric kernel away from a boundary (the round-trip
+# the decoder.py twohot guarantees). half_width 1 == hard one-hot; the default 2 gives the {0.25,0.50,
+# 0.25} three-bin kernel. Flag/boolean fields (n_bins<=2) are ALWAYS kept one-hot — smearing a 0/1 flag
+# is never desirable.
+TWOHOT_HALF_WIDTH = 2
 
 # Numeric columns the tokenizer stores RAW (a plain 0/1 flag) rather than symlog-compressed. Every other
 # numeric column is symlog (`tokens.symlog`), inverted by `round(symexp(.))`. These must be known
@@ -226,6 +247,44 @@ class RangeBinHeads(nn.Module):
         idx = ((v - self._lo) / self._res).round().long()
         return idx.clamp(min=0).minimum(self._nbins - 1)
 
+    def soft_bin_targets(self, num: torch.Tensor,
+                         half_width: int = TWOHOT_HALF_WIDTH) -> List[torch.Tensor]:
+        """Distance-aware (two-hot-style) soft targets: a list of ``W`` tensors, entry ``f`` shaped
+        ``[B, slots, n_bins_f]`` — a symmetric triangular distribution centred on the true bin (weights
+        ``max(0, half_width - |bin - center|)`` renormalized to sum 1). ``half_width==1`` reproduces the
+        hard one-hot; flag fields (``n_bins<=2``) are always one-hot (a boolean must not smear). See
+        :data:`TWOHOT_HALF_WIDTH` for why the fine integer grid needs a kernel rather than a literal
+        two-adjacent-bin split."""
+        centers = self.bin_targets(num)                              # [B, slots, W] long
+        out: List[torch.Tensor] = []
+        for f in range(len(self.num_cols)):
+            nb = int(self._nbins[f].item())
+            c = centers[..., f]                                       # [B, slots] long
+            if nb <= 2 or half_width <= 1:
+                out.append(F.one_hot(c, nb).to(torch.float32))
+                continue
+            bins = torch.arange(nb, device=c.device).view(*([1] * c.dim()), nb)   # [1,..,nb]
+            d = (bins - c.unsqueeze(-1)).abs().to(torch.float32)      # [B, slots, nb]
+            w = (half_width - d).clamp(min=0.0)
+            out.append(w / w.sum(dim=-1, keepdim=True).clamp_min(1e-8))
+        return out
+
+    def expectation_decode(self, num_bin_logits: List[torch.Tensor]) -> torch.Tensor:
+        """Alternate numeric decode: per-field softmax expectation over bin centers, rounded to the
+        nearest bin, mapped back to the stored (symlog / raw) block — the shape/role of the argmax decode
+        in :meth:`forward`. Kept out of the default path: argmax preserves the exact-bin contract, whereas
+        a straddling expectation can round to a neighbour and miss the exact integer (measured on the
+        probe). Used by the diagnostic to compare the two decodes."""
+        idxs = []
+        for f, logits in enumerate(num_bin_logits):
+            nb = logits.shape[-1]
+            centers = torch.arange(nb, device=logits.device, dtype=torch.float32)
+            e = (logits.float().softmax(dim=-1) * centers).sum(dim=-1)   # [B, slots] expected bin
+            idxs.append(e.round().clamp(0, nb - 1).long())
+        idx = torch.stack(idxs, dim=-1)                              # [B, slots, W]
+        val = self._lo + idx.float() * self._res
+        return torch.where(self._is_raw, val, t_symlog(val))
+
     def forward(self, h: torch.Tensor) -> Dict[str, torch.Tensor]:
         out: Dict[str, torch.Tensor] = {}
         out["cat"] = [head(h) for head in self.cat_heads]
@@ -292,6 +351,14 @@ class SetExpert(nn.Module):
         self.latents = nn.Parameter(torch.randn(pool_latents, d_model) * 0.02)
         self.pool = nn.ModuleList(_PoolLayer(d_model, n_heads, ff_mult) for _ in range(pool_layers))
         self.to_slice = nn.Linear(pool_latents * d_model, latent_width)
+        # Normalize the pre-SimNorm logits. Without this the unbounded `to_slice` output runs away in
+        # magnitude (measured: pre-SimNorm std 0.1 -> 217 across states) and the grouped softmax SATURATES
+        # to a state-INDEPENDENT one-hot whose gradient vanishes — a representation-collapse runaway that
+        # floors solo learning (the fixed batch could not be overfit; the curves were slow, spiky, non-
+        # log). LayerNorm (no affine, so weight_decay can't shrink a scale back toward the uniform-softmax
+        # collapse) bounds the input so SimNorm stays sensitive to the state. The output is still a
+        # concatenation of probability simplices (SimNorm's contract for the predictor).
+        self.slice_norm = nn.LayerNorm(latent_width, elementwise_affine=False)
         # Decoder.
         self.from_slice = nn.Linear(latent_width, n_mem * d_model)
         self.mem_norm = nn.LayerNorm(d_model)
@@ -334,7 +401,7 @@ class SetExpert(nn.Module):
         for layer in self.pool:
             lat = layer(lat, toks, key_pad)
         z = self.to_slice(lat.reshape(B, -1))
-        return simnorm(z, self.simnorm_group)
+        return simnorm(self.slice_norm(z), self.simnorm_group)
 
     def decode(self, z: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
         B = z.shape[0]
@@ -389,6 +456,7 @@ class RelicExpert(nn.Module):
         self.latents = nn.Parameter(torch.randn(pool_latents, d_model) * 0.02)
         self.pool = nn.ModuleList(_PoolLayer(d_model, n_heads, ff_mult) for _ in range(pool_layers))
         self.to_slice = nn.Linear(pool_latents * d_model, latent_width)
+        self.slice_norm = nn.LayerNorm(latent_width, elementwise_affine=False)  # see SetExpert.slice_norm
         self.from_slice = nn.Linear(latent_width, n_mem * d_model)
         self.mem_norm = nn.LayerNorm(d_model)
         self.slot_queries = nn.Parameter(torch.randn(self.tspec.max_slots, d_model) * 0.02)
@@ -420,7 +488,7 @@ class RelicExpert(nn.Module):
         for layer in self.pool:
             lat = layer(lat, toks, key_pad)
         z = self.to_slice(lat.reshape(B, -1))
-        return simnorm(z, self.simnorm_group)
+        return simnorm(self.slice_norm(z), self.simnorm_group)
 
     def decode(self, z: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
         B = z.shape[0]
