@@ -356,18 +356,27 @@ class SetExpert(nn.Module):
 # ==================================================================================================
 
 class RelicExpert(nn.Module):
-    """Relic expert: encode the relic tokens into a slice, decode via ONE multi-hot head over the relic
-    catalog (BCE), reusing the monolith's set-head decode (top-k by cardinality, no duplicates)."""
+    """Relic expert: encode the relic tokens into a slice, decode via one of two heads (``relic_head``):
+
+    * ``"set"`` (default): ONE multi-hot head over the relic catalog (BCE) plus a small cardinality head,
+      reusing the monolith's set-head decode (top-k by count, duplicate-free by construction).
+    * ``"slots"``: the monolith-style per-slot categoricals (a :class:`RangeBinHeads` over the relic slot
+      outputs — catalog-id CE + presence BCE); decoded with the greedy-by-confidence ``_dedup_slot_ids``
+      so no relic id repeats. The set-head-vs-slots+dedup bake-off (roadmap M3.5) picks the winner by
+      ``expert_exact``."""
 
     def __init__(self, name: str, latent_width: int, d_model: int,
                  static_tables: Dict[str, np.ndarray], cat_dim: int = 24, n_heads: int = 4,
                  enc_layers: int = 2, dec_layers: int = 2, pool_layers: int = 1, pool_latents: int = 4,
-                 n_mem: int = 6, ff_mult: int = 2, simnorm_group: int = 8):
+                 n_mem: int = 6, ff_mult: int = 2, simnorm_group: int = 8, relic_head: str = "set"):
         super().__init__()
         if latent_width % simnorm_group != 0:
             raise ValueError(f"{name} latent_width {latent_width} not divisible by simnorm_group")
+        if relic_head not in ("set", "slots"):
+            raise ValueError(f"relic_head must be 'set' or 'slots', got {relic_head!r}")
         self.name = name
         self.tspec = S.TYPE_BY_NAME["relic"]
+        self.relic_head = relic_head
         self.latent_width = latent_width
         self.simnorm_group = simnorm_group
         self.d_model = d_model
@@ -386,13 +395,17 @@ class RelicExpert(nn.Module):
         dec_layer = nn.TransformerDecoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
                                                batch_first=True, norm_first=True, activation="gelu")
         self.dec_trunk = nn.TransformerDecoder(dec_layer, dec_layers)
-        self.set_head = nn.Linear(d_model, self.tspec.cat_cols[0][1])
-        # Cardinality as its own small classification (0..max_slots). Decouples "how many relics"
-        # from the membership sigmoids, whose calibration pos_weight deliberately distorts —
-        # k = round(sum sigmoid) exploded once pos_weight inflated the probabilities (measured:
-        # relic dist ~0.99, F1 falling, in wm-t3-v2). Membership becomes calibration-free
-        # top-k-by-logit; pos_weight now serves ranking only.
-        self.count_head = nn.Linear(d_model, self.tspec.max_slots + 1)
+        if relic_head == "set":
+            self.set_head = nn.Linear(d_model, self.tspec.cat_cols[0][1])
+            # Cardinality as its own small classification (0..max_slots). Decouples "how many relics"
+            # from the membership sigmoids, whose calibration pos_weight deliberately distorts —
+            # k = round(sum sigmoid) exploded once pos_weight inflated the probabilities (measured:
+            # relic dist ~0.99, F1 falling, in wm-t3-v2). Membership becomes calibration-free
+            # top-k-by-logit; pos_weight now serves ranking only.
+            self.count_head = nn.Linear(d_model, self.tspec.max_slots + 1)
+        else:
+            # Per-slot categorical + presence head (monolith-style); decode dedups by confidence.
+            self.slot_heads = RangeBinHeads(self.tspec, d_model)
 
     def encode(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         B = batch["relic_idx"].shape[0]
@@ -413,7 +426,9 @@ class RelicExpert(nn.Module):
         B = z.shape[0]
         mem = self.mem_norm(self.from_slice(z).reshape(B, self.n_mem, self.d_model))
         q = self.slot_queries.unsqueeze(0).expand(B, -1, -1)
-        h = self.dec_trunk(q, mem)
-        pooled = h.mean(dim=1)
-        return {"relic": {"set_logits": self.set_head(pooled),
-                          "count_logits": self.count_head(pooled)}}
+        h = self.dec_trunk(q, mem)                                   # [B, max_slots, d_model]
+        if self.relic_head == "set":
+            pooled = h.mean(dim=1)
+            return {"relic": {"set_logits": self.set_head(pooled),
+                              "count_logits": self.count_head(pooled)}}
+        return {"relic": self.slot_heads(h)}                        # {"cat":[...], "presence":...}

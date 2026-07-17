@@ -23,7 +23,7 @@ import torch
 
 from .. import tokens
 from . import spec as S
-from .decoder import reconstruct_arrays
+from .decoder import _decode_set_head, _dedup_slot_ids, reconstruct_arrays
 from .experts import EXPERT_ORDER, EXPERT_TYPES
 
 # Per-expert token-type partition for the factored-AE eval.expert_dist metric (emitted tagged by expert).
@@ -262,6 +262,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     cd_num = np.zeros(B, np.float32); cd_den = np.zeros(B, np.float32)
     exp_num = {n: np.zeros(B, np.float32) for n in EXPERT_ORDER} if experts else {}
     exp_den = {n: np.zeros(B, np.float32) for n in EXPERT_ORDER} if experts else {}
+    exp_exact = {n: np.zeros(B, np.float32) for n in EXPERT_ORDER} if experts else {}
     scal_ok = np.zeros(B, np.float32) if experts else None
     for b in range(B):
         dist_num[b], dist_den[b] = _state_dist(pred_arrays[b], tgt_arrays[b])
@@ -269,6 +270,9 @@ def report_pairs(batch: Dict[str, torch.Tensor],
             for ename in EXPERT_ORDER:
                 exp_num[ename][b], exp_den[ename][b] = _state_dist(
                     pred_arrays[b], tgt_arrays[b], types=_EXPERT_TYPESPECS[ename])
+                # expert_exact: this state's slice-owned token types reconstruct with ZERO mismatched
+                # fields (array-space, integer-rounded, presence included) — the expert's "done" bar.
+                exp_exact[ename][b] = 1.0 if exp_num[ename][b] == 0.0 else 0.0
             scal_ok[b] = _scalar_exact_count(pred_arrays[b], tgt_arrays[b])
         pc = tokens.detokenize(pred_arrays[b])
         tc = tokens.detokenize(tgt_arrays[b])
@@ -314,7 +318,82 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     if experts:
         for ename in EXPERT_ORDER:
             pairs[f"expert_dist::{ename}"] = (exp_num[ename], exp_den[ename])
+            pairs[f"expert_exact::{ename}"] = (exp_exact[ename], ones)
         pairs["scalar_exact"] = (scal_ok, np.full(B, float(_SCALAR_EXACT_FIELDS), np.float32))
+    return pairs
+
+
+def _reconstruct_types(outputs: Dict[str, Dict[str, torch.Tensor]], typespecs: List, B: int,
+                       dedup: bool = False) -> List[Dict[str, np.ndarray]]:
+    """Per-sample array dicts limited to ``typespecs`` (a subset of :data:`S.TYPES`) — the focused
+    reconstruction for ``--val-experts trained-only``, so a solo run decodes ONLY its own token types
+    (never the full population/creature decoders). Same array layout :func:`reconstruct_arrays` emits."""
+    results: List[Dict[str, np.ndarray]] = [dict() for _ in range(B)]
+    for t in typespecs:
+        o = outputs.get(t.name)
+        if o is None:
+            continue
+        if "set_logits" in o:                                       # relic set head
+            s_idx, s_mask = _decode_set_head(o, t.max_slots)
+            for b in range(B):
+                results[b][t.idx_key] = s_idx[b].reshape(t.max_slots, len(t.cat_cols)).astype(np.int32)
+                results[b][t.mask_key] = s_mask[b].astype(bool)
+            continue
+        cat = [c.detach().argmax(dim=-1).cpu().numpy() for c in o.get("cat", [])]
+        presence = None
+        if "presence" in o:
+            presence = (torch.sigmoid(o["presence"].detach()) >= 0.5).cpu().numpy()
+        if dedup and t.name == "relic" and cat and presence is not None:
+            cat[0] = _dedup_slot_ids(o["cat"][0], presence)
+        num = o["num"].detach().cpu().numpy() if "num" in o else None
+        kw = ((torch.sigmoid(o["kw"].detach()) >= 0.5).cpu().numpy().astype(np.float32)
+              if "kw" in o else None)
+        for b in range(B):
+            if t.idx_key and cat:
+                results[b][t.idx_key] = np.stack([cat[c][b] for c in range(len(cat))],
+                                                 axis=-1).astype(np.int32)
+            if t.num_key and num is not None:
+                results[b][t.num_key] = num[b].astype(np.float32)
+            if t.mask_key and presence is not None:
+                results[b][t.mask_key] = presence[b].astype(bool)
+            if t.has_kw and kw is not None:
+                results[b]["card_kw"] = kw[b].astype(np.float32)
+    return results
+
+
+@torch.no_grad()
+def report_pairs_experts_only(batch: Dict[str, torch.Tensor],
+                              outputs: Dict[str, Dict[str, torch.Tensor]],
+                              active: List[str], dedup: bool = False
+                              ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Focused per-expert metrics for ``--val-experts trained-only``: ``expert_dist::<name>`` and
+    ``expert_exact::<name>`` for each active expert (+ ``relic_set_f1`` when relics is active), computed
+    by reconstructing ONLY the active experts' token types — no full-model decode. The trained-only val
+    for a solo run costs just that expert's decoder pass."""
+    B = batch["global_idx"].shape[0]
+    active_typespecs = [S.TYPE_BY_NAME[n] for e in active for n in EXPERT_TYPES[e]]
+    pred = _reconstruct_types(outputs, active_typespecs, B, dedup=dedup)
+    tgt = _target_arrays(batch)
+    pairs: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    ones = np.ones(B, np.float32)
+    for ename in active:
+        types = _EXPERT_TYPESPECS[ename]
+        num = np.zeros(B, np.float32); den = np.zeros(B, np.float32); exact = np.zeros(B, np.float32)
+        for b in range(B):
+            num[b], den[b] = _state_dist(pred[b], tgt[b], types=types)
+            exact[b] = 1.0 if num[b] == 0.0 else 0.0
+        pairs[f"expert_dist::{ename}"] = (num, den)
+        pairs[f"expert_exact::{ename}"] = (exact, ones)
+    if "relics" in active:
+        t = S.TYPE_BY_NAME["relic"]
+        f1 = np.zeros(B, np.float32)
+        for b in range(B):
+            pm = pred[b][t.mask_key].astype(bool)
+            tm = tgt[b][t.mask_key].astype(bool)
+            pi = [int(x) for x in np.atleast_2d(pred[b][t.idx_key])[pm][:, 0]] if pm.any() else []
+            ti = [int(x) for x in np.atleast_2d(tgt[b][t.idx_key])[tm][:, 0]] if tm.any() else []
+            f1[b] = _set_f1(pi, ti)
+        pairs["relic_set_f1"] = (f1, ones)
     return pairs
 
 

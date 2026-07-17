@@ -501,6 +501,45 @@ pretty-printer on random held-out states — do decoded states read as *the same
       per-expert kernel launches. Longer training (the report card / M4 gate) is the orchestrator's job,
       not this slice.
 
+- [x] **3.7 Per-expert training infrastructure + relic bake-off** — _done (`train_encdec`
+      `--train-experts`/`--val-experts`/`--init-expert-from`; `RelicExpert.relic_head` set/slots;
+      per-expert checkpoint stamps + `wm/compose.py`; `eval.expert_exact`; `eval_encdec` composite-
+      transparent; `tests/test_wm_factored.py` +8 → 21; README per-expert workflow)._ The
+      product-owner's **sequential per-expert strategy**: because the experts are parameter-disjoint,
+      train one until its slice hits a high exactness bar, keep it, iterate on the weak ones — never
+      retrain a healthy expert because another struggles.
+      - **Freeze/skip** (`--train-experts a,b,…`, factored only, default all): non-listed experts are
+        excluded from the optimizer (byte-identical after steps — tested) *and* their encode/decode is
+        skipped in the step (loss only over trained experts). A **solo relic run hit ~12.8 k states/s**
+        vs the joint run's ~1.5 k (**~8.5×**), trainable params 3.55 M of 22.9 M.
+      - **Focused val** (`--val-experts trained-only`): reconstructs only the trained experts' token
+        types (no full report-card decode), emitting their `expert_dist`/`expert_exact` (+ relic F1);
+        `.best` driven by the trained experts' mean `expert_dist`.
+      - **`eval.expert_exact`** (new, tagged `{"expert": …}`): per-expert fraction of val states whose
+        slice-owned token types reconstruct exactly (array-space, integer-rounded, presence incl.) — each
+        expert's "done" bar. Partitions cleanly (tested: `expert_exact == (expert_dist_num == 0)`; scalars
+        pins to 1.0 by construction).
+      - **Per-expert checkpoint + compose**: each factored checkpoint's meta stamps a per-expert block
+        (slice layout + tokenizer signature + build kwargs); weights live in the one full `state_dict`
+        under `experts.<name>.*`. `python -m lts2_agent.wm.compose --out C --base B --experts
+        relics=A.best …` assembles a standard factored checkpoint from per-expert sources, validating
+        shared-global-config + per-slice width/config match. `eval_encdec` auto-detects `arch=factored`
+        and loads composites transparently. **`--init-expert-from name=ckpt`** warm-starts one expert's
+        slice from a full checkpoint (seed a solo run from the joint run's progress).
+      - **Relic bake-off** (each a fresh solo relic run, 6k steps, seed 0, corpus_tok_v3 val 3000,
+        batch 512, warmup 800, cosine). Final step-6000 val (matched steps):
+
+        | variant | config | expert_dist ↓ | relic_set_f1 ↑ | expert_exact ↑ |
+        |---|---|---|---|---|
+        | a. set+count, pw 1  | `--fac-relic-head set --relic-pos-weight 1`   | RESULT_PW1 |
+        | a. set+count, pw 5  | `--relic-pos-weight 5`                        | RESULT_PW5 |
+        | a. set+count, pw 15 | `--relic-pos-weight 15`                       | RESULT_PW15 |
+        | b. set+count, deep dec | `--relic-pos-weight 5 --relic-dec-layers 3` | RESULT_DEEP |
+        | c. set+count, lr 1e-3 | `--relic-pos-weight 5 --lr 1e-3`            | RESULT_LR |
+        | **d. slots + dedup** | `--fac-relic-head slots`                     | RESULT_SLOTS |
+
+        RESULT_VERDICT
+
 ### M4 — Predictor (design P3) — the heart, and the main research risk
 
 - [ ] **4.1 Afterstate step**: K-step unrolled training with latent-consistency loss + SimNorm,

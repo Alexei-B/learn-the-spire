@@ -57,19 +57,27 @@ def _lr_lambda(warmup: int, total: int):
 
 
 @torch.no_grad()
-def run_val(model, sample_stacked, sample_acts, batch_size, device, loss_fn, experts=False):
-    """Full pass over the fixed val sample -> (overall metrics, by-act metrics, mean losses)."""
+def run_val(model, sample_stacked, sample_acts, batch_size, device, loss_fn, experts=False,
+            active=None, trained_only=False, dedup=False):
+    """Full pass over the fixed val sample -> (overall metrics, by-act metrics, mean losses).
+
+    ``trained_only`` (per-expert solo runs): forward + loss + report are restricted to the ``active``
+    experts, so the val pass decodes ONLY that expert's token types (focused metrics, not the full card)."""
     model.eval()
     accum: Dict[str, Any] = {}
     loss_sums = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0}
     nb = 0
+    fwd_active = active if trained_only else None
     for batch, acts in D.iter_fixed_batches(sample_stacked, sample_acts, batch_size, device):
-        z, out = model(batch)
-        losses = loss_fn(batch, out)
+        z, out = model(batch, active_experts=fwd_active) if experts else model(batch)
+        losses = loss_fn(batch, out, active=fwd_active) if experts else loss_fn(batch, out)
         for k in loss_sums:
             loss_sums[k] += float(losses[k])
         nb += 1
-        pairs = report.report_pairs(batch, out, experts=experts)
+        if trained_only:
+            pairs = report.report_pairs_experts_only(batch, out, active, dedup=dedup)
+        else:
+            pairs = report.report_pairs(batch, out, dedup=dedup, experts=experts)
         report.merge_pairs(accum, pairs, acts)
     overall, by_act = report.finalize(accum)
     mean_losses = {k: v / max(1, nb) for k, v in loss_sums.items()}
@@ -156,6 +164,27 @@ def main() -> int:
     ap.add_argument("--loss-balance", default="term", choices=["term", "expert"],
                     help="factored arch only: 'expert' gives every expert an equal gradient share "
                          "(fixes relic/orb starvation under the per-term default).")
+    # Per-expert training (roadmap M3.5 sequential strategy). Train one/few experts at a time; the rest
+    # are FROZEN (excluded from the optimizer) and their encode/decode is SKIPPED — a solo small-expert
+    # run pays only that expert's compute (very high states/s).
+    ap.add_argument("--train-experts", default="",
+                    help="factored only: comma-separated experts to TRAIN (e.g. 'relics'); the rest are "
+                         "frozen + skipped. Empty (default) = all experts (the joint run).")
+    ap.add_argument("--val-experts", default="all", choices=["all", "trained-only"],
+                    help="factored only: 'all' (default) runs the full report card; 'trained-only' "
+                         "evaluates ONLY the trained experts (expert_dist/expert_exact/relic_set_f1) so a "
+                         "solo run doesn't pay the full-model val decode.")
+    ap.add_argument("--init-expert-from", nargs="*", default=[], metavar="name=ckpt",
+                    help="factored only: warm-start an expert's weights from the matching slice of a full "
+                         "factored checkpoint (e.g. cards=wm_t3_v3.pt.best) — seed a solo run from the "
+                         "joint run's partial progress. Repeatable; validates slice width + config match.")
+    ap.add_argument("--fac-relic-head", default="slots", choices=["set", "slots"],
+                    help="factored relic expert decode: 'set' (default) = multi-hot set head + count "
+                         "head (duplicate-free by construction); 'slots' = monolith-style per-slot "
+                         "categoricals + inference dedup (the M3.5 bake-off's slots+dedup variant).")
+    ap.add_argument("--relic-dec-layers", type=int, default=1,
+                    help="factored only: relic-expert decoder depth (default 1 = the shallow expert "
+                         "default; the bake-off's deeper-decoder variant uses 3).")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--buffer", type=int, default=16384, help="shuffle-buffer size (states)")
     ap.add_argument("--val-every", type=int, default=500)
@@ -243,9 +272,22 @@ def main() -> int:
           f"tf32={device.type == 'cuda'} amp={'bf16' if use_amp else 'off'}")
 
     factored = args.arch == "factored"
+    # Per-expert training set (factored). None = all experts (joint run); else the trained subset.
+    train_active: Optional[List[str]] = None
+    if factored and args.train_experts.strip():
+        train_active = [n.strip() for n in args.train_experts.split(",") if n.strip()]
     if factored:
+        relic_overrides = ({"relics": {"dec_layers": args.relic_dec_layers}}
+                           if args.relic_dec_layers != 1 else None)
         model = MF.FactoredWorldModelAE(d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
-                                        simnorm_group=args.simnorm_group).to(device)
+                                        simnorm_group=args.simnorm_group,
+                                        relic_head=args.fac_relic_head,
+                                        expert_overrides=relic_overrides).to(device)
+        if train_active is not None:
+            unknown = [n for n in train_active if n not in model.experts]
+            if unknown:
+                raise SystemExit(f"--train-experts: unknown expert(s) {unknown}; "
+                                 f"choose from {list(model.experts.keys())}")
     else:
         model = M.WorldModelAE(d_model=args.d_model, n_heads=args.heads, enc_layers=args.enc_layers,
                                dec_layers=args.dec_layers, n_pool_layers=args.pool_layers,
@@ -253,7 +295,34 @@ def main() -> int:
                                simnorm_group=args.simnorm_group, cat_dim=args.cat_dim, n_mem=args.n_mem,
                                latent_mode=args.latent_mode, latent_k=args.latent_k,
                                num_head=args.num_head, relic_head=args.relic_head).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
+
+    def _freeze_and_params(m) -> list:
+        """Factored per-expert freeze: set requires_grad per the trained set and return ONLY the trained
+        params for the optimizer (frozen experts are excluded, so they stay byte-identical)."""
+        if not factored or train_active is None:
+            return list(m.parameters())
+        params: list = []
+        for name, ex in m.experts.items():
+            on = name in train_active
+            for p in ex.parameters():
+                p.requires_grad_(on)
+            if on:
+                params += list(ex.parameters())
+        return params
+
+    # Warm-start experts from a full checkpoint's slices (fresh run only; --resume carries its own weights).
+    if factored and args.init_expert_from and not args.resume:
+        for item in args.init_expert_from:
+            if "=" not in item:
+                raise SystemExit(f"--init-expert-from entry {item!r} must be name=checkpoint")
+            name, src = item.split("=", 1)
+            if name not in model.experts:
+                raise SystemExit(f"--init-expert-from: unknown expert {name!r}")
+            stamp = MF.init_expert_from(model, name, src, device)
+            print(f"[train_encdec] warm-started expert {name} from {src} "
+                  f"(source step {(MF.read_meta(src)).get('step')})", flush=True)
+
+    opt = torch.optim.AdamW(_freeze_and_params(model), lr=args.lr, weight_decay=args.weight_decay,
                             betas=(0.9, args.beta2))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
 
@@ -269,7 +338,7 @@ def main() -> int:
                                             expect_num_head=args.num_head,
                                             expect_relic_head=args.relic_head)
         model = model.to(device)
-        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
+        opt = torch.optim.AdamW(_freeze_and_params(model), lr=args.lr, weight_decay=args.weight_decay,
                             betas=(0.9, args.beta2))
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
         if os.path.exists(args.ckpt + ".train"):
@@ -291,12 +360,16 @@ def main() -> int:
         else:
             card_ce_weights = _card_ce_weights(args, device)
 
-    # Loss closure — factored sums the per-expert losses; mono uses the shared reconstruction loss.
-    def loss_fn(batch_, out_):
+    # Loss closure — factored sums the per-expert losses (over the trained subset); mono uses the shared
+    # reconstruction loss.
+    def loss_fn(batch_, out_, active=None):
         if factored:
             return MF.compute_losses(batch_, out_, model, balance=args.loss_balance,
-                                      relic_pos_weight=args.relic_pos_weight)
+                                      relic_pos_weight=args.relic_pos_weight, active=active)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
+
+    # Relic slots variant decodes with inference dedup (the bake-off's slots+dedup path).
+    val_dedup = factored and args.fac_relic_head == "slots"
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.
     ema: Optional[M.EMA] = None
@@ -320,10 +393,18 @@ def main() -> int:
     if factored:
         latent_desc = f"factored[{model.latent_dim}]"
         layout = " ".join(f"{n}={b - a}" for n, (a, b) in model.slice_layout.items())
-        print(f"[train_encdec] arch=factored params={n_params:,} d_model={args.d_model} "
-              f"latent_dim={model.latent_dim} slices[{layout}] batch={args.batch}", flush=True)
+        trained_desc = ("ALL" if train_active is None else ",".join(train_active))
+        trained_params = sum(MF.param_count(model.experts[n]) for n in
+                             (train_active if train_active is not None else list(model.experts)))
+        print(f"[train_encdec] arch=factored relic_head={args.fac_relic_head} params={n_params:,} "
+              f"d_model={args.d_model} latent_dim={model.latent_dim} slices[{layout}] "
+              f"batch={args.batch}", flush=True)
+        print(f"[train_encdec] TRAIN experts=[{trained_desc}] trainable_params={trained_params:,} "
+              f"val_experts={args.val_experts}", flush=True)
         for ename, ex in model.experts.items():
-            print(f"[train_encdec]   expert {ename:10s} params={MF.param_count(ex):>10,d}", flush=True)
+            tag = "" if (train_active is None or ename in train_active) else " (frozen)"
+            print(f"[train_encdec]   expert {ename:10s} params={MF.param_count(ex):>10,d}{tag}",
+                  flush=True)
     else:
         latent_desc = (f"tokens[{args.latent_k}x{args.d_model}]" if args.latent_mode == "tokens"
                        else f"flat[{args.z_dim}]")
@@ -361,8 +442,12 @@ def main() -> int:
                 break
             batch, _acts = next(stream)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-                z, out = model(batch)
-                losses = loss_fn(batch, out)
+                if factored:
+                    z, out = model(batch, active_experts=train_active)
+                    losses = loss_fn(batch, out, active=train_active)
+                else:
+                    z, out = model(batch)
+                    losses = loss_fn(batch, out)
             opt.zero_grad(set_to_none=True)
             losses["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -399,41 +484,72 @@ def main() -> int:
                 if ema is not None:
                     ema.store(model)
                     ema.copy_to(model)
+                trained_only = factored and args.val_experts == "trained-only" and train_active is not None
                 overall, by_act, vloss = run_val(model, val_stacked, val_acts, args.val_batch, device,
-                                                 loss_fn, experts=factored)
+                                                 loss_fn, experts=factored, active=train_active,
+                                                 trained_only=trained_only, dedup=val_dedup)
                 if ema is not None:
                     ema.restore(model)
-                print(f"         VAL[{len(val_acts)}] loss={vloss['loss']:.3f} "
-                      f"card_id={overall['card_id_top1']:.3f} zone={overall['card_zone_acc']:.3f} "
-                      f"pw_id={overall['power_id_top1']:.3f} hp_mae={overall['creature_hp_mae']:.2f} "
-                      f"energy={overall['energy_acc']:.3f} exact={overall['exact_state_rate']:.3f}",
-                      flush=True)
-                if factored:
-                    ed = " ".join(f"{n}={overall['expert_dist::' + n]:.3f}" for n in EXPERT_ORDER)
-                    print(f"         VAL scalar_exact={overall['scalar_exact']:.4f} "
-                          f"expert_dist[{ed}]", flush=True)
-                if mw.enabled:
-                    for name in report.METRIC_NAMES:
-                        mw.emit("eval", step, f"eval.{name}", overall[name])
-                    for act, met in by_act.items():
-                        for name in report.METRIC_NAMES:
-                            mw.emit("eval", step, f"eval.{name}", met[name], tags={"act": act})
-                    for k in vloss:
-                        mw.emit("eval", step, f"eval.{k}", vloss[k])
+                if trained_only:
+                    # Solo run: only the trained experts' focused metrics exist.
+                    ee = " ".join(f"{n}: dist={overall['expert_dist::' + n]:.4f} "
+                                  f"exact={overall['expert_exact::' + n]:.4f}" for n in train_active)
+                    extra_f1 = (f" relic_f1={overall['relic_set_f1']:.4f}"
+                                if "relic_set_f1" in overall else "")
+                    print(f"         VAL[{len(val_acts)}] loss={vloss['loss']:.3f} {ee}{extra_f1}",
+                          flush=True)
+                    # .best driven by the trained experts' mean reconstruction distance.
+                    sel = float(np.mean([overall[f"expert_dist::{n}"] for n in train_active]))
+                else:
+                    print(f"         VAL[{len(val_acts)}] loss={vloss['loss']:.3f} "
+                          f"card_id={overall['card_id_top1']:.3f} zone={overall['card_zone_acc']:.3f} "
+                          f"pw_id={overall['power_id_top1']:.3f} hp_mae={overall['creature_hp_mae']:.2f} "
+                          f"energy={overall['energy_acc']:.3f} exact={overall['exact_state_rate']:.3f}",
+                          flush=True)
                     if factored:
-                        # Per-expert reconstruction error, one line per expert tagged by name (the
-                        # dashboard groups by "expert" to overlay the per-decoder curves). No untagged
-                        # aggregate — state_dist/canon_dist already are the combined line.
-                        for ename in EXPERT_ORDER:
+                        ed = " ".join(f"{n}={overall['expert_dist::' + n]:.3f}" for n in EXPERT_ORDER)
+                        ex_str = " ".join(f"{n}={overall['expert_exact::' + n]:.3f}"
+                                          for n in EXPERT_ORDER)
+                        print(f"         VAL scalar_exact={overall['scalar_exact']:.4f} "
+                              f"expert_dist[{ed}]", flush=True)
+                        print(f"         VAL expert_exact[{ex_str}]", flush=True)
+                    sel = overall["state_dist"]
+                if mw.enabled:
+                    if trained_only:
+                        # Just the active experts' focused metrics (no full report card was computed).
+                        for k in vloss:
+                            mw.emit("eval", step, f"eval.{k}", vloss[k])
+                        for ename in train_active:
                             mw.emit("eval", step, "eval.expert_dist",
                                     overall[f"expert_dist::{ename}"], tags={"expert": ename})
-                        mw.emit("eval", step, "eval.scalar_exact", overall["scalar_exact"])
+                            mw.emit("eval", step, "eval.expert_exact",
+                                    overall[f"expert_exact::{ename}"], tags={"expert": ename})
+                        if "relic_set_f1" in overall:
+                            mw.emit("eval", step, "eval.relic_set_f1", overall["relic_set_f1"])
+                    else:
+                        for name in report.METRIC_NAMES:
+                            mw.emit("eval", step, f"eval.{name}", overall[name])
+                        for act, met in by_act.items():
+                            for name in report.METRIC_NAMES:
+                                mw.emit("eval", step, f"eval.{name}", met[name], tags={"act": act})
+                        for k in vloss:
+                            mw.emit("eval", step, f"eval.{k}", vloss[k])
+                        if factored:
+                            # Per-expert reconstruction error + exactness, one line per expert tagged by
+                            # name (the dashboard groups by "expert" to overlay per-decoder curves).
+                            for ename in EXPERT_ORDER:
+                                mw.emit("eval", step, "eval.expert_dist",
+                                        overall[f"expert_dist::{ename}"], tags={"expert": ename})
+                                mw.emit("eval", step, "eval.expert_exact",
+                                        overall[f"expert_exact::{ename}"], tags={"expert": ename})
+                            mw.emit("eval", step, "eval.scalar_exact", overall["scalar_exact"])
                 # Best-val checkpoint: the periodic checkpoint overwrites in place, so a late-run
                 # divergence used to destroy the best weights of the run (learned the hard way: the
                 # first gate run collapsed at step ~63k and took its step-51k best with it). Keep the
-                # lowest-val-state_dist model in a separate .best sidecar, always retrievable.
-                if args.ckpt and overall["state_dist"] < best_dist:
-                    best_dist = overall["state_dist"]
+                # lowest-distance model in a separate .best sidecar, always retrievable. In a solo run the
+                # distance is the trained experts' mean expert_dist (state_dist isn't computed).
+                if args.ckpt and sel < best_dist:
+                    best_dist = sel
                     save_fn(args.ckpt + ".best", step=step, optimizer=None,
                             extra=dict(_ckpt_extra() or {}, best_state_dist=best_dist),
                             ema_state=ema.state_dict() if ema is not None else None)

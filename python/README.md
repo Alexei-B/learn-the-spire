@@ -626,6 +626,66 @@ checkpoint. Measured on an RTX 3090 (450×384, bf16, v3 cache): losses fall smoo
 and `energy_acc`=1.0 from the first val, and it runs **~12 % faster than the monolith** (~1.69 k vs
 ~1.50 k states/s) — the smaller per-expert attention scopes outweighing the extra per-expert kernels.
 
+#### Per-expert training: train → keep → compose (roadmap M3.5)
+
+Because the experts are **parameter-disjoint** (no cross-category attention), they can be trained
+**independently and sequentially** — the product-owner strategy: train one expert until its slice hits a
+high exactness bar, keep it, move to the next, and never retrain a healthy expert because another is
+struggling. Three CLI seams make this a workflow:
+
+- **`--train-experts a,b,…`** (factored only; default = all) trains *only* the named experts. The rest are
+  **frozen** — excluded from the optimizer (so they stay byte-identical) *and* their encode/decode is
+  **skipped entirely** during the step, so a solo small-expert run pays only that expert's compute. A solo
+  relic run (~3.5 M trainable params of the 22.9 M model) hits a much higher `states/s` than the joint run.
+- **`--val-experts trained-only`** (default `all`) restricts the val pass to the trained experts,
+  reconstructing only their token types — so a solo run doesn't pay the full-model report-card decode. It
+  emits just that expert's `eval.expert_dist` / `eval.expert_exact` (+ `eval.relic_set_f1` for relics),
+  and the `.best` sidecar is driven by the trained experts' mean `expert_dist`.
+- **`--init-expert-from name=ckpt …`** warm-starts one expert's weights from the matching slice of an
+  existing full factored checkpoint (e.g. `cards=checkpoints/wm_t3_v3.pt.best`), so a solo run can seed
+  from a joint run's partial progress. It validates the source slice width + build config match.
+
+**`eval.expert_exact`** (new, factored only; tagged `{"expert": …}` like `expert_dist`) is each expert's
+**"done" bar**: the fraction of val states whose slice-owned token types reconstruct *exactly* (array
+space, integer-rounded, presence included). Train an expert until its `expert_exact` plateaus, then keep it.
+
+Once each expert is trained, **compose** the kept slices into one standard full factored checkpoint (the
+artifact the M4 predictor consumes):
+
+```sh
+# Solo-train relics from scratch, focused val, on the GPU (tiny — batch 512 is fine).
+python -m lts2_agent.train_encdec --arch factored --train-experts relics --val-experts trained-only \
+    --cache data/corpus_tok_v3 --corpus data/corpus2 --steps 6000 --batch 512 --val-every 1000 \
+    --ckpt checkpoints/relic_solo.pt --run-label relic-solo
+
+# Warm-start a cards solo run from the joint run's cards slice.
+python -m lts2_agent.train_encdec --arch factored --train-experts cards --val-experts trained-only \
+    --init-expert-from cards=checkpoints/wm_t3_v3.pt.best --cache data/corpus_tok_v3 \
+    --corpus data/corpus2 --steps 20000 --batch 384 --ckpt checkpoints/cards_solo.pt
+
+# Compose: assemble a full checkpoint from the kept per-expert runs (--base fills the rest).
+python -m lts2_agent.wm.compose --out checkpoints/wm_composite.pt \
+    --base checkpoints/wm_t3_v3.pt.best \
+    --experts relics=checkpoints/relic_solo.pt.best cards=checkpoints/cards_solo.pt.best
+
+# eval_encdec loads a factored/composite checkpoint transparently (auto-detects arch from meta).
+python -m lts2_agent.eval_encdec --ckpt checkpoints/wm_composite.pt --split val --cache data/corpus_tok_v3
+```
+
+Compose is strict: every source must be factored + tokenizer-compatible, all sources must agree on the
+shared global config, and each pulled expert's slice width + build config must match the composite (a
+slice can only land in a checkpoint it fits). The composite's per-expert provenance is recorded in the
+checkpoint meta (`composed_from`). Each factored checkpoint's meta also carries a per-expert **stamp**
+(`experts`: slice layout + tokenizer signature + build kwargs), the contract compose/warm-start validate
+against; the expert weights themselves live in the one full `state_dict` under `experts.<name>.*`.
+
+**Relic decode variant (bake-off).** The relic expert supports two decode heads via **`--fac-relic-head`**
+(factored only): `set` (default) is the multi-hot set-membership head + count head (duplicate-free by
+construction); `slots` is the monolith-style per-slot categoricals + inference **dedup** (greedy-by-
+confidence unique assignment — `_dedup_slot_ids`, auto-enabled in val/eval for a slots model).
+**`--relic-dec-layers N`** (default 1) deepens the relic decoder for a set-head capacity probe. These feed
+the M3.5 relic bake-off (the set head only ships if it *beats* slots+dedup on `expert_exact`).
+
 ## Decoded-state printer + diff (roadmap 3.2)
 
 `lts2_agent.statefmt` is the human window onto a **canonical state dict** — the exact shape

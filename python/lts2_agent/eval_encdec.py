@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from typing import Any, Dict
 
@@ -20,13 +21,37 @@ import torch
 
 from .wm import data as D
 from .wm import model as M
+from .wm import model_factored as MF
 from .wm import report
+
+
+def _load_any(ckpt: str, device):
+    """Load a world-model checkpoint transparently: a factored checkpoint (incl. a composed one from
+    ``wm.compose``) via the factored loader, a monolith checkpoint via the mono loader. Returns
+    ``(model, meta, factored)``."""
+    meta_path = ckpt + ".meta.json"
+    arch = None
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            arch = json.load(f).get("arch")
+    if arch == "factored":
+        model, meta = MF.load_checkpoint(ckpt, device)
+        return model, meta, True
+    model, meta = M.load_checkpoint(ckpt, device)
+    return model, meta, False
 
 
 def evaluate(ckpt: str, corpus_root: str, split: str, batch_size: int, device, limit: int = 0,
              dedup: bool = False, cache_dir: str = ""):
-    model, meta = M.load_checkpoint(ckpt, device)
+    model, meta, factored = _load_any(ckpt, device)
     model.eval()
+    # A factored relic-slots model wants inference dedup; the set-head model is already dup-free.
+    if factored and getattr(model, "relic_head", "set") == "slots":
+        dedup = True
+
+    def _pairs(batch, out):
+        return report.report_pairs(batch, out, dedup=dedup, experts=factored)
+
     accum: Dict[str, Any] = {}
     n = 0
     t0 = time.perf_counter()
@@ -35,7 +60,7 @@ def evaluate(ckpt: str, corpus_root: str, split: str, batch_size: int, device, l
         batch = M.to_tensors(M.collate(feats), device)
         with torch.no_grad():
             _z, out = model(batch)
-        report.merge_pairs(accum, report.report_pairs(batch, out, dedup=dedup), acts)
+        report.merge_pairs(accum, _pairs(batch, out), acts)
 
     # Read pre-tokenized shards when a cache is given (fast, CPU-friendly); else stream + tokenize.
     if cache_dir:
@@ -43,7 +68,7 @@ def evaluate(ckpt: str, corpus_root: str, split: str, batch_size: int, device, l
         for batch, b_acts in D.iter_fixed_batches(stacked, acts, batch_size, device):
             with torch.no_grad():
                 _z, out = model(batch)
-            report.merge_pairs(accum, report.report_pairs(batch, out, dedup=dedup), b_acts)
+            report.merge_pairs(accum, _pairs(batch, out), b_acts)
             n += len(b_acts)
     else:
         feats, acts = [], []
