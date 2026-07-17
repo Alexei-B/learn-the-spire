@@ -44,7 +44,27 @@ from .wm import model as M
 from .wm import model_factored as MF
 from .wm import report
 from .wm import spec as S
+from .wm import synth as SY
 from .wm.experts import EXPERT_ORDER
+
+
+def _parse_data(spec: str) -> tuple:
+    """Parse the --data spec into ``(mode, frac_synth)``: 'real'->('real',0.0), 'synth'->('synth',1.0),
+    'mixed:R'->('mixed',R) with 0<R<1."""
+    spec = (spec or "real").strip().lower()
+    if spec == "real":
+        return "real", 0.0
+    if spec == "synth":
+        return "synth", 1.0
+    if spec.startswith("mixed:"):
+        try:
+            r = float(spec.split(":", 1)[1])
+        except ValueError:
+            raise SystemExit(f"--data {spec!r}: mixed ratio must be a float (e.g. mixed:0.5)")
+        if not 0.0 < r < 1.0:
+            raise SystemExit(f"--data {spec!r}: mixed ratio must be in (0,1)")
+        return "mixed", r
+    raise SystemExit(f"--data {spec!r}: expected 'real', 'synth', or 'mixed:R'")
 
 
 def _lr_lambda(warmup: int, total: int):
@@ -140,6 +160,17 @@ def _card_ce_weights(args, device) -> torch.Tensor:
     return torch.tensor(w, device=device, dtype=torch.float32)
 
 
+def _slice_width_overrides(args):
+    """Parse --slice-width NAME=W entries into the constructor's slice_widths override dict."""
+    if not getattr(args, "slice_width", None):
+        return None
+    out = dict(MF.DEFAULT_SLICE_WIDTHS)
+    for item in args.slice_width:
+        name, w = item.split("=")
+        out[name.strip()] = int(w)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="World-model encoder/decoder trainer (roadmap 3.1)")
     ap.add_argument("--corpus", default="data/corpus", help="corpus root (train split streamed)")
@@ -147,6 +178,14 @@ def main() -> int:
                     help="pre-tokenized cache dir; used automatically when it exists and its signature "
                          "matches (GPU-bound). Empty string disables. Build: python -m "
                          "lts2_agent.wm.cache build --corpus <corpus> --out <cache>")
+    ap.add_argument("--data", default="real",
+                    help="factored SOLO runs only (--train-experts set): training data source. 'real' "
+                         "(default) = the pre-tokenized corpus cache (deployment distribution); 'synth' = "
+                         "mechanically-generated uniform configurations in tokenizer-array space (no "
+                         "cache/corpus needed — kills the rare-tail coverage floors; roadmap M3.5 "
+                         "synthetic-space training); 'mixed:R' = a fraction R synthetic per batch, 1-R "
+                         "real (e.g. 'mixed:0.5', 'mixed:0.25'). Val ALWAYS runs the real fixed val "
+                         "(deployment yardstick) AND a seeded synthetic coverage val regardless.")
     ap.add_argument("--steps", type=int, default=50000)
     ap.add_argument("--halt-step", type=int, default=0,
                     help="stop training at this step while the LR schedule still spans --steps — for "
@@ -188,6 +227,9 @@ def main() -> int:
                     help="factored only: warm-start an expert's weights from the matching slice of a full "
                          "factored checkpoint (e.g. cards=wm_t3_v3.pt.best) — seed a solo run from the "
                          "joint run's partial progress. Repeatable; validates slice width + config match.")
+    ap.add_argument("--slice-width", action="append", default=None, metavar="NAME=W",
+                    help="factored: override an expert's latent slice width, e.g. --slice-width "
+                         "potions=256 (repeatable). Widths must divide by simnorm-group.")
     ap.add_argument("--fac-relic-head", default="slots", choices=["set", "slots"],
                     help="factored relic expert decode: 'set' (default) = multi-hot set head + count "
                          "head (duplicate-free by construction); 'slots' = monolith-style per-slot "
@@ -286,10 +328,22 @@ def main() -> int:
     train_active: Optional[List[str]] = None
     if factored and args.train_experts.strip():
         train_active = [n.strip() for n in args.train_experts.split(",") if n.strip()]
+    # Synthetic-space training source (roadmap M3.5). Only a factored SOLO run may draw synthetic batches
+    # (the generators are per-expert; a joint run has no single designed category).
+    data_mode, frac_synth = _parse_data(args.data)
+    if data_mode != "real":
+        if not factored or train_active is None:
+            raise SystemExit(f"--data {args.data!r} requires --arch factored with --train-experts set "
+                             f"(the synthetic generators are per-expert; a joint run has no designed "
+                             f"category).")
+        unknown = [n for n in train_active if n not in SY._FILLERS]
+        if unknown:
+            raise SystemExit(f"--data {args.data!r}: no synthetic generator for {unknown}; "
+                             f"choose from {sorted(SY._FILLERS)}")
     if factored:
         relic_overrides = ({"relics": {"dec_layers": args.relic_dec_layers}}
                            if args.relic_dec_layers != 1 else None)
-        model = MF.FactoredWorldModelAE(d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
+        model = MF.FactoredWorldModelAE(slice_widths=_slice_width_overrides(args), d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
                                         simnorm_group=args.simnorm_group,
                                         relic_head=args.fac_relic_head,
                                         expert_overrides=relic_overrides).to(device)
@@ -436,20 +490,46 @@ def main() -> int:
     if mw.enabled:
         print(f"[train_encdec] metrics -> {mw.run_dir}", flush=True)
 
-    # Focus-present sampling (solo runs only): oversample states with a present trained-expert token.
-    focus_experts = (train_active if (factored and args.focus_present > 0.0
-                                      and train_active is not None) else None)
-    if args.focus_present > 0.0 and focus_experts is None:
-        print("[train_encdec] --focus-present ignored: it applies only to factored SOLO runs "
-              "(--train-experts set).", flush=True)
-    if focus_experts is not None:
-        nat = float(D.expert_present_mask(val_stacked, focus_experts).mean())
-        print(f"[train_encdec] focus-present R={args.focus_present:.2f} experts={focus_experts}: "
-              f"natural present-state fraction (val) {nat:.3f} -> per-batch target {args.focus_present:.3f}",
-              flush=True)
-    stream = D.train_batches(args.corpus, "train", args.batch, args.buffer, device, rng,
-                             cache_dir=cache_dir, focus_experts=focus_experts,
-                             focus_present=args.focus_present)
+    # Training stream. Synthetic / mixed sources (factored solo) generate batches in tokenizer-array
+    # space; the real source streams the corpus cache (optionally focus-present oversampled).
+    if data_mode != "real":
+        npr = np.random.default_rng(args.seed + 0x5117)
+        if data_mode == "synth":
+            print(f"[train_encdec] DATA=synth: generating uniform-with-design batches for "
+                  f"{train_active} (no cache/corpus needed)", flush=True)
+            cpu = SY.synth_batches(train_active, args.batch, npr)
+        else:
+            if C.resolve_manifest(cache_dir) is None:
+                raise SystemExit(f"--data {args.data!r} needs the real cache at {cache_dir!r} for the "
+                                 f"real fraction; build one first.")
+            print(f"[train_encdec] DATA=mixed:{frac_synth:.2f}: {frac_synth:.0%} synthetic + "
+                  f"{1 - frac_synth:.0%} real per batch for {train_active}", flush=True)
+            cpu = SY.mixed_batches(cache_dir, "train", train_active, args.batch, frac_synth, rng)
+        stream = ((M.to_tensors(s, device), a) for s, a in D.prefetch(cpu, depth=4))
+    else:
+        # Focus-present sampling (solo runs only): oversample states with a present trained-expert token.
+        focus_experts = (train_active if (factored and args.focus_present > 0.0
+                                          and train_active is not None) else None)
+        if args.focus_present > 0.0 and focus_experts is None:
+            print("[train_encdec] --focus-present ignored: it applies only to factored SOLO runs "
+                  "(--train-experts set).", flush=True)
+        if focus_experts is not None:
+            nat = float(D.expert_present_mask(val_stacked, focus_experts).mean())
+            print(f"[train_encdec] focus-present R={args.focus_present:.2f} experts={focus_experts}: "
+                  f"natural present-state fraction (val) {nat:.3f} -> per-batch target "
+                  f"{args.focus_present:.3f}", flush=True)
+        stream = D.train_batches(args.corpus, "train", args.batch, args.buffer, device, rng,
+                                 cache_dir=cache_dir, focus_experts=focus_experts,
+                                 focus_present=args.focus_present)
+
+    # Synthetic coverage-val (factored solo): a FIXED seeded 2000-config synthetic sample per trained
+    # expert, evaluated every val pass alongside the real fixed val — the coverage yardstick (the real
+    # val stays the deployment yardstick). Always built for a factored solo run, whatever --data is.
+    cov_stacked = cov_acts = None
+    if factored and train_active is not None:
+        cov_stacked, cov_acts = SY.coverage_val_sample(train_active, args.val_states, SY.COVERAGE_VAL_SEED)
+        print(f"[train_encdec] coverage-val: {len(cov_acts)} fixed synthetic configs for {train_active} "
+              f"(seed {SY.COVERAGE_VAL_SEED:#x})", flush=True)
 
     win = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0}
     win_states = 0
@@ -511,6 +591,13 @@ def main() -> int:
                 overall, by_act, vloss = run_val(model, val_stacked, val_acts, args.val_batch, device,
                                                  loss_fn, experts=factored, active=train_active,
                                                  trained_only=trained_only, dedup=val_dedup)
+                # Synthetic coverage-val: the same trained experts, focused, on the fixed synthetic
+                # coverage set — evaluated under the same (EMA) weights as the real val.
+                cov_overall = None
+                if cov_stacked is not None:
+                    cov_overall, _cov_by_act, _cov_loss = run_val(
+                        model, cov_stacked, cov_acts, args.val_batch, device, loss_fn, experts=True,
+                        active=train_active, trained_only=True, dedup=val_dedup)
                 if ema is not None:
                     ema.restore(model)
                 if trained_only:
@@ -537,6 +624,12 @@ def main() -> int:
                               f"expert_dist[{ed}]", flush=True)
                         print(f"         VAL expert_exact[{ex_str}]", flush=True)
                     sel = overall["state_dist"]
+                if cov_overall is not None:
+                    cc = " ".join(f"{n}: dist={cov_overall['expert_dist::' + n]:.4f} "
+                                  f"exact={cov_overall['expert_exact::' + n]:.4f}" for n in train_active)
+                    cf1 = (f" relic_f1={cov_overall['relic_set_f1']:.4f}"
+                           if "relic_set_f1" in cov_overall else "")
+                    print(f"         COVERAGE-VAL[{len(cov_acts)}] {cc}{cf1}", flush=True)
                 if mw.enabled:
                     if trained_only:
                         # Just the active experts' focused metrics (no full report card was computed).
@@ -566,6 +659,19 @@ def main() -> int:
                                 mw.emit("eval", step, "eval.expert_exact",
                                         overall[f"expert_exact::{ename}"], tags={"expert": ename})
                             mw.emit("eval", step, "eval.scalar_exact", overall["scalar_exact"])
+                    # Synthetic coverage-val: DISTINCT metric names (eval.*_cov). Sharing the real
+                    # metrics' names with only a val=coverage tag polluted the dashboard: group-by
+                    # "expert" merged and AVERAGED the real and coverage series into one line, making
+                    # every probe look much worse than its deployment metric (owner-reported).
+                    if cov_overall is not None:
+                        for ename in train_active:
+                            mw.emit("eval", step, "eval.expert_dist_cov",
+                                    cov_overall[f"expert_dist::{ename}"], tags={"expert": ename})
+                            mw.emit("eval", step, "eval.expert_exact_cov",
+                                    cov_overall[f"expert_exact::{ename}"], tags={"expert": ename})
+                        if "relic_set_f1" in cov_overall:
+                            mw.emit("eval", step, "eval.relic_set_f1_cov",
+                                    cov_overall["relic_set_f1"])
                 # Best-val checkpoint: the periodic checkpoint overwrites in place, so a late-run
                 # divergence used to destroy the best weights of the run (learned the hard way: the
                 # first gate run collapsed at step ~63k and took its step-51k best with it). Keep the
