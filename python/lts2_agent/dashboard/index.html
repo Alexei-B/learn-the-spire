@@ -337,6 +337,9 @@ const METRIC_LABELS = {
   "eval.field_acc": "Decoder: fields correctly decoded (1 − state distance)",
   "eval.action_snr": "Decoder: action signal-to-noise (median action footprint ÷ state distance; M4 gate ≥≈4)",
   "eval.canon_dist": "Decoder: canonical-field error rate (tokenizer-version independent)",
+  // Factored AE (--arch factored): per-expert decoder curves (group by the "expert" tag) + tier-1 canary
+  "eval.expert_dist": "Factored decoder: per-expert state distance (group by expert; 0=perfect)",
+  "eval.scalar_exact": "Factored decoder: tier-1 scalar fields exact (pins to 1.0 by construction)",
 };
 function metricLabel(name) {
   const d = METRIC_LABELS[name];
@@ -368,6 +371,7 @@ const BOUNDED_01 = new Set([
   "eval.card_id_top1", "eval.card_zone_acc", "eval.power_id_top1", "eval.energy_acc",
   "eval.relic_set_f1", "eval.potion_set_f1", "eval.hand_size_acc", "eval.pile_size_acc",
   "eval.pending_choice_acc", "eval.exact_state_rate", "eval.exact_mech_rate", "eval.state_dist",
+  "eval.expert_dist", "eval.scalar_exact",
 ]);
 function isBounded01(name) {
   if (BOUNDED_01.has(name)) return true;

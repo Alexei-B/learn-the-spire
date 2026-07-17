@@ -41,8 +41,10 @@ from .metrics import MetricsWriter
 from .wm import cache as C
 from .wm import data as D
 from .wm import model as M
+from .wm import model_factored as MF
 from .wm import report
 from .wm import spec as S
+from .wm.experts import EXPERT_ORDER
 
 
 def _lr_lambda(warmup: int, total: int):
@@ -55,7 +57,7 @@ def _lr_lambda(warmup: int, total: int):
 
 
 @torch.no_grad()
-def run_val(model, sample_stacked, sample_acts, batch_size, device, card_ce_weights=None):
+def run_val(model, sample_stacked, sample_acts, batch_size, device, loss_fn, experts=False):
     """Full pass over the fixed val sample -> (overall metrics, by-act metrics, mean losses)."""
     model.eval()
     accum: Dict[str, Any] = {}
@@ -63,11 +65,11 @@ def run_val(model, sample_stacked, sample_acts, batch_size, device, card_ce_weig
     nb = 0
     for batch, acts in D.iter_fixed_batches(sample_stacked, sample_acts, batch_size, device):
         z, out = model(batch)
-        losses = M.compute_losses(batch, out, card_ce_weights=card_ce_weights)
+        losses = loss_fn(batch, out)
         for k in loss_sums:
             loss_sums[k] += float(losses[k])
         nb += 1
-        pairs = report.report_pairs(batch, out)
+        pairs = report.report_pairs(batch, out, experts=experts)
         report.merge_pairs(accum, pairs, acts)
     overall, by_act = report.finalize(accum)
     mean_losses = {k: v / max(1, nb) for k, v in loss_sums.items()}
@@ -151,6 +153,12 @@ def main() -> int:
     ap.add_argument("--val-batch", type=int, default=256)
     ap.add_argument("--log-every", type=int, default=50, help="train step-window for metric emit")
     # Architecture.
+    ap.add_argument("--arch", default="mono", choices=["mono", "factored"],
+                    help="'mono' (default) = the monolithic single-latent AE (byte-identical to prior "
+                         "runs); 'factored' = the T3 expert-per-category AE (roadmap M3.5): independent "
+                         "per-category experts, each with its own named latent slice (scalars/creatures/"
+                         "cards/relics/potions/orbs), tier-1 scalars exact by construction. Stamped in "
+                         "checkpoint meta with the slice layout; loads reject a mismatch.")
     ap.add_argument("--d-model", type=int, default=256)
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--enc-layers", type=int, default=4)
@@ -224,20 +232,31 @@ def main() -> int:
           f"{torch.cuda.get_device_name(0) if device.type == 'cuda' else ''} "
           f"tf32={device.type == 'cuda'} amp={'bf16' if use_amp else 'off'}")
 
-    model = M.WorldModelAE(d_model=args.d_model, n_heads=args.heads, enc_layers=args.enc_layers,
-                           dec_layers=args.dec_layers, n_pool_layers=args.pool_layers,
-                           n_latents=args.latents, z_dim=args.z_dim, simnorm_group=args.simnorm_group,
-                           cat_dim=args.cat_dim, n_mem=args.n_mem, latent_mode=args.latent_mode,
-                           latent_k=args.latent_k, num_head=args.num_head,
-                           relic_head=args.relic_head).to(device)
+    factored = args.arch == "factored"
+    if factored:
+        model = MF.FactoredWorldModelAE(d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
+                                        simnorm_group=args.simnorm_group).to(device)
+    else:
+        model = M.WorldModelAE(d_model=args.d_model, n_heads=args.heads, enc_layers=args.enc_layers,
+                               dec_layers=args.dec_layers, n_pool_layers=args.pool_layers,
+                               n_latents=args.latents, z_dim=args.z_dim,
+                               simnorm_group=args.simnorm_group, cat_dim=args.cat_dim, n_mem=args.n_mem,
+                               latent_mode=args.latent_mode, latent_k=args.latent_k,
+                               num_head=args.num_head, relic_head=args.relic_head).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
 
+    def save_fn(path, **kw):
+        (MF.save_checkpoint if factored else M.save_checkpoint)(path, model, **kw)
+
     start_step = 0
     if args.resume and args.ckpt and os.path.exists(args.ckpt):
-        model, meta = M.load_checkpoint(args.ckpt, device, expect_latent_mode=args.latent_mode,
-                                        expect_num_head=args.num_head,
-                                        expect_relic_head=args.relic_head)
+        if factored:
+            model, meta = MF.load_checkpoint(args.ckpt, device)
+        else:
+            model, meta = M.load_checkpoint(args.ckpt, device, expect_latent_mode=args.latent_mode,
+                                            expect_num_head=args.num_head,
+                                            expect_relic_head=args.relic_head)
         model = model.to(device)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
@@ -255,7 +274,16 @@ def main() -> int:
     # Class-balanced card CE (default OFF). Computed/cached once, then passed to every loss call.
     card_ce_weights: Optional[torch.Tensor] = None
     if args.card_ce == "balanced":
-        card_ce_weights = _card_ce_weights(args, device)
+        if factored:
+            print("[train_encdec] --card-ce balanced ignored under --arch factored", flush=True)
+        else:
+            card_ce_weights = _card_ce_weights(args, device)
+
+    # Loss closure — factored sums the per-expert losses; mono uses the shared reconstruction loss.
+    def loss_fn(batch_, out_):
+        if factored:
+            return MF.compute_losses(batch_, out_, model)
+        return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.
     ema: Optional[M.EMA] = None
@@ -276,11 +304,19 @@ def main() -> int:
         return extra or None
 
     n_params = M.param_count(model)
-    latent_desc = (f"tokens[{args.latent_k}x{args.d_model}]" if args.latent_mode == "tokens"
-                   else f"flat[{args.z_dim}]")
-    print(f"[train_encdec] params={n_params:,} d_model={args.d_model} latent={latent_desc} "
-          f"simnorm_group={args.simnorm_group} enc={args.enc_layers} dec={args.dec_layers} "
-          f"batch={args.batch}", flush=True)
+    if factored:
+        latent_desc = f"factored[{model.latent_dim}]"
+        layout = " ".join(f"{n}={b - a}" for n, (a, b) in model.slice_layout.items())
+        print(f"[train_encdec] arch=factored params={n_params:,} d_model={args.d_model} "
+              f"latent_dim={model.latent_dim} slices[{layout}] batch={args.batch}", flush=True)
+        for ename, ex in model.experts.items():
+            print(f"[train_encdec]   expert {ename:10s} params={MF.param_count(ex):>10,d}", flush=True)
+    else:
+        latent_desc = (f"tokens[{args.latent_k}x{args.d_model}]" if args.latent_mode == "tokens"
+                       else f"flat[{args.z_dim}]")
+        print(f"[train_encdec] params={n_params:,} d_model={args.d_model} latent={latent_desc} "
+              f"simnorm_group={args.simnorm_group} enc={args.enc_layers} dec={args.dec_layers} "
+              f"batch={args.batch}", flush=True)
 
     print(f"[train_encdec] loading fixed val sample ({args.val_states} states)...", flush=True)
     cache_dir = args.cache or None
@@ -313,7 +349,7 @@ def main() -> int:
             batch, _acts = next(stream)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                 z, out = model(batch)
-                losses = M.compute_losses(batch, out, card_ce_weights=card_ce_weights)
+                losses = loss_fn(batch, out)
             opt.zero_grad(set_to_none=True)
             losses["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -351,7 +387,7 @@ def main() -> int:
                     ema.store(model)
                     ema.copy_to(model)
                 overall, by_act, vloss = run_val(model, val_stacked, val_acts, args.val_batch, device,
-                                                 card_ce_weights=card_ce_weights)
+                                                 loss_fn, experts=factored)
                 if ema is not None:
                     ema.restore(model)
                 print(f"         VAL[{len(val_acts)}] loss={vloss['loss']:.3f} "
@@ -359,6 +395,10 @@ def main() -> int:
                       f"pw_id={overall['power_id_top1']:.3f} hp_mae={overall['creature_hp_mae']:.2f} "
                       f"energy={overall['energy_acc']:.3f} exact={overall['exact_state_rate']:.3f}",
                       flush=True)
+                if factored:
+                    ed = " ".join(f"{n}={overall['expert_dist::' + n]:.3f}" for n in EXPERT_ORDER)
+                    print(f"         VAL scalar_exact={overall['scalar_exact']:.4f} "
+                          f"expert_dist[{ed}]", flush=True)
                 if mw.enabled:
                     for name in report.METRIC_NAMES:
                         mw.emit("eval", step, f"eval.{name}", overall[name])
@@ -367,24 +407,32 @@ def main() -> int:
                             mw.emit("eval", step, f"eval.{name}", met[name], tags={"act": act})
                     for k in vloss:
                         mw.emit("eval", step, f"eval.{k}", vloss[k])
+                    if factored:
+                        # Per-expert reconstruction error, one line per expert tagged by name (the
+                        # dashboard groups by "expert" to overlay the per-decoder curves). No untagged
+                        # aggregate — state_dist/canon_dist already are the combined line.
+                        for ename in EXPERT_ORDER:
+                            mw.emit("eval", step, "eval.expert_dist",
+                                    overall[f"expert_dist::{ename}"], tags={"expert": ename})
+                        mw.emit("eval", step, "eval.scalar_exact", overall["scalar_exact"])
                 # Best-val checkpoint: the periodic checkpoint overwrites in place, so a late-run
                 # divergence used to destroy the best weights of the run (learned the hard way: the
                 # first gate run collapsed at step ~63k and took its step-51k best with it). Keep the
                 # lowest-val-state_dist model in a separate .best sidecar, always retrievable.
                 if args.ckpt and overall["state_dist"] < best_dist:
                     best_dist = overall["state_dist"]
-                    M.save_checkpoint(args.ckpt + ".best", model, step=step, optimizer=None,
-                                      extra=dict(_ckpt_extra() or {}, best_state_dist=best_dist),
-                                      ema_state=ema.state_dict() if ema is not None else None)
+                    save_fn(args.ckpt + ".best", step=step, optimizer=None,
+                            extra=dict(_ckpt_extra() or {}, best_state_dist=best_dist),
+                            ema_state=ema.state_dict() if ema is not None else None)
                 win_t0 = time.perf_counter()  # don't count val time against sps
 
             if args.ckpt and step % args.ckpt_every == 0:
-                M.save_checkpoint(args.ckpt, model, step=step, optimizer=opt, extra=_ckpt_extra(),
-                                  ema_state=ema.state_dict() if ema is not None else None)
+                save_fn(args.ckpt, step=step, optimizer=opt, extra=_ckpt_extra(),
+                        ema_state=ema.state_dict() if ema is not None else None)
     finally:
         if args.ckpt:
-            M.save_checkpoint(args.ckpt, model, step=step, optimizer=opt, extra=_ckpt_extra(),
-                              ema_state=ema.state_dict() if ema is not None else None)
+            save_fn(args.ckpt, step=step, optimizer=opt, extra=_ckpt_extra(),
+                    ema_state=ema.state_dict() if ema is not None else None)
         mw.close()
     return 0
 

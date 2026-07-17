@@ -461,6 +461,46 @@ pretty-printer on random held-out states — do decoded states read as *the same
       `tests/test_wm_encdec.py` updated for the v3 card spec. A v3 cache is a fresh dir
       (`--out data/corpus_tok_v3`); v1/v2 caches/checkpoints reject on the signature bump (correct).
 
+- [x] **3.6 Factored expert autoencoder (`--arch factored`)** — _done (`wm/experts.py` +
+      `wm/model_factored.py` + trainer/report/dashboard wiring + `tests/test_wm_factored.py`; the
+      monolith `--arch mono` path is untouched/byte-identical)._ The T3 "expert-per-category" AE the v3
+      tokenizer was the data layer for. The state latent is the **concatenation of per-expert slices** —
+      a named, offset-addressable layout the M4 predictor will read/write by slice — with **no
+      cross-category attention inside the AE** (independence is deliberate; cross-category coupling is the
+      predictor's job). Three tiers:
+      1. **Tier-1 scalar codec (`ScalarCodec`, parameter-free).** The global token (3 enum categoricals +
+         14 numerics) and pending (4 numerics) encode to a deterministic slice — one-hot for the small
+         enums, fixed **binary bin codes** (`NUMERIC_RANGES` bin index) for the numerics. Encode and
+         decode are both fixed functions, so the round-trip is **exact by construction** for any in-range
+         integer with *no learned weights*: `eval.scalar_exact` is 1.0 at step 0 (the wiring canary). The
+         only misses on real data are the documented loud clamps (the `maxSelect`/HP `999999999`
+         sentinels): 0.9999 on corpus2 val = 26/24000 choice states carrying the no-limit `maxSelect`.
+      2. **Tier-2 small experts.** creatures (folds powers + intents into one set expert, parent-slot
+         embedding kept), relics (multi-hot **set-membership** head, duplicate-free by construction —
+         ported from the monolith's `--relic-head set`), potions (per-slot categorical — potions can
+         duplicate), orbs. The small single-type experts (relics/potions/orbs) run at 1 enc / 1 dec layer.
+      3. **Tier-3 card-population expert.** the largest slice; a set enc/dec over the v3 population rows.
+      **All learned numerics decode through per-field range-bin classification** (`RangeBinHeads`) instead
+      of the monolith's shared symlog MSE — creature HP gets resolution-1 bins over `[0,1000]`, killing
+      the ±1 rounding tail — while still emitting the identical symlog `num` block (argmax bin → integer →
+      symlog) so `reconstruct_arrays`/`report` consume factored outputs **unchanged**. Every expert's
+      encoder carries an always-valid sentinel token so an empty category (no orbs/potions) never
+      produces a fully-padded-attention NaN. **Metrics:** all existing report-card metrics flow;
+      **`eval.expert_dist`** (per-expert share of `state_dist`, emitted tagged `{"expert": …}`, partitions
+      the whole *exactly* — the `_state_dist` den-floor was removed so an empty category contributes den 0
+      not 1) + **`eval.scalar_exact`** are new (dashboard `METRIC_LABELS` + `BOUNDED_01` updated).
+      **Slice layout** (`d_model=256` defaults): `scalars 116 · creatures 768 · cards 1536 · relics 512 ·
+      potions 128 · orbs 128` → **latent_dim 3188** (~ the monolith's 4096 tokens-mode budget); **22.9 M
+      params** (cards 7.9 M largest → creatures 6.4 M → relics/orbs/potions ~2.5–3.5 M → scalars 0), vs the
+      monolith's 10.1 M (flat) / 6.9 M (tokens) — independence replicates enc/dec machinery per expert,
+      the cost of the clean per-slice seam. Checkpoints stamp `arch=factored` + the slice layout; loads
+      reject a non-factored or layout-mismatched checkpoint. **GPU sanity** (RTX 3090, 450×384, bf16, temp
+      v3 cache): losses fall (train 7.3→2.1, val 8.4→2.0), `scalar_exact`≈1.0 and `energy_acc`=1.0 from
+      the first val, `expert_dist` tags flow; **faster than the monolith — ~1.69 k states/s vs ~1.50 k**
+      (~12 %) at equal batch/AMP, the smaller per-expert attention scopes winning despite the extra
+      per-expert kernel launches. Longer training (the report card / M4 gate) is the orchestrator's job,
+      not this slice.
+
 ### M4 — Predictor (design P3) — the heart, and the main research risk
 
 - [ ] **4.1 Afterstate step**: K-step unrolled training with latent-consistency loss + SimNorm,

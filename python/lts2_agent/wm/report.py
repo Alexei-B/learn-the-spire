@@ -24,6 +24,13 @@ import torch
 from .. import tokens
 from . import spec as S
 from .decoder import reconstruct_arrays
+from .experts import EXPERT_ORDER, EXPERT_TYPES
+
+# Per-expert token-type partition for the factored-AE eval.expert_dist metric (emitted tagged by expert).
+_EXPERT_TYPESPECS = {name: [S.TYPE_BY_NAME[n] for n in types] for name, types in EXPERT_TYPES.items()}
+# Tier-1 fields the scalar codec must reconstruct exactly (eval.scalar_exact canary): the global numeric
+# block (14) + the pending numeric block (4).
+_SCALAR_EXACT_FIELDS = len(tokens.GLOBAL_NUM) + len(tokens.PENDING_NUM)
 
 # The metric names streamed to the dashboard (eval.<name>) — this list IS the CP4 contract.
 METRIC_NAMES = [
@@ -64,17 +71,22 @@ def _target_arrays(batch: Dict[str, torch.Tensor]) -> List[Dict[str, np.ndarray]
     return out
 
 
-def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray]) -> Tuple[float, float]:
+def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray],
+                types: Optional[List] = None) -> Tuple[float, float]:
     """``(mismatched, total)`` token-fields between a predicted and a target array dict.
 
     Every field (categorical column, integer-rounded numeric column, keyword block) of every token
     is weighted equally over the union of real and predicted slots; a slot present on only one side
     counts as fully wrong. 0/total = perfect reconstruction — the smooth companion to the
     all-or-nothing ``exact_state_rate``.
+
+    ``types`` restricts the sum to a subset of token types (the per-expert ``expert_dist`` metric):
+    partitioning ``S.TYPES`` by expert and summing the per-expert ``(num, den)`` pairs reproduces the
+    full ``state_dist`` exactly.
     """
     num = 0.0
     den = 0.0
-    for t in S.TYPES:
+    for t in (types if types is not None else S.TYPES):
         fields = len(t.cat_cols) + t.num_width + (1 if t.has_kw else 0)
         if fields == 0:
             continue
@@ -102,7 +114,10 @@ def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray]) -> Tuple[f
             pk = (np.atleast_2d(pa["card_kw"])[both] >= 0.5)
             tk = (np.atleast_2d(ta["card_kw"])[both] >= 0.5)
             num += float((pk != tk).any(axis=-1).sum())   # keyword block = one field per card
-    return num, max(den, 1.0)
+    # Raw (num, den) — no den floor, so restricting `types` to an expert partitions the whole exactly
+    # (an empty category returns den 0, which `aggregate` handles). The full call's den is never 0
+    # (the global token always contributes its fields).
+    return num, den
 
 
 def _canon_leaf_count(x: Any) -> int:
@@ -171,11 +186,18 @@ def _set_f1(pred: List[int], tgt: List[int]) -> float:
 @torch.no_grad()
 def report_pairs(batch: Dict[str, torch.Tensor],
                  outputs: Dict[str, Dict[str, torch.Tensor]],
-                 dedup: bool = False) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+                 dedup: bool = False,
+                 experts: bool = False) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Per-sample ``(numerator, denominator)`` arrays for every contract metric (length B each).
 
     ``dedup`` forwards to :func:`reconstruct_arrays` — a pure decode-time relic-slot dedup that lifts
-    ``relic_set_f1`` (and ``state_dist``) for the slot-head model without any training change."""
+    ``relic_set_f1`` (and ``state_dist``) for the slot-head model without any training change.
+
+    ``experts`` (factored AE only) additionally emits, per expert, ``expert_dist::<name>`` — that
+    expert's share of ``state_dist`` restricted to its token types (partitions the whole, so the weighted
+    sum equals ``state_dist``) — and ``scalar_exact``, the fraction of tier-1 scalar fields reconstructed
+    exactly (pins to 1.0 by construction; a wiring canary). These keys are OFF by default so the
+    monolith's ``report_pairs`` contract (== ``METRIC_NAMES``) is unchanged."""
     B = batch["global_idx"].shape[0]
     pairs: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
@@ -238,8 +260,16 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     exact_mech = np.zeros(B, np.float32)
     dist_num = np.zeros(B, np.float32); dist_den = np.zeros(B, np.float32)
     cd_num = np.zeros(B, np.float32); cd_den = np.zeros(B, np.float32)
+    exp_num = {n: np.zeros(B, np.float32) for n in EXPERT_ORDER} if experts else {}
+    exp_den = {n: np.zeros(B, np.float32) for n in EXPERT_ORDER} if experts else {}
+    scal_ok = np.zeros(B, np.float32) if experts else None
     for b in range(B):
         dist_num[b], dist_den[b] = _state_dist(pred_arrays[b], tgt_arrays[b])
+        if experts:
+            for ename in EXPERT_ORDER:
+                exp_num[ename][b], exp_den[ename][b] = _state_dist(
+                    pred_arrays[b], tgt_arrays[b], types=_EXPERT_TYPESPECS[ename])
+            scal_ok[b] = _scalar_exact_count(pred_arrays[b], tgt_arrays[b])
         pc = tokens.detokenize(pred_arrays[b])
         tc = tokens.detokenize(tgt_arrays[b])
         relic_f1[b] = _set_f1(pc["relics"], tc["relics"])
@@ -281,7 +311,26 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     # predictor phase, >=~13 to trust fine-grained predictor comparisons.
     # (num, den) = (footprint * den, mismatches) so grouped sums give footprint / group-distance.
     pairs["action_snr"] = (ACTION_FOOTPRINT * dist_den, np.maximum(dist_num, 1e-9))
+    if experts:
+        for ename in EXPERT_ORDER:
+            pairs[f"expert_dist::{ename}"] = (exp_num[ename], exp_den[ename])
+        pairs["scalar_exact"] = (scal_ok, np.full(B, float(_SCALAR_EXACT_FIELDS), np.float32))
     return pairs
+
+
+def _scalar_exact_count(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray]) -> float:
+    """Number of tier-1 scalar fields (global numerics + pending numerics) reconstructed to the exact
+    integer. Denominator is :data:`_SCALAR_EXACT_FIELDS`; the fraction is ``eval.scalar_exact``."""
+    n = 0.0
+    pg = np.round(_symexp_np(pa["global_num"][0])); tg = np.round(_symexp_np(ta["global_num"][0]))
+    n += float((pg == tg).sum())
+    pp, tp = pa["pending"][0], ta["pending"][0]
+    # present flag, minSelect, maxSelect, isUpgradeSelection (matches the tokenizer's pending block).
+    n += float((pp[0] >= 0.5) == (tp[0] >= 0.5))
+    n += float(round(float(_symexp_np(pp[1:2])[0])) == round(float(_symexp_np(tp[1:2])[0])))
+    n += float(round(float(_symexp_np(pp[2:3])[0])) == round(float(_symexp_np(tp[2:3])[0])))
+    n += float(round(float(pp[3])) == round(float(tp[3])))
+    return n
 
 
 def aggregate(pairs: Dict[str, Tuple[np.ndarray, np.ndarray]],

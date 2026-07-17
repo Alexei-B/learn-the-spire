@@ -575,6 +575,57 @@ data/corpus --n 3000` prints per-kind medians and the constant to set. Current `
 counts between two columns of one shared row instead of moving a whole card token, so its footprint fell
 sharply: PlayCard median 0.050).
 
+### Factored expert autoencoder (`--arch factored`, roadmap M3.5)
+
+`--arch factored` swaps the single monolithic latent for the **T3 expert-per-category** design the v3
+tokenizer was built for (`wm/experts.py`, `wm/model_factored.py`). Each entity **category** is its own
+independent set autoencoder with its own **latent slice**; the state latent is the concatenation of the
+slices, a **named, offset-addressable layout** (`scalars · creatures · cards · relics · potions · orbs`,
+stamped in the checkpoint meta) the M4 predictor will read/write by slice. There is **no cross-category
+attention inside the AE** — independence is deliberate (a card expert never attends to creatures), which
+both shrinks each attention scope and gives the predictor a clean per-slice seam; cross-category coupling
+is the predictor's job. `--arch mono` (default) is the unchanged monolith.
+
+Three tiers:
+
+- **Tier 1 — scalar codec (parameter-free, exact by construction).** The global token (3 enum
+  categoricals + 14 numerics) and pending (4 numerics) encode to a deterministic slice: one-hot for the
+  small enums, a fixed **binary code of the `NUMERIC_RANGES` bin index** for each numeric. Encode *and*
+  decode are fixed functions with no learned weights, so the round-trip is **exact for any in-range
+  integer regardless of training** — `eval.scalar_exact` reads 1.0 from the very first val pass (a wiring
+  canary). The only misses on real data are the documented loud clamps (the `999999999` no-limit
+  `maxSelect`/HP sentinels): 0.9999 on corpus2 val is 26/24000 choice states hitting the `maxSelect`
+  cap, exactly the intended out-of-distribution signal.
+- **Tier 2 — small experts.** creatures (folds its powers + intents into one set expert, keeping the
+  parent-slot association), relics (a multi-hot **set-membership** head, duplicate-free by construction —
+  the monolith's `--relic-head set` ported over), potions (per-slot categorical, since potions can
+  duplicate), orbs. The small single-type experts run at 1 encoder / 1 decoder layer.
+- **Tier 3 — card-population expert.** the largest slice, a set enc/dec over the v3 population rows
+  (content categoricals + keyword multi-hot + dynamic numerics + the per-zone count vector).
+
+All learned numerics decode through **per-field range-bin classification** (`RangeBinHeads`) rather than
+the monolith's shared symlog MSE: creature HP gets resolution-1 bins over `[0,1000]`, so an
+in-distribution value decodes to the *exact* integer (no ±1 rounding tail). Each head still emits the
+identical symlog `num` block (argmax bin → integer → symlog), so `reconstruct_arrays`/`report` consume
+factored outputs unchanged. (Each expert's encoder carries an always-valid sentinel token so an empty
+category — no orbs/potions in a state — never yields a fully-padded-attention NaN.)
+
+**New metrics** (factored only): **`eval.expert_dist`** — each expert's share of `state_dist`, emitted
+once per expert tagged `{"expert": …}`, partitioning `state_dist` *exactly* (the dashboard groups by
+`expert` to overlay the per-decoder curves); **`eval.scalar_exact`** — the tier-1 canary. Every existing
+report-card metric flows unchanged.
+
+```sh
+# Factored AE (defaults: latent_dim 3188, ~22.9M params — cards the largest slice). Same knobs/cache as mono.
+python -m lts2_agent.train_encdec --arch factored --cache data/corpus_tok_v3 --corpus data/corpus2 \
+    --steps 50000 --batch 384 --val-every 500 --ckpt checkpoints/wm_factored.pt --run-label wm-factored
+```
+
+Checkpoints stamp `arch=factored` + the slice layout; a load rejects a non-factored or layout-mismatched
+checkpoint. Measured on an RTX 3090 (450×384, bf16, v3 cache): losses fall smoothly, `scalar_exact`≈1.0
+and `energy_acc`=1.0 from the first val, and it runs **~12 % faster than the monolith** (~1.69 k vs
+~1.50 k states/s) — the smaller per-expert attention scopes outweighing the extra per-expert kernels.
+
 ## Decoded-state printer + diff (roadmap 3.2)
 
 `lts2_agent.statefmt` is the human window onto a **canonical state dict** — the exact shape
