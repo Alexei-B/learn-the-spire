@@ -883,7 +883,8 @@ def _fill_card_table_rows(rng: np.random.Generator, tbl: Dict[str, Any], cats: n
     kw[tab_pos] = tbl["card_kw_mat"][pick, pat_idx]
 
 
-def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
+def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
+                cards_max_rows: Optional[int] = None) -> None:
     """Card INSTANCE rows (v6) — REACHABILITY-SHAPED (see the reachable-table section header). One row per
     physical card copy: the instances-per-state COUNT is drawn from the measured
     ``counts["instances_per_state"]`` histogram; each instance's identity + static fields + dynamic numerics
@@ -894,6 +895,12 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> N
     CONTENT-SORTED into the tokenizer's canonical order, and stamped with ``slot`` == the layout index —
     the exact wire layout :func:`tokens.tokenize` produces (well-posed per-slot targets for the
     permutation-invariant card expert; the same treatment relics/orbs get).
+
+    ``cards_max_rows`` (DIAGNOSTIC, ``--cards-max-rows N``, roadmap wm-t3-factored SINGLE-CARD probe):
+    when set, the per-state instance count is overridden to ``min(N, drawn)`` and floored at 1 (never 0 —
+    presence is still trained, and for ``N==1`` every state gets EXACTLY one card row). This isolates the
+    per-row content machinery from all set effects (multi-row pooling / count reconstruction). ``None``
+    (default) leaves the natural instances-per-state histogram untouched.
 
     Fully VECTORIZED: all instances of all states are generated as one flat block (base uniform, then table
     rows overwritten, then zone drawn), and the whole batch is ordered in a SINGLE ``np.lexsort`` keyed by
@@ -909,6 +916,10 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> N
 
     inst_counts = np.clip(_hist_draw(rng, tbl["counts"]["instances_per_state"], B),
                           0, cap).astype(np.int64)
+    if cards_max_rows is not None:
+        # SINGLE-CARD probe cap: min(N, drawn), floored at 1 so presence is always trained (never 0 rows)
+        # and N==1 yields exactly one row per state.
+        inst_counts = np.clip(np.minimum(inst_counts, int(cards_max_rows)), 1, cap)
     N = int(inst_counts.sum())
     if N == 0:
         return
@@ -956,11 +967,14 @@ _FILLERS = {
 # Public API: batch generators + streams.
 # ==================================================================================================
 
-def synth_batch(experts: Iterable[str], batch_size: int, rng: np.random.Generator
-                ) -> Dict[str, np.ndarray]:
+def synth_batch(experts: Iterable[str], batch_size: int, rng: np.random.Generator,
+                cards_max_rows: Optional[int] = None) -> Dict[str, np.ndarray]:
     """A full model-input batch (all :data:`model.BATCH_KEYS`, stacked ``[B, ...]``) with each named
     expert's category sampled uniformly-with-design and every other category left empty. ``experts`` are
-    the trained expert names (:data:`experts.EXPERT_ORDER` keys)."""
+    the trained expert names (:data:`experts.EXPERT_ORDER` keys).
+
+    ``cards_max_rows`` (DIAGNOSTIC, ``--cards-max-rows N``): caps the cards generator's instances-per-state
+    to ``min(N, drawn)`` floored at 1 (see :func:`_fill_cards`); ignored by every non-card expert."""
     z = _zeros_batch(batch_size)
     requested = list(experts)
     # Creature-family experts share ONE per-state creature-count context when >1 is requested together, so
@@ -979,16 +993,21 @@ def synth_batch(experts: Iterable[str], batch_size: int, rng: np.random.Generato
         filler = _FILLERS.get(e)
         if filler is None:
             raise KeyError(f"synth: unknown expert {e!r}; known {sorted(_FILLERS)}")
-        filler(rng, z, batch_size)
+        if e == "cards":
+            filler(rng, z, batch_size, cards_max_rows=cards_max_rows)
+        else:
+            filler(rng, z, batch_size)
     return z
 
 
-def synth_batches(experts: List[str], batch_size: int, rng: np.random.Generator
+def synth_batches(experts: List[str], batch_size: int, rng: np.random.Generator,
+                  cards_max_rows: Optional[int] = None
                   ) -> Iterator[Tuple[Dict[str, np.ndarray], List[Any]]]:
     """Infinite ``(stacked_numpy_batch, acts)`` stream of pure-synthetic batches (acts tagged ``"synth"``
-    so the report's by-act group-by keeps them separable)."""
+    so the report's by-act group-by keeps them separable). ``cards_max_rows`` threads the SINGLE-CARD probe
+    cap into every generated cards batch (see :func:`synth_batch`)."""
     while True:
-        yield synth_batch(experts, batch_size, rng), ["synth"] * batch_size
+        yield synth_batch(experts, batch_size, rng, cards_max_rows), ["synth"] * batch_size
 
 
 class _PrefetchError:
@@ -1038,11 +1057,13 @@ def prefetch_batches(inner: Iterator[Tuple[Dict[str, np.ndarray], List[Any]]], d
 
 
 def mixed_batches(cache_dir: str, split: str, experts: List[str], batch_size: int, frac_synth: float,
-                  rng: random.Random) -> Iterator[Tuple[Dict[str, np.ndarray], List[Any]]]:
+                  rng: random.Random, cards_max_rows: Optional[int] = None
+                  ) -> Iterator[Tuple[Dict[str, np.ndarray], List[Any]]]:
     """Infinite ``(stacked_numpy_batch, acts)`` stream where a fraction ``frac_synth`` of each batch is
     synthetic and the remainder is real (read from the pre-tokenized cache via
     :func:`data.cache_batches_cpu`). The two halves are concatenated and shuffled so a batch has no
-    real/synth ordering structure."""
+    real/synth ordering structure. ``cards_max_rows`` applies the SINGLE-CARD probe cap to the SYNTHETIC
+    half only (the real half keeps its natural rows — see :func:`synth_batch`)."""
     from . import data as D
     n_synth = int(round(frac_synth * batch_size))
     n_real = batch_size - n_synth
@@ -1052,7 +1073,7 @@ def mixed_batches(cache_dir: str, split: str, experts: List[str], batch_size: in
         parts: List[Dict[str, np.ndarray]] = []
         acts: List[Any] = []
         if n_synth > 0:
-            parts.append(synth_batch(experts, n_synth, npr))
+            parts.append(synth_batch(experts, n_synth, npr, cards_max_rows))
             acts += ["synth"] * n_synth
         if real_stream is not None:
             r_arr, r_acts = next(real_stream)
@@ -1065,13 +1086,18 @@ def mixed_batches(cache_dir: str, split: str, experts: List[str], batch_size: in
         yield merged, acts
 
 
-def coverage_val_sample(experts: List[str], n: int, seed: int
+def coverage_val_sample(experts: List[str], n: int, seed: int,
+                        cards_max_rows: Optional[int] = None
                         ) -> Tuple[Dict[str, np.ndarray], List[Any]]:
     """A FIXED, seeded synthetic coverage-val sample: ``n`` uniformly-with-design configurations for the
     named experts. Deterministic in ``seed`` so the coverage yardstick is identical across runs (the same
-    role the real fixed val plays, on the synthetic space)."""
+    role the real fixed val plays, on the synthetic space).
+
+    ``cards_max_rows`` (DIAGNOSTIC, ``--cards-max-rows N``): honors the SAME SINGLE-CARD probe cap the
+    training stream uses, so train and coverage-val measure the same restricted space (see
+    :func:`synth_batch`)."""
     rng = np.random.default_rng(seed)
-    return synth_batch(experts, n, rng), ["synth"] * n
+    return synth_batch(experts, n, rng, cards_max_rows), ["synth"] * n
 
 
 # Fixed seed for the coverage-val sample — independent of the training seed so every run's coverage

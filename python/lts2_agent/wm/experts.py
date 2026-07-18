@@ -104,6 +104,20 @@ RAW_NUM_COLS: Dict[str, set] = {
     "intent": {"hasDamage", "hasHits"},
 }
 
+# DIAGNOSTIC (--cards-static-only, roadmap wm-t3-factored STATIC-ONLY probe): the TRANSIENT card NUMERIC
+# columns — every CARD_NUM column EXCEPT `upgraded`. When the flag is on, these are masked out of BOTH the
+# card training loss (numeric CE) and the eval/report per-column mismatch, bisecting "deck+placement"
+# (static identity: cardIndex/type/rarity/targetType/enchant/afflict/zone/slot/upgraded + keywords, all
+# KEPT) from transient combat values (cost/damage/block/summon/... derived from the live combat). This is
+# a TRAINING/EVAL mask only — the tokenizer wire format is untouched (not a v7). Consumers that mask with
+# this set MUST document that a masked run's card metrics average over the REMAINING fields only, so they
+# are NOT comparable to an unmasked run's.
+CARD_TRANSIENT_NUM: Tuple[str, ...] = tuple(c for c in tokens.CARD_NUM if c != "upgraded")
+# The kept-column indices into CARD_NUM under --cards-static-only (just `upgraded` today), precomputed so
+# the loss/report can select the surviving numeric columns without re-deriving the set each call.
+CARD_STATIC_NUM_KEEP: Tuple[int, ...] = tuple(
+    j for j, c in enumerate(tokens.CARD_NUM) if c not in set(CARD_TRANSIENT_NUM))
+
 # Which expert owns which token types (partition of tokens.TOKEN_TYPES, used by report/expert_dist).
 #
 # Creature-family split (owner ruling, 2026-07-18): the single "creatures" expert (owning

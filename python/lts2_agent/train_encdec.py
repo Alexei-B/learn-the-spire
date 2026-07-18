@@ -78,11 +78,14 @@ def _lr_lambda(warmup: int, total: int):
 
 @torch.no_grad()
 def run_val(model, sample_stacked, sample_acts, batch_size, device, loss_fn, experts=False,
-            active=None, trained_only=False):
+            active=None, trained_only=False, cards_static_only=False):
     """Full pass over the fixed val sample -> (overall metrics, by-act metrics, mean losses).
 
     ``trained_only`` (per-expert solo runs): forward + loss + report are restricted to the ``active``
-    experts, so the val pass decodes ONLY that expert's token types (focused metrics, not the full card)."""
+    experts, so the val pass decodes ONLY that expert's token types (focused metrics, not the full card).
+
+    ``cards_static_only`` (DIAGNOSTIC): threads the STATIC-ONLY card mask into the report's per-column
+    mismatch so the card ``expert_dist`` averages over the static fields only (matching the masked loss)."""
     model.eval()
     accum: Dict[str, Any] = {}
     loss_sums = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0}
@@ -95,9 +98,11 @@ def run_val(model, sample_stacked, sample_acts, batch_size, device, loss_fn, exp
             loss_sums[k] += float(losses[k])
         nb += 1
         if trained_only:
-            pairs = report.report_pairs_experts_only(batch, out, active)
+            pairs = report.report_pairs_experts_only(batch, out, active,
+                                                     cards_static_only=cards_static_only)
         else:
-            pairs = report.report_pairs(batch, out, experts=experts)
+            pairs = report.report_pairs(batch, out, experts=experts,
+                                        cards_static_only=cards_static_only)
         report.merge_pairs(accum, pairs, acts)
     overall, by_act = report.finalize(accum)
     mean_losses = {k: v / max(1, nb) for k, v in loss_sums.items()}
@@ -171,7 +176,9 @@ def _slice_width_overrides(args):
     return out
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the trainer's argument parser. Split out of :func:`main` so the CLI surface (flag names,
+    dests, defaults) is unit-testable without launching a run — e.g. the DIAGNOSTIC cards-probe flags."""
     ap = argparse.ArgumentParser(description="World-model encoder/decoder trainer (roadmap 3.1)")
     ap.add_argument("--corpus", default="data/corpus", help="corpus root (train split streamed)")
     ap.add_argument("--cache", default="",
@@ -284,6 +291,22 @@ def main() -> int:
     ap.add_argument("--relic-dec-layers", type=int, default=1,
                     help="factored only: relic-expert decoder depth (default 1 = the shallow expert "
                          "default; a deeper-decoder variant uses e.g. 3).")
+    ap.add_argument("--cards-max-rows", type=int, default=None, metavar="N",
+                    help="DIAGNOSTIC (cards plateau bisection, roadmap wm-t3-factored): cap the SYNTHETIC "
+                         "cards generator to at most N instance rows per state — min(N, drawn), floored at "
+                         "1 (never 0; presence still trained). N=1 is the SINGLE-CARD probe (exactly one "
+                         "row/state), isolating the per-row content machinery from all set/count effects. "
+                         "The synthetic coverage-val sample honors the same cap so train and coverage "
+                         "measure the same restricted space. REAL val is unaffected (natural rows).")
+    ap.add_argument("--cards-static-only", action="store_true",
+                    help="DIAGNOSTIC (cards plateau bisection, roadmap wm-t3-factored): mask the TRANSIENT "
+                         "card numeric fields (every CARD_NUM column except `upgraded`: cost/damage/block/"
+                         "summon/canPlay/replayCount/...) out of BOTH the card training loss and the "
+                         "eval/report per-column mismatch — the STATIC-ONLY probe, bisecting "
+                         "deck+placement (static identity: id/type/rarity/targetType/enchant/afflict/zone/"
+                         "slot/upgraded + keywords) from transient combat values. Training/eval mask only "
+                         "(tokenizer wire format untouched). Card metrics then average over the REMAINING "
+                         "fields only — NOT comparable to an unmasked run's card metrics.")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--buffer", type=int, default=16384, help="shuffle-buffer size (states)")
     ap.add_argument("--val-every", type=int, default=500)
@@ -347,7 +370,11 @@ def main() -> int:
     ap.add_argument("--amp", default="bf16", choices=["bf16", "off"],
                     help="autocast the training forward+loss to bfloat16 (Ampere+; backward/optimizer "
                          "stay fp32, no GradScaler needed). Val passes always run fp32.")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
@@ -486,7 +513,7 @@ def main() -> int:
         if factored:
             return MF.compute_losses(batch_, out_, model, balance=args.loss_balance, active=active,
                                       num_targets=args.num_targets, num_loss_norm=args.num_loss_norm,
-                                      z_weight=args.z_loss)
+                                      z_weight=args.z_loss, cards_static_only=args.cards_static_only)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.
@@ -550,14 +577,15 @@ def main() -> int:
         if data_mode == "synth":
             print(f"[train_encdec] DATA=synth: generating uniform-with-design batches for "
                   f"{train_active} (no cache/corpus needed)", flush=True)
-            cpu = SY.synth_batches(train_active, args.batch, npr)
+            cpu = SY.synth_batches(train_active, args.batch, npr, cards_max_rows=args.cards_max_rows)
         else:
             if C.resolve_manifest(cache_dir) is None:
                 raise SystemExit(f"--data {args.data!r} needs the real cache at {cache_dir!r} for the "
                                  f"real fraction; build one first.")
             print(f"[train_encdec] DATA=mixed:{frac_synth:.2f}: {frac_synth:.0%} synthetic + "
                   f"{1 - frac_synth:.0%} real per batch for {train_active}", flush=True)
-            cpu = SY.mixed_batches(cache_dir, "train", train_active, args.batch, frac_synth, rng)
+            cpu = SY.mixed_batches(cache_dir, "train", train_active, args.batch, frac_synth, rng,
+                                   cards_max_rows=args.cards_max_rows)
         # Prefetch the synth/mixed generator on a daemon thread so CPU batch generation overlaps the GPU
         # step (SY.prefetch_batches re-raises worker exceptions on the consumer). The CPU->device transfer
         # stays in the consumer. `npr` (synth) / the mixed stream's own rng are not shared elsewhere.
@@ -583,7 +611,8 @@ def main() -> int:
     # val stays the deployment yardstick). Always built for a factored solo run, whatever --data is.
     cov_stacked = cov_acts = None
     if factored and train_active is not None:
-        cov_stacked, cov_acts = SY.coverage_val_sample(train_active, args.val_states, SY.COVERAGE_VAL_SEED)
+        cov_stacked, cov_acts = SY.coverage_val_sample(train_active, args.val_states, SY.COVERAGE_VAL_SEED,
+                                                       cards_max_rows=args.cards_max_rows)
         print(f"[train_encdec] coverage-val: {len(cov_acts)} fixed synthetic configs for {train_active} "
               f"(seed {SY.COVERAGE_VAL_SEED:#x})", flush=True)
 
@@ -655,14 +684,16 @@ def main() -> int:
                 trained_only = factored and args.val_experts == "trained-only" and train_active is not None
                 overall, by_act, vloss = run_val(model, val_stacked, val_acts, args.val_batch, device,
                                                  loss_fn, experts=factored, active=train_active,
-                                                 trained_only=trained_only)
+                                                 trained_only=trained_only,
+                                                 cards_static_only=args.cards_static_only)
                 # Synthetic coverage-val: the same trained experts, focused, on the fixed synthetic
                 # coverage set — evaluated under the same (EMA) weights as the real val.
                 cov_overall = None
                 if cov_stacked is not None:
                     cov_overall, _cov_by_act, _cov_loss = run_val(
                         model, cov_stacked, cov_acts, args.val_batch, device, loss_fn, experts=True,
-                        active=train_active, trained_only=True)
+                        active=train_active, trained_only=True,
+                        cards_static_only=args.cards_static_only)
                 if ema is not None:
                     ema.restore(model)
                 if trained_only:

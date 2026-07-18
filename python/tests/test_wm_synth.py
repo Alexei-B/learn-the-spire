@@ -278,6 +278,41 @@ def test_card_instance_zone_and_slot_columns():
     assert len(seen_zones) >= 2, "zone marginal should cover multiple zones"
 
 
+# ==================================================================================================
+# DIAGNOSTIC --cards-max-rows (SINGLE-CARD probe, roadmap wm-t3-factored): cap the synthetic cards
+# generator's instances-per-state to min(N, drawn) floored at 1 (never 0; N=1 -> exactly one row/state),
+# honored by the coverage-val sample path too.
+# ==================================================================================================
+
+def test_cards_max_rows_one_gives_exactly_one_row():
+    z = SY.synth_batch(["cards"], 64, np.random.default_rng(50), cards_max_rows=1)
+    cm = z["card_mask"]
+    assert cm.sum(axis=1).tolist() == [1] * 64        # exactly one card row per state (never 0, never >1)
+    scol = tokens.CARD_IDX.index("slot")
+    assert (z["card_idx"][cm][:, scol] == 0).all()    # the lone row's slot == its layout index 0
+
+
+def test_cards_max_rows_caps_and_floors_at_one():
+    # N=3: every state has min(3, drawn) rows floored at 1 -> counts in [1, 3] (the fixture draws
+    # {0,3,5,8,12}; capped+floored -> {1,3}). Never 0 (presence still trained), never over the cap.
+    z = SY.synth_batch(["cards"], 200, np.random.default_rng(51), cards_max_rows=3)
+    counts = z["card_mask"].sum(axis=1)
+    assert counts.min() >= 1 and counts.max() <= 3
+
+
+def test_cards_max_rows_default_off_allows_zero_and_many():
+    # Without the flag the natural instances-per-state histogram stands: some states get 0 rows, some many.
+    z = SY.synth_batch(["cards"], 400, np.random.default_rng(52))
+    counts = z["card_mask"].sum(axis=1)
+    assert counts.min() == 0 and counts.max() >= 2     # the fixture histogram spans 0..12
+
+
+def test_cards_max_rows_honored_by_coverage_sample_path():
+    stacked, acts = SY.coverage_val_sample(["cards"], 40, SY.COVERAGE_VAL_SEED, cards_max_rows=1)
+    assert acts == ["synth"] * 40
+    assert stacked["card_mask"].sum(axis=1).tolist() == [1] * 40   # coverage-val obeys the same cap
+
+
 def test_numeric_storage_roundtrips_through_bin_targets():
     # The stored symlog block must land on the EXACT bin the loss targets (no ±1 drift) for every field.
     m = MF.FactoredWorldModelAE(d_model=32, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1,

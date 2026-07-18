@@ -242,7 +242,8 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                    active: Optional[Iterable[str]] = None,
                    num_targets: str = "hard",
                    num_loss_norm: str = "none",
-                   z_weight: float = 0.0) -> Dict[str, torch.Tensor]:
+                   z_weight: float = 0.0,
+                   cards_static_only: bool = False) -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
     range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
     (exact by construction, no parameters).
@@ -274,6 +275,12 @@ def compute_losses(batch: Dict[str, torch.Tensor],
 
     ``active`` (per-expert training) restricts the loss to the named experts — a frozen/skipped expert
     contributes no term (its outputs are absent). ``None`` == every expert (the joint default).
+
+    ``cards_static_only`` (DIAGNOSTIC, ``--cards-static-only``, roadmap wm-t3-factored STATIC-ONLY probe):
+    masks the TRANSIENT card numeric columns (:data:`experts.CARD_TRANSIENT_NUM` — every CARD_NUM column
+    except ``upgraded``) out of the card numeric CE, so the card loss trains only the static identity
+    fields (categoricals + keywords + ``upgraded``). Off by default (byte-identical to prior behavior).
+    Only the `card` type is affected; every other expert's numeric term is unchanged.
     """
     active_set: Optional[Set[str]] = None if active is None else set(active)
     cat_terms: List[torch.Tensor] = []
@@ -315,6 +322,10 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                 # log-bins-normalized so a wide column doesn't dominate — all centralized in the head.
                 field_ce = head.numeric_field_ce(o["num_logits"], batch[t.num_key],
                                                  num_targets=num_targets, num_loss_norm=num_loss_norm)
+                if cards_static_only and t.name == "card":
+                    # STATIC-ONLY probe: keep only the static numeric columns (`upgraded`); the transient
+                    # columns contribute ZERO to the loss (their CE is dropped from the mean entirely).
+                    field_ce = [field_ce[j] for j in E.CARD_STATIC_NUM_KEEP]
                 ce = torch.stack(field_ce, dim=0).mean(dim=0)           # [B, slots]
                 _tag(ename, num_terms, _masked_mean(ce, mask))
             if t.has_kw:

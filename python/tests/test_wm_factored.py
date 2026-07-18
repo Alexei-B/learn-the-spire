@@ -1195,3 +1195,137 @@ def test_init_expert_from_tolerates_num_input_diff_skips_embedder(tmp_path, caps
             copied += 1
             assert torch.equal(after[k], src_sub[k]), f"non-embedder {k} should have been copied"
     assert copied > 0 and skipped > 0
+
+
+# ==================================================================================================
+# DIAGNOSTIC --cards-static-only (STATIC-ONLY probe, roadmap wm-t3-factored): mask the TRANSIENT card
+# numeric columns (all CARD_NUM except `upgraded`) out of BOTH the card training loss and the report's
+# per-column mismatch. cardIndex/type/rarity/targetType/enchant/afflict/zone/slot/upgraded + keywords stay.
+# ==================================================================================================
+
+def _card_present_batch():
+    """A batch with several PRESENT card rows (drawPile) so the transient-column mask has real slots to
+    act on. Built via the shared _state/_card helpers (no reachability artifact needed)."""
+    from tests.test_wm_encdec import _card
+    st = _state(n_hand=2)
+    st["players"][0]["combatState"]["drawPile"] = [_card(damage=6, baseDamage=6) for _ in range(5)]
+    return _batch([st, _state(n_hand=1)])
+
+
+def test_cards_transient_set_is_all_card_num_except_upgraded():
+    from lts2_agent.wm.experts import CARD_STATIC_NUM_KEEP, CARD_TRANSIENT_NUM
+    assert set(CARD_TRANSIENT_NUM) == set(tokens.CARD_NUM) - {"upgraded"}
+    assert "upgraded" not in CARD_TRANSIENT_NUM
+    assert tuple(tokens.CARD_NUM[j] for j in CARD_STATIC_NUM_KEEP) == ("upgraded",)
+
+
+def test_cards_static_only_masks_transient_numeric_targets_in_loss():
+    torch.manual_seed(0)
+    m = _small()
+    batch = _card_present_batch()
+    assert batch["card_mask"].any()
+    _z, out = m(batch, active_experts=["cards"])
+
+    def numeric(b):
+        return float(MF.compute_losses(b, out, m, active=["cards"],
+                                       cards_static_only=True)["loss_numeric"])
+
+    def total(b):
+        return float(MF.compute_losses(b, out, m, active=["cards"],
+                                       cards_static_only=True)["loss"])
+
+    base_num, base_tot = numeric(batch), total(batch)
+    # Perturbing a TRANSIENT column's TARGET (damage) — masked out, so the numeric (and total) loss is
+    # byte-identical (out is fixed; only the target moved, and its CE is dropped from the mean).
+    dmg = tokens.CARD_NUM.index("damage")
+    bt = {k: v.clone() for k, v in batch.items()}
+    bt["card_num"][..., dmg] += 2.0
+    assert numeric(bt) == base_num
+    assert total(bt) == base_tot
+    # Perturbing the KEPT column (`upgraded`) DOES change the numeric loss (it survives the mask).
+    up = tokens.CARD_NUM.index("upgraded")
+    bu = {k: v.clone() for k, v in batch.items()}
+    bu["card_num"][..., up] = 1.0 - bu["card_num"][..., up]
+    assert numeric(bu) != base_num
+    # Perturbing the cardIndex categorical TARGET changes the (categorical -> total) loss too.
+    bc = {k: v.clone() for k, v in batch.items()}
+    vocab = S.TYPE_BY_NAME["card"].cat_cols[0][1]
+    bc["card_idx"][..., 0] = (bc["card_idx"][..., 0] + 1) % vocab
+    assert total(bc) != base_tot
+
+
+def _card_arrays(n_present: int = 3):
+    """A per-sample array dict (the shape report._state_dist / detokenize consume) with ``n_present``
+    left-packed card rows and everything else zeroed — used to drive the report's per-column mismatch
+    with controlled PRESENT-on-both slots (an untrained model's presence rarely agrees, so a live forward
+    can't exercise the 'both present' numeric-column comparison the mask acts on)."""
+    return {
+        "card_idx": np.zeros((tokens.MAX_CARDS, len(tokens.CARD_IDX)), np.int32),
+        "card_num": np.zeros((tokens.MAX_CARDS, len(tokens.CARD_NUM)), np.float32),
+        "card_kw": np.zeros((tokens.MAX_CARDS, tokens.KW_BUCKETS), np.float32),
+        "card_mask": np.array([i < n_present for i in range(tokens.MAX_CARDS)], bool),
+    }
+
+
+def test_cards_static_only_state_dist_ignores_transient_columns():
+    # _state_dist is the report's per-column mismatch. With the mask on, a TRANSIENT numeric mismatch
+    # (damage) is not counted and drops from the denominator; the KEPT `upgraded` mismatch still counts.
+    from lts2_agent.wm.report import _state_dist
+    types = [S.TYPE_BY_NAME["card"]]
+    tgt = _card_arrays(3)
+    # Identical arrays -> zero mismatch, positive denominator (present-both card fields).
+    n0, d0 = _state_dist(_card_arrays(3), tgt, types=types, cards_static_only=True)
+    assert n0 == 0.0 and d0 > 0.0
+    # Perturb a TRANSIENT numeric (damage) in the prediction: masked distance stays 0; unmasked counts 3.
+    dmg = tokens.CARD_NUM.index("damage")
+    pred_t = _card_arrays(3); pred_t["card_num"][:3, dmg] = tokens.symlog(9)
+    nt, dt = _state_dist(pred_t, tgt, types=types, cards_static_only=True)
+    nu, du = _state_dist(pred_t, tgt, types=types, cards_static_only=False)
+    assert nt == 0.0                                # transient column masked out of the numerator
+    assert nu == 3.0                                # unmasked: 3 present-both slots differ on damage
+    assert dt < du                                  # masked denominator drops the transient columns
+    # Perturb the KEPT `upgraded` numeric: it survives the mask, so the masked distance counts it (3 slots).
+    up = tokens.CARD_NUM.index("upgraded")
+    pred_u = _card_arrays(3); pred_u["card_num"][:3, up] = 1.0
+    nk, _dk = _state_dist(pred_u, tgt, types=types, cards_static_only=True)
+    assert nk == 3.0
+
+
+def test_cards_static_only_report_reduces_card_denominator():
+    # End-to-end through report_pairs_experts_only: the masked run's card expert_dist denominator counts
+    # fewer fields than the unmasked run's (the transient numerics are dropped from the field universe).
+    torch.manual_seed(0)
+    m = _small(); m.eval()
+    batch = _card_present_batch()
+    _z, out = m(batch, active_experts=["cards"])
+    masked = report.report_pairs_experts_only(batch, out, ["cards"], cards_static_only=True)
+    unmasked = report.report_pairs_experts_only(batch, out, ["cards"])
+    assert masked["expert_dist::cards"][1].sum() < unmasked["expert_dist::cards"][1].sum()
+
+
+# ==================================================================================================
+# DIAGNOSTIC flags plumb through the trainer CLI and stamp into the run config (MetricsWriter records
+# vars(args) -> manifest.config), and are mutually composable.
+# ==================================================================================================
+
+def test_diagnostic_flags_parse_and_are_composable():
+    from lts2_agent import train_encdec as TE
+    ap = TE.build_parser()
+    args = ap.parse_args(["--cards-max-rows", "1", "--cards-static-only"])   # both together (composable)
+    assert args.cards_max_rows == 1 and args.cards_static_only is True
+    d = ap.parse_args([])                                                    # defaults: both OFF
+    assert d.cards_max_rows is None and d.cards_static_only is False
+    assert "cards_max_rows" in vars(args) and "cards_static_only" in vars(args)
+
+
+def test_diagnostic_flags_stamp_into_metrics_config(tmp_path):
+    import json
+    from lts2_agent import train_encdec as TE
+    from lts2_agent.metrics import MetricsWriter
+    args = TE.build_parser().parse_args(["--cards-max-rows", "1", "--cards-static-only"])
+    mw = MetricsWriter(run_dir=str(tmp_path), label="probe", argv=["train_encdec"],
+                       config=vars(args), enabled=True)
+    mw.close()
+    with open(os.path.join(mw.run_dir, "manifest.json")) as f:
+        cfg = json.load(f)["config"]
+    assert cfg["cards_max_rows"] == 1 and cfg["cards_static_only"] is True

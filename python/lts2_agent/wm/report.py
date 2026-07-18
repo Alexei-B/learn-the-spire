@@ -24,7 +24,7 @@ import torch
 from .. import tokens
 from . import spec as S
 from .decoder import reconstruct_arrays
-from .experts import EXPERT_ORDER, EXPERT_TYPES
+from .experts import CARD_STATIC_NUM_KEEP, EXPERT_ORDER, EXPERT_TYPES
 
 # Per-expert token-type partition for the factored-AE eval.expert_dist metric (emitted tagged by expert).
 _EXPERT_TYPESPECS = {name: [S.TYPE_BY_NAME[n] for n in types] for name, types in EXPERT_TYPES.items()}
@@ -81,7 +81,7 @@ def _target_arrays(batch: Dict[str, torch.Tensor]) -> List[Dict[str, np.ndarray]
 
 
 def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray],
-                types: Optional[List] = None) -> Tuple[float, float]:
+                types: Optional[List] = None, cards_static_only: bool = False) -> Tuple[float, float]:
     """``(mismatched, total)`` token-fields between a predicted and a target array dict.
 
     Every field (categorical column, integer-rounded numeric column, keyword block) of every token
@@ -92,11 +92,19 @@ def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray],
     ``types`` restricts the sum to a subset of token types (the per-expert ``expert_dist`` metric):
     partitioning ``S.TYPES`` by expert and summing the per-expert ``(num, den)`` pairs reproduces the
     full ``state_dist`` exactly.
+
+    ``cards_static_only`` (DIAGNOSTIC, ``--cards-static-only``): drops the TRANSIENT card numeric columns
+    (everything except ``upgraded``) from BOTH the numerator (their mismatches) and the denominator (their
+    field weight) for the `card` type. So a masked run's card ``expert_dist`` is the mean over the REMAINING
+    fields ONLY (static categoricals + keywords + ``upgraded``) — NOT comparable to an unmasked run's
+    ``expert_dist``, which averages over all 23 card fields. No effect on any other token type.
     """
     num = 0.0
     den = 0.0
     for t in (types if types is not None else S.TYPES):
-        fields = len(t.cat_cols) + t.num_width + (1 if t.has_kw else 0)
+        card_static = cards_static_only and t.name == "card"
+        num_width = len(CARD_STATIC_NUM_KEEP) if card_static else t.num_width
+        fields = len(t.cat_cols) + num_width + (1 if t.has_kw else 0)
         if fields == 0:
             continue
         if t.mask_key:
@@ -118,6 +126,9 @@ def _state_dist(pa: Dict[str, np.ndarray], ta: Dict[str, np.ndarray],
         if t.num_key:
             pn = np.round(_symexp_np(np.atleast_2d(pa[t.num_key])[both]))
             tn = np.round(_symexp_np(np.atleast_2d(ta[t.num_key])[both]))
+            if card_static:                                  # keep only the static numeric columns
+                pn = pn[:, list(CARD_STATIC_NUM_KEEP)]
+                tn = tn[:, list(CARD_STATIC_NUM_KEEP)]
             num += float((pn != tn).sum())
         if t.has_kw:
             pk = (np.atleast_2d(pa["card_kw"])[both] >= 0.5)
@@ -195,14 +206,20 @@ def _set_f1(pred: List[int], tgt: List[int]) -> float:
 @torch.no_grad()
 def report_pairs(batch: Dict[str, torch.Tensor],
                  outputs: Dict[str, Dict[str, torch.Tensor]],
-                 experts: bool = False) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+                 experts: bool = False,
+                 cards_static_only: bool = False) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Per-sample ``(numerator, denominator)`` arrays for every contract metric (length B each).
 
     ``experts`` (factored AE only) additionally emits, per expert, ``expert_dist::<name>`` — that
     expert's share of ``state_dist`` restricted to its token types (partitions the whole, so the weighted
     sum equals ``state_dist``) — and ``scalar_exact``, the fraction of tier-1 scalar fields reconstructed
     exactly (pins to 1.0 by construction; a wiring canary). These keys are OFF by default so the
-    monolith's ``report_pairs`` contract (== ``METRIC_NAMES``) is unchanged."""
+    monolith's ``report_pairs`` contract (== ``METRIC_NAMES``) is unchanged.
+
+    ``cards_static_only`` (DIAGNOSTIC, ``--cards-static-only``): masks the transient card numeric columns
+    out of every ``_state_dist`` computation (``state_dist``, ``field_acc``, ``expert_dist::cards`` and its
+    ``expert_exact::cards``), so the card distance averages over the static fields only (see
+    :func:`_state_dist`). Categorical card metrics (``card_id_top1``/``card_zone_acc``) are unaffected."""
     B = batch["global_idx"].shape[0]
     pairs: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
@@ -256,11 +273,13 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     exp_exact = {n: np.zeros(B, np.float32) for n in EXPERT_ORDER} if experts else {}
     scal_ok = np.zeros(B, np.float32) if experts else None
     for b in range(B):
-        dist_num[b], dist_den[b] = _state_dist(pred_arrays[b], tgt_arrays[b])
+        dist_num[b], dist_den[b] = _state_dist(pred_arrays[b], tgt_arrays[b],
+                                               cards_static_only=cards_static_only)
         if experts:
             for ename in EXPERT_ORDER:
                 exp_num[ename][b], exp_den[ename][b] = _state_dist(
-                    pred_arrays[b], tgt_arrays[b], types=_EXPERT_TYPESPECS[ename])
+                    pred_arrays[b], tgt_arrays[b], types=_EXPERT_TYPESPECS[ename],
+                    cards_static_only=cards_static_only)
                 # expert_exact: this state's slice-owned token types reconstruct with ZERO mismatched
                 # fields (array-space, integer-rounded, presence included) — the expert's "done" bar.
                 exp_exact[ename][b] = 1.0 if exp_num[ename][b] == 0.0 else 0.0
@@ -347,12 +366,17 @@ def _reconstruct_types(outputs: Dict[str, Dict[str, torch.Tensor]], typespecs: L
 @torch.no_grad()
 def report_pairs_experts_only(batch: Dict[str, torch.Tensor],
                               outputs: Dict[str, Dict[str, torch.Tensor]],
-                              active: List[str]
+                              active: List[str],
+                              cards_static_only: bool = False
                               ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Focused per-expert metrics for ``--val-experts trained-only``: ``expert_dist::<name>`` and
     ``expert_exact::<name>`` for each active expert (+ ``relic_set_f1`` when relics is active), computed
     by reconstructing ONLY the active experts' token types — no full-model decode. The trained-only val
-    for a solo run costs just that expert's decoder pass."""
+    for a solo run costs just that expert's decoder pass.
+
+    ``cards_static_only`` (DIAGNOSTIC, ``--cards-static-only``): masks the transient card numeric columns
+    out of ``expert_dist::cards`` (and hence ``expert_exact::cards``) — the card distance averages over the
+    static fields only (see :func:`_state_dist`). No effect on any other active expert."""
     B = batch["global_idx"].shape[0]
     active_typespecs = [S.TYPE_BY_NAME[n] for e in active for n in EXPERT_TYPES[e]]
     pred = _reconstruct_types(outputs, active_typespecs, B)
@@ -363,7 +387,8 @@ def report_pairs_experts_only(batch: Dict[str, torch.Tensor],
         types = _EXPERT_TYPESPECS[ename]
         num = np.zeros(B, np.float32); den = np.zeros(B, np.float32); exact = np.zeros(B, np.float32)
         for b in range(B):
-            num[b], den[b] = _state_dist(pred[b], tgt[b], types=types)
+            num[b], den[b] = _state_dist(pred[b], tgt[b], types=types,
+                                         cards_static_only=cards_static_only)
             exact[b] = 1.0 if num[b] == 0.0 else 0.0
         pairs[f"expert_dist::{ename}"] = (num, den)
         pairs[f"expert_exact::{ename}"] = (exact, ones)
