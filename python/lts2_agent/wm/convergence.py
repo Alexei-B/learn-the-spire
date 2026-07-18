@@ -89,7 +89,100 @@ def entropy_orbs() -> float:
     return math.log2(cap + 1) + (cap / 2.0) * per_orb
 
 
-ENTROPY_FNS = {"potions": entropy_potions, "relics": entropy_relics, "orbs": entropy_orbs}
+def _hist_entropy(hist) -> float:
+    p = np.asarray(hist, dtype=np.float64)
+    p = p[p > 0] / p.sum()
+    return float(-(p * np.log2(p)).sum())
+
+
+def _hist_mean(hist) -> float:
+    p = np.asarray(hist, dtype=np.float64)
+    return float((np.arange(len(p)) * p).sum() / p.sum())
+
+
+def entropy_cards() -> float:
+    """CURRENT generator (independent-uniform content): row count from the measured hist, then per row
+    every categorical + dynamic numeric sampled independently, sparse keywords, game-like zone vector.
+    NOTE: the real game's card fields are largely FUNCTIONS of cardIndex — this measures the GENERATOR's
+    designed space, and a large value here vs. slice capacity is exactly the over-generation tripwire."""
+    tspec = S.TYPE_BY_NAME["card"]
+    per_row = 0.0
+    for col_name, vocab in tspec.cat_cols:
+        hi = vocab - 1 if col_name in ("type", "rarity", "targetType") else vocab
+        per_row += math.log2(max(2, hi))
+    zone_cols = set(getattr(__import__("lts2_agent.tokens", fromlist=["tokens"]), "ZONE_COUNT_FIELDS"))
+    from .. import tokens as T
+    for c in T.CARD_NUM:
+        if c in zone_cols:
+            continue
+        b = _range_bits("card", c)
+        per_row += b if b else 1.0                      # flag columns: 1 bit
+    p_kw = 0.05                                          # generator keyword on-prob
+    h_kw = -(p_kw * math.log2(p_kw) + (1 - p_kw) * math.log2(1 - p_kw))
+    per_row += T.KW_BUCKETS * h_kw
+    per_row += _hist_entropy(SY._CARD_NZONES_HIST) + 2.5 + 3.0   # zones chosen + per-zone counts (approx)
+    return _hist_entropy(SY._CARD_ROWS_HIST) + _hist_mean(SY._CARD_ROWS_HIST) * per_row
+
+
+def entropy_creatures() -> float:
+    """CURRENT generator: creatures + folded powers + intents, all independent-uniform. Dominated by the
+    uniform power count 0..MAX_POWERS x (id + parent + amount) term. Same over-generation caveat as
+    entropy_cards()."""
+    from .. import tokens as T
+    cr = S.TYPE_BY_NAME["creature"]
+    per_cr = math.log2(cr.cat_cols[0][1] - 1) + math.log2(cr.cat_cols[1][1])   # kind (enum) + identity
+    for c in T.CREATURE_NUM:
+        b = _range_bits("creature", c)
+        per_cr += b if b else 1.0
+    e_c = (1 + T.MAX_CREATURES) / 2.0
+    pw = S.TYPE_BY_NAME["power"]
+    per_pw = math.log2(pw.cat_cols[0][1]) + math.log2(e_c) + _range_bits("power", "amount")
+    inn = S.TYPE_BY_NAME["intent"]
+    per_in = math.log2(inn.cat_cols[0][1] - 1) + math.log2(e_c)
+    for c in T.INTENT_NUM:
+        b = _range_bits("intent", c)
+        per_in += b if b else 1.0
+    return (math.log2(T.MAX_CREATURES) + e_c * per_cr
+            + math.log2(T.MAX_POWERS + 1) + (T.MAX_POWERS / 2.0) * per_pw
+            + math.log2(T.MAX_INTENTS + 1) + (T.MAX_INTENTS / 2.0) * per_in)
+
+
+ENTROPY_FNS = {"potions": entropy_potions, "relics": entropy_relics, "orbs": entropy_orbs,
+               "cards": entropy_cards, "creatures": entropy_creatures}
+
+
+# --------------------------------------------------------------------------------------------------
+# Latent capacity tripwire: a SimNorm slice of width W with group g carries ~ (W/g)*log2(g) robust
+# bits. An expert whose designed task entropy exceeds ~70% of that budget CANNOT reach exact coverage
+# reconstruction regardless of training — flag it by arithmetic before burning GPU-hours (found live:
+# orbs at H=66 vs 48-bit slice; cards/creatures generators at 2-6x their slices before reshaping).
+# --------------------------------------------------------------------------------------------------
+
+CAPACITY_WARN_FRAC = 0.7
+
+
+def capacity_bits(expert: str, simnorm_group: int = 8) -> Optional[float]:
+    try:
+        from .model_factored import DEFAULT_SLICE_WIDTHS
+    except Exception:
+        return None
+    w = DEFAULT_SLICE_WIDTHS.get(expert)
+    return None if w is None else (w / simnorm_group) * math.log2(simnorm_group)
+
+
+def capacity_report() -> List[str]:
+    lines = [f"{'expert':<11}{'H bits':>9}{'cap bits':>10}{'H/cap':>7}  verdict"]
+    for name, fn in ENTROPY_FNS.items():
+        h = fn()
+        cap = capacity_bits(name)
+        if cap is None:
+            continue
+        ratio = h / cap
+        verdict = ("OVER-CAPACITY (exact coverage impossible)" if ratio > 1.0
+                   else "NEAR-CAPACITY (widen slice or shrink space)" if ratio > CAPACITY_WARN_FRAC
+                   else "ok")
+        lines.append(f"{name:<11}{h:>9.1f}{cap:>10.0f}{ratio:>7.2f}  {verdict}")
+    return lines
 
 
 def expert_entropy(name: str) -> Optional[float]:
@@ -156,6 +249,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--lag-factor", type=float, default=2.0,
                     help="actual/predicted ratio above which an expert is flagged LAGGING")
     args = ap.parse_args(argv)
+
+    print("-- latent capacity vs designed task entropy --")
+    for ln in capacity_report():
+        print(ln)
+    print()
 
     ascending = args.metric == "exact"
     metric_name = "eval.expert_exact_cov" if ascending else "eval.expert_dist_cov"
