@@ -150,7 +150,7 @@ def _augment_reachable(tbl: Dict[str, Any]) -> None:
     order of ``*_ids``) so the vectorized fillers draw a whole batch of table rows' numerics in ONE
     ``rng.integers`` call over gathered bounds — the reachability margin+clamp (:func:`_reach_lohi`) is
     baked in here, off the hot path, instead of being recomputed per row. This is the single change that
-    lets ``_fill_cards`` / ``_fill_creatures`` avoid a per-row Python table lookup."""
+    lets ``_fill_cards`` / ``_fill_creature_stats`` avoid a per-row Python table lookup."""
     def _lohi_block(get_num, ids: np.ndarray, type_name: str, cols: List[str]):
         lo = np.zeros((len(ids), len(cols)), np.int64)
         hi = np.zeros((len(ids), len(cols)), np.int64)
@@ -657,37 +657,49 @@ def _place_intents(rng: np.random.Generator, tbl: Dict[str, Any], in_spec: S.Typ
     in_mask[ist, rank] = True
 
 
-def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
-    """Creatures (folding their powers + intents) — REACHABILITY-SHAPED (see the reachable-table header).
-    Creature count from the measured creatures-per-state histogram (min 1, capped). Per creature: identity
-    from the observed set, kind from that identity's observed kinds, numerics uniform in the identity's
-    observed range (+margin, clamped). Powers: a per-creature count from the powers-per-creature histogram
-    (capped so the state total <= MAX_POWERS); powerIndex DISTINCT within a creature (a power stacks its
-    amount, never duplicates — see :func:`_sample_creature_powers`); amount from that power's observed
-    range (+margin — amounts may be negative). Intents: a count from the intents-per-state histogram
-    (capped); type from the observed set; numerics per-type range. Each sub-row keeps a
-    :data:`CREATURE_WILDCARD_PROB` uniform tail.
+# ==================================================================================================
+# Creature-family fillers (owner ruling, 2026-07-18): the old single _fill_creatures (creature+power+intent
+# in one expert) is split into three — creature-stats / creature-powers / creature-intents — one per token
+# type, so each sub-task can be trained + measured on its own. The split preserves the e2c6e83 canonicality
+# contract EXACTLY (it reuses the same _sample_creature_powers / _place_powers / _place_intents code paths
+# and the same v4 creature lexsort): no ordering logic is re-derived here.
+#
+# CONSISTENCY across the split: powers/intents reference a PARENT creature slot, which must be a valid
+# 0..c-1 index for the state's creature count c. The three fillers therefore share ONE per-state creature
+# count (:func:`_draw_creature_counts`), drawn once by :func:`synth_batch` when >1 of them is requested
+# together — so parents stay consistent with the creature rows creature-stats writes, and the combined draw
+# order (stats -> powers -> intents, after the shared count) is byte-identical to the old _fill_creatures.
+# A LONE creature-powers / creature-intents run is trainable STANDALONE: it draws its OWN virtual
+# creature-count context from the same histogram, so its parent slots (and the MAX_POWERS/state cap) stay
+# realistic even with no creature rows present.
+# ==================================================================================================
 
-    CANONICAL WIRE ORDER (must match :func:`tokens.tokenize` EXACTLY, else the per-slot target is ill-posed
-    for the permutation-invariant decoder): creatures are v4-lexsorted (state-major); power rows are laid
-    out grouped by parent creature slot ascending, then by (powerIndex, amount) ascending within a creature;
-    intent rows grouped by parent creature slot ascending, then (type, damage, baseDamage, hits) ascending.
+def _draw_creature_counts(rng: np.random.Generator, tbl: Dict[str, Any], B: int) -> np.ndarray:
+    """Per-state creature count: >=1 (so powers/intents always have a valid parent slot), capped to
+    MAX_CREATURES, from the measured creatures-per-state histogram. Drawn ONCE and shared across the three
+    creature-family fillers (see the section header)."""
+    return np.clip(np.maximum(_hist_draw(rng, tbl["counts"]["creatures_per_state"], B), 1),
+                   1, tokens.MAX_CREATURES).astype(np.int64)
 
-    Fully VECTORIZED (roadmap wm-t3-factored perf): creatures/powers/intents are each generated as one flat
-    state-major block, the whole batch of creatures is v4-lexsorted in a SINGLE call (state primary) and
-    scattered to slots, and powers/intents are each placed with a SINGLE ``np.lexsort`` keyed (state, parent
-    slot, content...) then a rank recompute — no per-row Python in the hot path."""
+
+def _fill_creature_stats(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
+                         c_arr: Optional[np.ndarray] = None) -> None:
+    """creature-stats expert (owns the `creature` token type) — REACHABILITY-SHAPED creature rows only (no
+    powers/intents; those are their own experts now). Creature count from the shared context (or drawn here
+    when run alone). Per creature: identity from the observed set, kind from that identity's observed kinds,
+    numerics uniform in the identity's observed range (+margin, clamped); a :data:`CREATURE_WILDCARD_PROB`
+    uniform tail. Rows are v4-lexsorted STATE-MAJOR — the tokenizer's canonical order (unchanged in v5).
+    Creature ORDER is semantic (the pending v6 positional change), deliberately NOT modelled here.
+
+    Fully VECTORIZED: the whole batch of creatures is generated as one flat state-major block and lexsorted
+    in a SINGLE call, then scattered to slots — no per-row Python in the hot path."""
     tbl = _load_reachable()
     creatures = tbl["creatures"]
     creature_ids = tbl["creature_ids"]
     cr_spec = S.TYPE_BY_NAME["creature"]
-    pw_spec = S.TYPE_BY_NAME["power"]
-    in_spec = S.TYPE_BY_NAME["intent"]
     cr_idx, cr_num, cr_mask = z["creature_idx"], z["creature_num"], z["creature_mask"]
-
-    # ---- creatures: >=1 per state (so powers/intents always have a valid parent), capped ----
-    c_arr = np.clip(np.maximum(_hist_draw(rng, tbl["counts"]["creatures_per_state"], B), 1),
-                    1, tokens.MAX_CREATURES).astype(np.int64)
+    if c_arr is None:
+        c_arr = _draw_creature_counts(rng, tbl, B)
     Nc = int(c_arr.sum())
     bstate = np.repeat(np.arange(B, dtype=np.int64), c_arr)
     starts = _exclusive_starts(c_arr, B)
@@ -716,19 +728,52 @@ def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) 
     cr_num[bs, dstslot] = nums[order]
     cr_mask[bs, dstslot] = True
 
-    # each flat creature's canonical (post-sort) slot — the parent ref powers/intents must point at.
-    post_slot = np.empty(Nc, np.int64)
-    post_slot[order] = dstslot
 
-    # ---- powers: a per-creature count, DISTINCT powerIndex per creature; rows placed in canonical
-    # (state, parent, powerIndex, amount) order with the per-state MAX_POWERS cap applied in slot order ----
+def _fill_creature_powers(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
+                          c_arr: Optional[np.ndarray] = None) -> None:
+    """creature-powers expert (owns the `power` token type). A per-creature power count from the
+    powers-per-creature histogram (capped so the state total <= MAX_POWERS); powerIndex DISTINCT within a
+    creature (a power STACKS its amount, never duplicates — an unreachable state; see
+    :func:`_sample_creature_powers`); amount from that power's observed range (+margin — amounts may be
+    negative, hence order-free -> sorted). A :data:`CREATURE_WILDCARD_PROB` uniform tail. Rows are placed
+    in the tokenizer's CANONICAL (state, parent slot, powerIndex, amount) order via the shared
+    :func:`_place_powers` path (the e2c6e83 contract, reused verbatim), with the per-state MAX_POWERS cap
+    applied in slot order.
+
+    PARENT slots: each flat creature is assigned its own within-state slot 0..c-1 (an identity assignment).
+    Because creatures are exchangeable (the positional v6 change is deferred) and :func:`_place_powers`
+    re-sorts by parent anyway, this is distributionally identical to the pre-split path (which pointed at
+    the post-lexsort creature slot), while keeping powers trainable STANDALONE from any creature rows."""
+    tbl = _load_reachable()
+    pw_spec = S.TYPE_BY_NAME["power"]
+    if c_arr is None:
+        c_arr = _draw_creature_counts(rng, tbl, B)
+    Nc = int(c_arr.sum())
+    if Nc == 0:
+        return
+    bstate = np.repeat(np.arange(B, dtype=np.int64), c_arr)
+    starts = _exclusive_starts(c_arr, B)
+    parent_slot = np.arange(Nc, dtype=np.int64) - starts[bstate]   # each flat creature's own slot 0..c-1
     pc = _hist_draw(rng, tbl["counts"]["powers_per_creature"], Nc).astype(np.int64)
-    p_state, p_parent, p_pid, p_amt = _sample_creature_powers(rng, tbl, pw_spec, pc, bstate, post_slot)
+    p_state, p_parent, p_pid, p_amt = _sample_creature_powers(rng, tbl, pw_spec, pc, bstate, parent_slot)
     _place_powers(z["power_idx"], z["power_num"], z["power_mask"], p_state, p_parent, p_pid, p_amt, B)
 
-    # ---- intents: a count per state, each on a random creature slot; rows placed in canonical
-    # (state, parent, type, damage, baseDamage, hits) order (random ASSIGNMENT, canonical ROW ORDER) ----
-    ni = np.minimum(_hist_draw(rng, tbl["counts"]["intents_per_state"], B), tokens.MAX_INTENTS).astype(np.int64)
+
+def _fill_creature_intents(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
+                           c_arr: Optional[np.ndarray] = None) -> None:
+    """creature-intents expert (owns the `intent` token type). A per-state intent count from the
+    intents-per-state histogram (capped MAX_INTENTS); type from the observed set; numerics per-type range;
+    a :data:`CREATURE_WILDCARD_PROB` uniform tail. Each intent is assigned a UNIFORM parent creature slot
+    0..c-1 (intents are order-free within a creature — game ruling — so only the ROW ORDER is canonical,
+    not the assignment); rows are placed in the tokenizer's CANONICAL (state, parent, type, damage,
+    baseDamage, hits) order via the shared :func:`_place_intents` path (the e2c6e83 contract, reused
+    verbatim). Trainable STANDALONE via its own virtual creature-count context (``c_arr``)."""
+    tbl = _load_reachable()
+    in_spec = S.TYPE_BY_NAME["intent"]
+    if c_arr is None:
+        c_arr = _draw_creature_counts(rng, tbl, B)
+    ni = np.minimum(_hist_draw(rng, tbl["counts"]["intents_per_state"], B),
+                    tokens.MAX_INTENTS).astype(np.int64)
     Ni = int(ni.sum())
     if Ni:
         istate = np.repeat(np.arange(B, dtype=np.int64), ni)
@@ -923,9 +968,16 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> N
     cm[bs, dstslot] = True
 
 
+# The three creature-family experts share one per-state creature-count context (see the section header);
+# synth_batch draws it once when >1 is requested together. Listed in canonical order (stats, powers,
+# intents) so the combined draw sequence matches the old single _fill_creatures.
+_CREATURE_EXPERTS = ("creature-stats", "creature-powers", "creature-intents")
+
 _FILLERS = {
     "scalars": _fill_scalars, "potions": _fill_potions, "relics": _fill_relics,
-    "orbs": _fill_orbs, "creatures": _fill_creatures, "cards": _fill_cards,
+    "orbs": _fill_orbs, "cards": _fill_cards,
+    "creature-stats": _fill_creature_stats, "creature-powers": _fill_creature_powers,
+    "creature-intents": _fill_creature_intents,
 }
 
 
@@ -939,7 +991,20 @@ def synth_batch(experts: Iterable[str], batch_size: int, rng: np.random.Generato
     expert's category sampled uniformly-with-design and every other category left empty. ``experts`` are
     the trained expert names (:data:`experts.EXPERT_ORDER` keys)."""
     z = _zeros_batch(batch_size)
-    for e in experts:
+    requested = list(experts)
+    # Creature-family experts share ONE per-state creature-count context when >1 is requested together, so
+    # the parent slots powers/intents reference stay consistent with the creature rows (and the combined
+    # output matches the pre-split _fill_creatures distribution). A lone creature expert draws its own.
+    creature_reqs = [e for e in _CREATURE_EXPERTS if e in requested]
+    done: set = set()
+    if len(creature_reqs) > 1:
+        shared_c = _draw_creature_counts(rng, _load_reachable(), batch_size)
+        for e in creature_reqs:                              # canonical order (stats, powers, intents)
+            _FILLERS[e](rng, z, batch_size, shared_c)
+            done.add(e)
+    for e in requested:
+        if e in done:
+            continue
         filler = _FILLERS.get(e)
         if filler is None:
             raise KeyError(f"synth: unknown expert {e!r}; known {sorted(_FILLERS)}")

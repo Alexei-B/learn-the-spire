@@ -188,35 +188,30 @@ def _counts_bits(tbl, name: str) -> float:
     return _dist_bits(tbl["counts"][name][1])
 
 
-def entropy_creatures() -> float:
-    """REACHABILITY-SHAPED generator (when the table exists): creatures + folded powers + intents, each
-    from its observed conditional table, with count TERMS driven by the measured per-state / per-creature
-    histograms (replacing the old uniform 0..MAX caps that dominated the estimate). Per creature: observed
-    identity + kind + margin-widened numerics; per power: observed powerIndex + amount range + parent bits;
-    per intent: observed type + numerics + parent bits. A CREATURE_WILDCARD_PROB slice keeps the old
-    uniform cost. Falls back to the independent-uniform formula when the table is absent. Mirrors
-    entropy_orbs()."""
+# --------------------------------------------------------------------------------------------------
+# Creature family (owner ruling, 2026-07-18): the single "creatures" expert (owning creature+power+intent,
+# a 768-wide slice) floored at dist ~0.29 and was judged too big. It is split into THREE parameter-disjoint
+# experts — creature-stats (creature), creature-powers (power), creature-intents (intent) — so each
+# sub-task's convergence can be measured independently. The three entropy terms below are exactly the three
+# additive components the old entropy_creatures summed, so their sum is unchanged (a structural check the
+# split preserves the joint distribution). Powers/intents keep the log2(E[creatures]) PARENT bits (each row
+# still references a parent creature slot), so their standalone samplers draw a virtual creature-count from
+# the same per-state histogram.
+# --------------------------------------------------------------------------------------------------
+
+def entropy_creature_stats() -> float:
+    """creature-stats expert — owns the `creature` token type. Reachability-shaped: creature count from
+    the measured per-state histogram, per creature an observed identity + kind + margin-widened numerics
+    with a CREATURE_WILDCARD_PROB uniform tail (creature ORDER is semantic — flagged as the pending v6
+    positional change, NOT modelled here). Falls back to the independent-uniform formula when the table is
+    absent. This is the creature component of the old entropy_creatures; mirrors entropy_orbs()."""
     from .. import tokens as T
     tbl = SY._try_load_reachable()
     if tbl is None:
-        cr = S.TYPE_BY_NAME["creature"]
-        per_cr = _creature_wild_bits()
         e_c = (1 + T.MAX_CREATURES) / 2.0
-        pw = S.TYPE_BY_NAME["power"]
-        per_pw = math.log2(pw.cat_cols[0][1]) + math.log2(e_c) + _range_bits("power", "amount")
-        inn = S.TYPE_BY_NAME["intent"]
-        per_in = math.log2(inn.cat_cols[0][1] - 1) + math.log2(e_c)
-        for c in T.INTENT_NUM:
-            b = _range_bits("intent", c)
-            per_in += b if b else 1.0
-        return (math.log2(T.MAX_CREATURES) + e_c * per_cr
-                + math.log2(T.MAX_POWERS + 1) + (T.MAX_POWERS / 2.0) * per_pw
-                + math.log2(T.MAX_INTENTS + 1) + (T.MAX_INTENTS / 2.0) * per_in)
-
+        return math.log2(T.MAX_CREATURES) + e_c * _creature_wild_bits()
     w = SY.CREATURE_WILDCARD_PROB
     e_c = _counts_mean(tbl, "creatures_per_state", floor1=True)
-    parent_bits = math.log2(max(2, e_c))
-    # Creatures.
     per_id = []
     for ce in tbl["creatures"].values():
         b = math.log2(max(1, len(ce["kind"])))
@@ -226,14 +221,52 @@ def entropy_creatures() -> float:
         per_id.append(b)
     cr_content = math.log2(max(2, len(tbl["creatures"]))) + (sum(per_id) / len(per_id) if per_id else 0.0)
     per_cr = (1 - w) * cr_content + w * _creature_wild_bits()
-    # Powers (parent adds log2(E[creatures]) bits in both paths).
+    return _counts_bits(tbl, "creatures_per_state") + e_c * per_cr
+
+
+def entropy_creature_powers() -> float:
+    """creature-powers expert — owns the `power` token type. Each power references a parent creature slot,
+    so the entropy keeps log2(E[creatures]) parent bits (the standalone sampler draws a virtual
+    creature-count from the same histogram). A power STACKS its amount rather than duplicating, so within a
+    creature the powerIndex is distinct and order-free (game ruling — sorted canonically); the small
+    multiset reduction is ignored. The power component of the old entropy_creatures; mirrors
+    entropy_orbs()."""
+    from .. import tokens as T
+    tbl = SY._try_load_reachable()
+    if tbl is None:
+        e_c = (1 + T.MAX_CREATURES) / 2.0
+        pw = S.TYPE_BY_NAME["power"]
+        per_pw = math.log2(pw.cat_cols[0][1]) + math.log2(e_c) + _range_bits("power", "amount")
+        return math.log2(T.MAX_POWERS + 1) + (T.MAX_POWERS / 2.0) * per_pw
+    w = SY.CREATURE_WILDCARD_PROB
+    e_c = _counts_mean(tbl, "creatures_per_state", floor1=True)
+    parent_bits = math.log2(max(2, e_c))
     ps = tbl["powers"]
     amt_bits = (sum(math.log2(max(1, SY.reach_bins("power", "amount", lo, hi)))
                     for lo, hi in ps.values()) / len(ps)) if ps else 0.0
     pw_content = math.log2(max(2, len(ps))) + amt_bits
     pw_wild = math.log2(S.TYPE_BY_NAME["power"].cat_cols[0][1]) + _range_bits("power", "amount")
     per_pw = (1 - w) * pw_content + w * pw_wild + parent_bits
-    # Intents.
+    return _counts_bits(tbl, "powers_per_state") + _counts_mean(tbl, "powers_per_state") * per_pw
+
+
+def entropy_creature_intents() -> float:
+    """creature-intents expert — owns the `intent` token type. Each intent references a parent creature
+    slot (keeps the parent bits) and is order-free within a creature (game ruling — sorted canonically, no
+    positional entropy). The intent component of the old entropy_creatures; mirrors entropy_orbs()."""
+    from .. import tokens as T
+    tbl = SY._try_load_reachable()
+    inn = S.TYPE_BY_NAME["intent"]
+    if tbl is None:
+        e_c = (1 + T.MAX_CREATURES) / 2.0
+        per_in = math.log2(inn.cat_cols[0][1] - 1) + math.log2(e_c)
+        for c in T.INTENT_NUM:
+            b = _range_bits("intent", c)
+            per_in += b if b else 1.0
+        return math.log2(T.MAX_INTENTS + 1) + (T.MAX_INTENTS / 2.0) * per_in
+    w = SY.CREATURE_WILDCARD_PROB
+    e_c = _counts_mean(tbl, "creatures_per_state", floor1=True)
+    parent_bits = math.log2(max(2, e_c))
     per_in_id = []
     for ie in tbl["intents"].values():
         b = 0.0
@@ -243,19 +276,17 @@ def entropy_creatures() -> float:
         per_in_id.append(b)
     in_content = (math.log2(max(2, len(tbl["intents"])))
                   + (sum(per_in_id) / len(per_in_id) if per_in_id else 0.0))
-    inn = S.TYPE_BY_NAME["intent"]
     in_wild = math.log2(inn.cat_cols[0][1] - 1)
     for c in T.INTENT_NUM:
         b = _range_bits("intent", c)
         in_wild += b if b else 1.0
     per_in = (1 - w) * in_content + w * in_wild + parent_bits
-    return (_counts_bits(tbl, "creatures_per_state") + e_c * per_cr
-            + _counts_bits(tbl, "powers_per_state") + _counts_mean(tbl, "powers_per_state") * per_pw
-            + _counts_bits(tbl, "intents_per_state") + _counts_mean(tbl, "intents_per_state") * per_in)
+    return _counts_bits(tbl, "intents_per_state") + _counts_mean(tbl, "intents_per_state") * per_in
 
 
 ENTROPY_FNS = {"potions": entropy_potions, "relics": entropy_relics, "orbs": entropy_orbs,
-               "cards": entropy_cards, "creatures": entropy_creatures}
+               "cards": entropy_cards, "creature-stats": entropy_creature_stats,
+               "creature-powers": entropy_creature_powers, "creature-intents": entropy_creature_intents}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -412,70 +443,67 @@ def _intent_id_bits(ie: Dict) -> float:
     return b
 
 
-def _state_bits_creatures_notable(rng: np.random.Generator, n: int) -> np.ndarray:
-    """No-table fallback: the independent-uniform sampling that entropy_creatures' no-table branch sums —
-    c~U(1..MAX_CREATURES), powers~U(0..MAX_POWERS), intents~U(0..MAX_INTENTS), constant per-row content,
-    parent bits = log2(#creatures)."""
-    T = tokens_ref()
-    per_cr = _creature_wild_bits()
-    pw = S.TYPE_BY_NAME["power"]
-    per_pw = math.log2(pw.cat_cols[0][1]) + _range_bits("power", "amount")
-    inn = S.TYPE_BY_NAME["intent"]
-    per_in = math.log2(inn.cat_cols[0][1] - 1)
-    for c in T.INTENT_NUM:
-        b = _range_bits("intent", c)
-        per_in += b if b else 1.0
-    c = rng.integers(1, T.MAX_CREATURES + 1, size=n).astype(np.float64)
-    n_pw = rng.integers(0, T.MAX_POWERS + 1, size=n).astype(np.float64)
-    n_in = rng.integers(0, T.MAX_INTENTS + 1, size=n).astype(np.float64)
-    parent = np.log2(np.maximum(2.0, c))
-    return (math.log2(T.MAX_CREATURES) + c * per_cr
-            + math.log2(T.MAX_POWERS + 1) + n_pw * (per_pw + parent)
-            + math.log2(T.MAX_INTENTS + 1) + n_in * (per_in + parent))
+def _draw_creature_counts(rng: np.random.Generator, n: int, tbl: Dict, T) -> np.ndarray:
+    """Per-state creature count (>=1, capped MAX_CREATURES) from the measured histogram — the SAME context
+    the split synth fillers draw. creature-stats draws its own creatures here; the standalone
+    powers/intents samplers draw a VIRTUAL creature-count so their parent bits (log2(#creatures)) and the
+    MAX_POWERS/state cap stay realistic (mirrors synth._draw_creature_counts)."""
+    cvals, cprobs = tbl["counts"]["creatures_per_state"]
+    return np.clip(rng.choice(cvals, size=n, p=cprobs), 1, T.MAX_CREATURES)
 
 
-def _state_bits_creatures(rng: np.random.Generator, n: int) -> np.ndarray:
-    """Mirror :func:`synth._fill_creatures`: creature count from the measured per-state histogram (>=1);
-    per creature/power/intent a CREATURE_WILDCARD_PROB uniform flip or a table-conditioned identity, with
-    powers counted per-creature (histogram, capped to MAX_POWERS/state) and intents per-state (capped).
-    Each power/intent adds log2(#creatures) parent bits. Reuses entropy_creatures' exact per-identity and
-    wildcard costs; the tail comes from states that draw many creatures with wide-numeric identities."""
+def _state_bits_creature_stats(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Mirror :func:`synth._fill_creature_stats`: creature count from the per-state histogram (>=1); per
+    creature a CREATURE_WILDCARD_PROB uniform flip or a table-conditioned identity. The creature component
+    of the old _state_bits_creatures; reuses entropy_creature_stats' exact per-identity/wildcard costs."""
     T = tokens_ref()
     tbl = SY._try_load_reachable()
     if tbl is None:
-        return _state_bits_creatures_notable(rng, n)
+        c = rng.integers(1, T.MAX_CREATURES + 1, size=n).astype(np.float64)
+        return math.log2(T.MAX_CREATURES) + c * _creature_wild_bits()
     w = SY.CREATURE_WILDCARD_PROB
-    creature_ids, power_ids, intent_ids = tbl["creature_ids"], tbl["power_ids"], tbl["intent_ids"]
+    creature_ids = tbl["creature_ids"]
     cr_per_id = np.array([_creature_id_bits(tbl["creatures"][int(i)]) for i in creature_ids])
-    pw_per_id = np.array([math.log2(max(1, SY.reach_bins("power", "amount", *tbl["powers"][int(i)])))
-                          for i in power_ids])
-    in_per_id = np.array([_intent_id_bits(tbl["intents"][int(i)]) for i in intent_ids])
     cr_id_cost = math.log2(max(2, len(creature_ids)))
-    pw_id_cost = math.log2(max(2, len(power_ids)))
-    in_id_cost = math.log2(max(2, len(intent_ids)))
     cr_wild = _creature_wild_bits()
-    pw_wild = math.log2(S.TYPE_BY_NAME["power"].cat_cols[0][1]) + _range_bits("power", "amount")
-    inn = S.TYPE_BY_NAME["intent"]
-    in_wild = math.log2(inn.cat_cols[0][1] - 1)
-    for c in T.INTENT_NUM:
-        b = _range_bits("intent", c)
-        in_wild += b if b else 1.0
-
-    cvals, cprobs = tbl["counts"]["creatures_per_state"]
-    c = np.clip(rng.choice(cvals, size=n, p=cprobs), 1, T.MAX_CREATURES)
-    bits = np.full(n, _counts_bits(tbl, "creatures_per_state") + _counts_bits(tbl, "powers_per_state")
-                   + _counts_bits(tbl, "intents_per_state"), dtype=np.float64)
-    # Creatures.
+    c = _draw_creature_counts(rng, n, tbl, T)
+    bits = np.full(n, _counts_bits(tbl, "creatures_per_state"), dtype=np.float64)
     total_c = int(c.sum())
     c_state = np.repeat(np.arange(n), c)
     cw = rng.random(total_c) < w
     csel = rng.integers(0, len(creature_ids), size=total_c)
     np.add.at(bits, c_state, np.where(cw, cr_wild, cr_id_cost + cr_per_id[csel]))
-    # Powers: per-creature histogram draw, summed per state, capped to MAX_POWERS (as the filler caps).
+    return bits
+
+
+def _state_bits_creature_powers(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Mirror :func:`synth._fill_creature_powers`: a VIRTUAL creature-count context per state (so parents
+    and the MAX_POWERS cap are realistic), a per-creature power count (histogram), each power a wildcard
+    flip or a table id, plus log2(#creatures) parent bits. The power component of the old
+    _state_bits_creatures."""
+    T = tokens_ref()
+    tbl = SY._try_load_reachable()
+    if tbl is None:
+        pw = S.TYPE_BY_NAME["power"]
+        per_pw = math.log2(pw.cat_cols[0][1]) + _range_bits("power", "amount")
+        c = rng.integers(1, T.MAX_CREATURES + 1, size=n).astype(np.float64)
+        n_pw = rng.integers(0, T.MAX_POWERS + 1, size=n).astype(np.float64)
+        parent = np.log2(np.maximum(2.0, c))
+        return math.log2(T.MAX_POWERS + 1) + n_pw * (per_pw + parent)
+    w = SY.CREATURE_WILDCARD_PROB
+    power_ids = tbl["power_ids"]
+    pw_per_id = np.array([math.log2(max(1, SY.reach_bins("power", "amount", *tbl["powers"][int(i)])))
+                          for i in power_ids])
+    pw_id_cost = math.log2(max(2, len(power_ids)))
+    pw_wild = math.log2(S.TYPE_BY_NAME["power"].cat_cols[0][1]) + _range_bits("power", "amount")
+    c = _draw_creature_counts(rng, n, tbl, T)               # virtual creature-count context
+    bits = np.full(n, _counts_bits(tbl, "powers_per_state"), dtype=np.float64)
+    total_c = int(c.sum())
+    c_state = np.repeat(np.arange(n), c)
     pvals, pprobs = tbl["counts"]["powers_per_creature"]
     n_pw_state = np.zeros(n, dtype=np.int64)
     np.add.at(n_pw_state, c_state, rng.choice(pvals, size=total_c, p=pprobs))
-    n_pw_state = np.minimum(n_pw_state, T.MAX_POWERS)
+    n_pw_state = np.minimum(n_pw_state, T.MAX_POWERS)        # cap per state (as the filler caps)
     total_pw = int(n_pw_state.sum())
     if total_pw:
         pw_state = np.repeat(np.arange(n), n_pw_state)
@@ -483,7 +511,35 @@ def _state_bits_creatures(rng: np.random.Generator, n: int) -> np.ndarray:
         pwsel = rng.integers(0, len(power_ids), size=total_pw)
         content = np.where(pw_w, pw_wild, pw_id_cost + pw_per_id[pwsel])
         np.add.at(bits, pw_state, content + np.log2(np.maximum(2, c[pw_state])))
-    # Intents: per-state histogram draw, capped to MAX_INTENTS; each references one of the c creatures.
+    return bits
+
+
+def _state_bits_creature_intents(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Mirror :func:`synth._fill_creature_intents`: a virtual creature-count context, a per-state intent
+    count (histogram, capped MAX_INTENTS), each intent a wildcard flip or a table id, plus
+    log2(#creatures) parent bits. The intent component of the old _state_bits_creatures."""
+    T = tokens_ref()
+    tbl = SY._try_load_reachable()
+    inn = S.TYPE_BY_NAME["intent"]
+    if tbl is None:
+        per_in = math.log2(inn.cat_cols[0][1] - 1)
+        for col in T.INTENT_NUM:
+            b = _range_bits("intent", col)
+            per_in += b if b else 1.0
+        c = rng.integers(1, T.MAX_CREATURES + 1, size=n).astype(np.float64)
+        n_in = rng.integers(0, T.MAX_INTENTS + 1, size=n).astype(np.float64)
+        parent = np.log2(np.maximum(2.0, c))
+        return math.log2(T.MAX_INTENTS + 1) + n_in * (per_in + parent)
+    w = SY.CREATURE_WILDCARD_PROB
+    intent_ids = tbl["intent_ids"]
+    in_per_id = np.array([_intent_id_bits(tbl["intents"][int(i)]) for i in intent_ids])
+    in_id_cost = math.log2(max(2, len(intent_ids)))
+    in_wild = math.log2(inn.cat_cols[0][1] - 1)
+    for col in T.INTENT_NUM:
+        b = _range_bits("intent", col)
+        in_wild += b if b else 1.0
+    c = _draw_creature_counts(rng, n, tbl, T)               # virtual creature-count context (parent bits)
+    bits = np.full(n, _counts_bits(tbl, "intents_per_state"), dtype=np.float64)
     ivals, iprobs = tbl["counts"]["intents_per_state"]
     ni = np.minimum(rng.choice(ivals, size=n, p=iprobs), T.MAX_INTENTS)
     total_in = int(ni.sum())
@@ -498,7 +554,8 @@ def _state_bits_creatures(rng: np.random.Generator, n: int) -> np.ndarray:
 
 _STATE_BITS_FNS = {
     "potions": _state_bits_potions, "relics": _state_bits_relics, "orbs": _state_bits_orbs,
-    "cards": _state_bits_cards, "creatures": _state_bits_creatures,
+    "cards": _state_bits_cards, "creature-stats": _state_bits_creature_stats,
+    "creature-powers": _state_bits_creature_powers, "creature-intents": _state_bits_creature_intents,
 }
 
 

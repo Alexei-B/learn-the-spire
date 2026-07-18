@@ -201,7 +201,7 @@ def test_synth_cards_are_content_sorted():
 
 def test_synth_creatures_are_canonically_sorted():
     # Match tokens._creature_sort_key: (kind, combatId, identity, currentHp, maxHp, block, active).
-    z = SY.synth_batch(["creatures"], 48, np.random.default_rng(13))
+    z = SY.synth_batch(["creature-stats"], 48, np.random.default_rng(13))
     ci, cn, cm = z["creature_idx"], z["creature_num"], z["creature_mask"]
     for b in range(48):
         k = int(cm[b].sum())

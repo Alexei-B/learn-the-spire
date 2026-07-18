@@ -31,12 +31,18 @@ from lts2_agent.wm.experts import EXPERT_ORDER, EXPERT_TYPES, ScalarCodec
 from tests.test_wm_encdec import _batch, _state
 
 
+# The creature family is three parameter-disjoint experts (owner ruling 2026-07-18): creature-stats,
+# creature-powers, creature-intents. Narrow test slices for all three keep the CPU suite light.
+_CREATURE_EXPERTS = ["creature-stats", "creature-powers", "creature-intents"]
+_TEST_WIDTHS = {"creature-stats": 64, "creature-powers": 64, "creature-intents": 32,
+                "cards": 256, "relics": 64, "potions": 32, "orbs": 32}
+
+
 def _small() -> MF.FactoredWorldModelAE:
     # Narrow slices (divisible by simnorm_group=8) keep the CPU test light while exercising every expert.
     return MF.FactoredWorldModelAE(
         d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
-        cat_dim=16, slice_widths={"creatures": 128, "cards": 256, "relics": 64, "potions": 32,
-                                  "orbs": 32})
+        cat_dim=16, slice_widths=dict(_TEST_WIDTHS))
 
 
 # ==================================================================================================
@@ -49,7 +55,8 @@ def test_forward_shapes_and_latent_dim():
     z, out = m(batch)
     # Latent is the concatenation of all expert slices; layout offsets tile it exactly.
     assert z.shape == (2, m.latent_dim)
-    assert m.latent_dim == m.scalars.width + 128 + 256 + 64 + 32 + 32
+    # scalars + creature-stats/powers/intents + cards + relics + potions + orbs (EXPERT_ORDER).
+    assert m.latent_dim == m.scalars.width + 64 + 64 + 32 + 256 + 64 + 32 + 32
     off = 0
     for name in EXPERT_ORDER:
         a, b = m.slice_layout[name]
@@ -73,7 +80,7 @@ def test_learned_slices_are_simnorm_and_scalars_is_binary_code():
     m = _small()
     slices = m.encode_slices(batch)
     # Learned expert slices are SimNorm'd (grouped simplices).
-    for name in ("creatures", "cards", "relics", "potions", "orbs"):
+    for name in (*_CREATURE_EXPERTS, "cards", "relics", "potions", "orbs"):
         g = slices[name].reshape(1, -1, m.cfg["simnorm_group"])
         assert torch.allclose(g.sum(-1), torch.ones_like(g.sum(-1)), atol=1e-5)
     # The scalar slice is a deterministic {0,1} code (no SimNorm — that would break exactness).
@@ -156,7 +163,7 @@ def test_scalar_exact_metric_is_one_with_random_factored_model():
 def test_range_bin_head_exact_when_argmax_hits_target_bin():
     batch = _batch([_state(damage=6) if False else _state(n_hand=2, n_enemies=2)])
     m = _small()
-    ex = m.experts["creatures"]
+    ex = m.experts["creature-stats"]
     head = ex.heads["creature"]
     num = batch["creature_num"]                                   # [B, slots, W] symlog block
     tgt_bins = head.bin_targets(num)                             # exact target bins
@@ -325,6 +332,29 @@ def test_factored_loader_rejects_mono_checkpoint(tmp_path):
         assert "not 'factored'" in str(e)
 
 
+def test_load_rejects_legacy_creatures_checkpoint(tmp_path):
+    # Owner ruling (2026-07-18): the single 'creatures' expert was split into three parameter-disjoint
+    # experts. An OLD checkpoint whose meta still names 'creatures' must fail LOUDLY and name the split,
+    # never silently remap (there is no trained creatures expert worth preserving — it floored at 0.29).
+    import json
+    m = _small()
+    path = str(tmp_path / "legacy.pt")
+    MF.save_checkpoint(path, m, step=1)
+    with open(path + ".meta.json") as f:
+        meta = json.load(f)
+    meta["experts"]["creatures"] = {"name": "creatures", "slice": [0, 768], "width": 768}   # pre-split
+    with open(path + ".meta.json", "w") as f:
+        json.dump(meta, f)
+    for loader in (MF.load_checkpoint, MF.read_meta):
+        try:
+            loader(path)
+            assert False, "expected a legacy-expert rejection"
+        except ValueError as e:
+            msg = str(e)
+            assert "legacy expert" in msg and "'creatures'" in msg
+            assert all(s in msg for s in ("creature-stats", "creature-powers", "creature-intents"))
+
+
 # ==================================================================================================
 # Per-expert training: freeze/skip correctness.
 # ==================================================================================================
@@ -401,8 +431,7 @@ def test_init_expert_from_copies_slice(tmp_path):
     # A config mismatch (different slice width) is rejected.
     narrow = MF.FactoredWorldModelAE(
         d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
-        cat_dim=16,
-        slice_widths={"creatures": 128, "cards": 256, "relics": 32, "potions": 32, "orbs": 32})
+        cat_dim=16, slice_widths=dict(_TEST_WIDTHS, relics=32))
     try:
         MF.init_expert_from(narrow, "relics", path)
         assert False, "expected a slice-width-mismatch rejection"
@@ -495,7 +524,7 @@ def _stored_num_block(head, values_by_field):
 
 def test_twohot_targets_sum_to_one_and_expectation_recovers_value():
     m = _small()
-    head = m.experts["creatures"].heads["creature"]
+    head = m.experts["creature-stats"].heads["creature"]
     W = len(head.num_cols)
     # Interior integer per field (>= half_width from both ends), so the symmetric kernel is untruncated.
     vals = []
@@ -634,7 +663,7 @@ def test_slice_norm_keeps_simplex_and_bounds_logits():
     m = _small()
     batch = _batch([_state(n_hand=2, n_enemies=2), _state(n_enemies=1)])
     slices = m.encode_slices(batch)
-    for name in ("creatures", "cards", "relics", "potions", "orbs"):
+    for name in (*_CREATURE_EXPERTS, "cards", "relics", "potions", "orbs"):
         g = slices[name].reshape(slices[name].shape[0], -1, m.cfg["simnorm_group"])
         assert torch.allclose(g.sum(-1), torch.ones_like(g.sum(-1)), atol=1e-5)  # still simplices
     assert m.experts["orbs"].slice_norm.elementwise_affine is False              # no decay-shrinkable scale
@@ -654,8 +683,7 @@ def test_slice_norm_keeps_simplex_and_bounds_logits():
 def _small_qk(qk_norm: bool) -> MF.FactoredWorldModelAE:
     return MF.FactoredWorldModelAE(
         d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
-        cat_dim=16, slice_widths={"creatures": 128, "cards": 256, "relics": 64, "potions": 32,
-                                  "orbs": 32}, qk_norm=qk_norm)
+        cat_dim=16, slice_widths=dict(_TEST_WIDTHS), qk_norm=qk_norm)
 
 
 def test_qk_norm_default_on_and_swaps_trunk_and_adds_params():

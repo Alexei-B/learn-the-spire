@@ -261,8 +261,9 @@ def main() -> int:
     ap.add_argument("--arch", default="mono", choices=["mono", "factored"],
                     help="'mono' (default) = the monolithic single-latent AE (byte-identical to prior "
                          "runs); 'factored' = the T3 expert-per-category AE (roadmap M3.5): independent "
-                         "per-category experts, each with its own named latent slice (scalars/creatures/"
-                         "cards/relics/potions/orbs), tier-1 scalars exact by construction. Stamped in "
+                         "per-category experts, each with its own named latent slice (scalars/"
+                         "creature-stats/creature-powers/creature-intents/cards/relics/potions/orbs), "
+                         "tier-1 scalars exact by construction. Stamped in "
                          "checkpoint meta with the slice layout; loads reject a mismatch.")
     ap.add_argument("--d-model", type=int, default=256)
     ap.add_argument("--heads", type=int, default=4)

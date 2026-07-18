@@ -16,7 +16,9 @@ Three tiers:
   for any in-range integer *by construction*, with no learned weights, so ``eval.scalar_exact`` pins to
   1.0 from the very first val pass (the wiring canary). Out-of-range integers clamp loudly
   (:func:`spec.clamp_to_range`).
-* **Tier 2 — small experts.** creatures (folding their powers + intents into one expert), relics
+* **Tier 2 — small experts.** creature-stats / creature-powers / creature-intents (the creature family,
+  split into three parameter-disjoint single-type experts per the owner's 2026-07-18 ruling — powers and
+  intents still carry a parent-creature-slot embedding so a folded child keeps its association), relics
   (positional per-slot categorical — one row per relic instance + a `slot` acquisition-order column,
   duplicates kept), potions (per-slot categorical — potions can duplicate), orbs.
 * **Tier 3 — the card-population expert.** the biggest slice; a set encoder/decoder over the v3
@@ -74,15 +76,27 @@ RAW_NUM_COLS: Dict[str, set] = {
 }
 
 # Which expert owns which token types (partition of tokens.TOKEN_TYPES, used by report/expert_dist).
+#
+# Creature-family split (owner ruling, 2026-07-18): the single "creatures" expert (owning
+# creature+power+intent in one 768-wide slice) floored at dist ~0.29 and was judged too big. It is
+# replaced by THREE parameter-disjoint single-type experts — creature-stats (creature), creature-powers
+# (power), creature-intents (intent) — so each sub-task's convergence can be measured independently. This
+# is an EXPERT-level regroup only: the tokenizer (v5) is untouched, and the three still union to exactly
+# {creature, power, intent}. There is no legacy creatures expert worth preserving (it floored at 0.29), so
+# an OLD checkpoint whose meta names "creatures" is REJECTED rather than silently remapped (see
+# model_factored.load_checkpoint / read_meta).
 EXPERT_TYPES: Dict[str, List[str]] = {
     "scalars": ["global", "pending"],
-    "creatures": ["creature", "power", "intent"],
+    "creature-stats": ["creature"],
+    "creature-powers": ["power"],
+    "creature-intents": ["intent"],
     "cards": ["card"],
     "relics": ["relic"],
     "potions": ["potion"],
     "orbs": ["orb"],
 }
-EXPERT_ORDER = ["scalars", "creatures", "cards", "relics", "potions", "orbs"]
+EXPERT_ORDER = ["scalars", "creature-stats", "creature-powers", "creature-intents", "cards", "relics",
+                "potions", "orbs"]
 
 
 def t_symexp(y: torch.Tensor) -> torch.Tensor:
@@ -490,8 +504,10 @@ class SetExpert(nn.Module):
     embed → self-attention over ONLY this category's tokens → Perceiver pool → SimNorm'd latent slice.
     Decoder: slice → memory tokens → per-type learned slot queries cross-attend → :class:`RangeBinHeads`.
 
-    ``child_parent`` types (power/intent) add a parent-slot embedding so the folded children keep their
-    creature association inside the creatures expert."""
+    ``child_parent`` types (power/intent) add a parent-slot embedding so a child token keeps its parent
+    creature-slot association even though creature-powers / creature-intents are now their OWN experts (the
+    creature-family split): the parent slot is drawn from the same per-state creature-count context, so the
+    reference is a realistic 0..c-1 slot rather than a cross-expert pointer."""
 
     def __init__(self, name: str, type_names: List[str], latent_width: int, d_model: int,
                  static_tables: Dict[str, np.ndarray], cat_dim: int = 24, n_heads: int = 4,

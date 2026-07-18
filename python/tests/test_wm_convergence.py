@@ -16,7 +16,8 @@ import pytest
 from lts2_agent.wm import convergence as C
 from lts2_agent.wm import synth as SY
 
-ALL_EXPERTS = ["potions", "relics", "orbs", "cards", "creatures"]
+ALL_EXPERTS = ["potions", "relics", "orbs", "cards",
+               "creature-stats", "creature-powers", "creature-intents"]
 
 
 # ==================================================================================================

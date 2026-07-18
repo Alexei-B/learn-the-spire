@@ -25,7 +25,12 @@ from lts2_agent.wm import spec as S
 from lts2_agent.wm import synth as SY
 from lts2_agent.wm.experts import EXPERT_TYPES, RAW_NUM_COLS
 
-ALL_EXPERTS = ["scalars", "potions", "relics", "orbs", "creatures", "cards"]
+# The creature family is three parameter-disjoint experts (owner ruling 2026-07-18): creature-stats owns
+# `creature`, creature-powers owns `power`, creature-intents owns `intent`. CREATURE_FAMILY (all three) is
+# the COMBINED path — equivalent to the old single "creatures" filler; requesting it draws one shared
+# per-state creature count so powers/intents parents stay consistent with the creature rows.
+CREATURE_FAMILY = ["creature-stats", "creature-powers", "creature-intents"]
+ALL_EXPERTS = ["scalars", "potions", "relics", "orbs", *CREATURE_FAMILY, "cards"]
 
 # The reachability-shaped cards/creatures generators load their conditional table from
 # data/reachable_v1.json. Tests MUST NOT depend on that (gitignored) artifact, so we build a tiny fixture
@@ -161,7 +166,7 @@ def _assert_left_packed_and_padding_zeroed(z, t):
 
 def test_presence_left_packed_padding_zeroed():
     rng = np.random.default_rng(2)
-    for e in ("potions", "relics", "orbs", "creatures", "cards"):
+    for e in ("potions", "relics", "orbs", *CREATURE_FAMILY, "cards"):
         z = SY.synth_batch([e], 40, rng)
         for tn in EXPERT_TYPES[e]:
             _assert_left_packed_and_padding_zeroed(z, S.TYPE_BY_NAME[tn])
@@ -238,7 +243,7 @@ def _decoded_ints(type_name, num_block, mask):
 
 def test_numerics_within_measured_ranges():
     rng = np.random.default_rng(5)
-    for e, tn in [("orbs", "orb"), ("creatures", "creature"), ("cards", "card")]:
+    for e, tn in [("orbs", "orb"), ("creature-stats", "creature"), ("cards", "card")]:
         z = SY.synth_batch([e], 60, rng)
         dec = _decoded_ints(tn, z[S.TYPE_BY_NAME[tn].num_key], z[S.TYPE_BY_NAME[tn].mask_key])
         for c, vals in dec.items():
@@ -265,9 +270,10 @@ def test_numeric_storage_roundtrips_through_bin_targets():
     # The stored symlog block must land on the EXACT bin the loss targets (no ±1 drift) for every field.
     m = MF.FactoredWorldModelAE(d_model=32, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1,
                                 pool_latents=2, n_mem=4, cat_dim=8,
-                                slice_widths={"creatures": 64, "cards": 64, "relics": 32, "potions": 16,
-                                              "orbs": 16})
-    for e, tn in [("orbs", "orb"), ("creatures", "creature"), ("cards", "card")]:
+                                slice_widths={"creature-stats": 64, "creature-powers": 64,
+                                              "creature-intents": 32, "cards": 64, "relics": 32,
+                                              "potions": 16, "orbs": 16})
+    for e, tn in [("orbs", "orb"), ("creature-stats", "creature"), ("cards", "card")]:
         z = SY.synth_batch([e], 12, np.random.default_rng(7))
         head = m.experts[e].heads[tn]
         num = torch.tensor(z[S.TYPE_BY_NAME[tn].num_key])
@@ -338,9 +344,10 @@ def test_synth_batches_stream_shapes():
 def test_synth_batch_forward_and_report():
     m = MF.FactoredWorldModelAE(d_model=48, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1,
                                 pool_latents=2, n_mem=4, cat_dim=12,
-                                slice_widths={"creatures": 96, "cards": 96, "relics": 48, "potions": 24,
-                                              "orbs": 24})
-    for e in ("potions", "relics", "orbs", "creatures", "cards"):
+                                slice_widths={"creature-stats": 96, "creature-powers": 96,
+                                              "creature-intents": 48, "cards": 96, "relics": 48,
+                                              "potions": 24, "orbs": 24})
+    for e in ("potions", "relics", "orbs", *CREATURE_FAMILY, "cards"):
         z = SY.synth_batch([e], 4, np.random.default_rng(10))
         batch = M.to_tensors(z, "cpu")
         with torch.no_grad():
@@ -438,7 +445,7 @@ def test_reshaped_cards_are_content_sorted():
 
 
 def test_reshaped_creatures_are_lexsorted():
-    z = SY.synth_batch(["creatures"], 64, np.random.default_rng(21))
+    z = SY.synth_batch(["creature-stats"], 64, np.random.default_rng(21))
     _assert_creatures_lexsorted(z)
 
 
@@ -450,8 +457,9 @@ def test_table_conditioned_values_within_spec_ranges():
         mp.setattr(SY, "CARD_WILDCARD_PROB", 0.0)
         mp.setattr(SY, "CREATURE_WILDCARD_PROB", 0.0)
         rng = np.random.default_rng(22)
-        for e, tn in [("cards", "card"), ("creatures", "creature")]:
-            z = SY.synth_batch([e], 80, rng)
+        # The creature case uses the COMBINED family so powers are present for the amount check below.
+        for experts, tn in [(["cards"], "card"), (CREATURE_FAMILY, "creature")]:
+            z = SY.synth_batch(experts, 80, rng)
             dec = _decoded_ints(tn, z[S.TYPE_BY_NAME[tn].num_key], z[S.TYPE_BY_NAME[tn].mask_key])
             for c, vals in dec.items():
                 if len(vals) == 0:
@@ -473,7 +481,8 @@ def test_reshaped_symlog_storage_is_integer_exact():
     # symlog storage identity: every stored non-flag numeric is exactly symlog(integer) — symexp recovers
     # a whole number (no drift), the same contract the tokenizer/bin_targets rely on.
     rng = np.random.default_rng(23)
-    for e, tn, cols in [("cards", "card", tokens.CARD_NUM), ("creatures", "creature", tokens.CREATURE_NUM)]:
+    for e, tn, cols in [("cards", "card", tokens.CARD_NUM),
+                        ("creature-stats", "creature", tokens.CREATURE_NUM)]:
         z = SY.synth_batch([e], 48, rng)
         raw = RAW_NUM_COLS.get(tn, set())
         num = z[S.TYPE_BY_NAME[tn].num_key][z[S.TYPE_BY_NAME[tn].mask_key]]
@@ -499,7 +508,7 @@ def test_wildcard_and_table_paths_both_exercised():
         assert in_tbl.any(), "no table-path card rows"
         assert (~in_tbl).any(), "no wildcard-path card rows"
 
-        zk = SY.synth_batch(["creatures"], 200, np.random.default_rng(25))
+        zk = SY.synth_batch(["creature-stats"], 200, np.random.default_rng(25))
         ids = zk["creature_idx"][zk["creature_mask"]][:, 1]
         in_tbl = np.isin(ids, _FIXTURE_CREATURE_IDS)
         assert in_tbl.any(), "no table-path creature rows"
@@ -586,7 +595,9 @@ def _check_intent_order(iidx, inum, imask):
 
 
 def test_generated_powers_are_canonical_and_distinct():
-    z = SY.synth_batch(["creatures"], 64, np.random.default_rng(30))
+    # COMBINED family path (creatures + powers + intents all present) — the e2c6e83 canonicality contract
+    # must still hold after the creature-family split.
+    z = SY.synth_batch(CREATURE_FAMILY, 64, np.random.default_rng(30))
     saw_multi_group = saw_multi_parent = False
     for b in range(z["power_mask"].shape[0]):
         n_par, max_group = _check_power_order(z["power_idx"][b], z["power_num"][b], z["power_mask"][b],
@@ -598,7 +609,8 @@ def test_generated_powers_are_canonical_and_distinct():
 
 
 def test_generated_intents_are_canonical():
-    z = SY.synth_batch(["creatures"], 64, np.random.default_rng(31))
+    # COMBINED family path — same contract, intents present alongside creatures + powers.
+    z = SY.synth_batch(CREATURE_FAMILY, 64, np.random.default_rng(31))
     saw_multi_group = saw_multi_parent = False
     for b in range(z["intent_mask"].shape[0]):
         n_par, max_group = _check_intent_order(z["intent_idx"][b], z["intent_num"][b], z["intent_mask"][b])
@@ -606,6 +618,67 @@ def test_generated_intents_are_canonical():
         saw_multi_parent |= n_par >= 2
     assert saw_multi_group, "no creature carried >=2 intents — within-group order not exercised"
     assert saw_multi_parent, "intents never spanned >=2 parents — parent grouping not exercised"
+
+
+def test_standalone_powers_are_canonical_and_distinct():
+    # STANDALONE creature-powers (no creature rows present): the filler draws its OWN virtual creature-count
+    # context, so parents are realistic 0..c-1 and the SAME e2c6e83 canonicality/distinctness contract holds
+    # on the solo path the powers expert actually trains on.
+    z = SY.synth_batch(["creature-powers"], 64, np.random.default_rng(40))
+    assert not z["creature_mask"].any(), "standalone powers must not write creature rows"
+    saw_multi_group = saw_multi_parent = False
+    for b in range(z["power_mask"].shape[0]):
+        n_par, max_group = _check_power_order(z["power_idx"][b], z["power_num"][b], z["power_mask"][b],
+                                              require_distinct=True)
+        saw_multi_group |= max_group >= 2
+        saw_multi_parent |= n_par >= 2
+    assert saw_multi_group, "standalone: no creature carried >=2 powers — within-group order not exercised"
+    assert saw_multi_parent, "standalone: powers never spanned >=2 parents — grouping not exercised"
+
+
+def test_standalone_intents_are_canonical():
+    # STANDALONE creature-intents (own virtual creature-count context) — canonical order + parent grouping.
+    z = SY.synth_batch(["creature-intents"], 64, np.random.default_rng(41))
+    assert not z["creature_mask"].any(), "standalone intents must not write creature rows"
+    saw_multi_group = saw_multi_parent = False
+    for b in range(z["intent_mask"].shape[0]):
+        n_par, max_group = _check_intent_order(z["intent_idx"][b], z["intent_num"][b], z["intent_mask"][b])
+        saw_multi_group |= max_group >= 2
+        saw_multi_parent |= n_par >= 2
+    assert saw_multi_group, "standalone: no creature carried >=2 intents — within-group order not exercised"
+    assert saw_multi_parent, "standalone: intents never spanned >=2 parents — grouping not exercised"
+
+
+def test_combined_family_parents_consistent_with_creature_count():
+    # The combined family draws ONE per-state creature count, so every power/intent parent slot is a valid
+    # index into that state's creature rows (0..c-1). This is the cross-expert consistency the shared-count
+    # design guarantees; a standalone powers/intents run has no creature rows to check against.
+    z = SY.synth_batch(CREATURE_FAMILY, 96, np.random.default_rng(42))
+    saw_power = saw_intent = False
+    for b in range(z["creature_mask"].shape[0]):
+        c = int(z["creature_mask"][b].sum())
+        assert c >= 1
+        pm, im = z["power_mask"][b], z["intent_mask"][b]
+        if pm.any():
+            saw_power = True
+            assert z["power_idx"][b, pm, 1].max() < c, ("power parent >= creature count", b, c)
+        if im.any():
+            saw_intent = True
+            assert z["intent_idx"][b, im, 1].max() < c, ("intent parent >= creature count", b, c)
+    assert saw_power and saw_intent, "combined family produced no powers/intents to check"
+
+
+def test_combined_family_matches_old_single_creatures_sequence():
+    # The combined family (shared count, canonical stats->powers->intents order) reproduces the pre-split
+    # single-filler draw sequence, so creatures + powers + intents co-occur exactly as the old joint
+    # "creatures" batch did: every present power/intent belongs to a state that HAS creatures, and the three
+    # token types partition into one coherent creature population.
+    z = SY.synth_batch(CREATURE_FAMILY, 64, np.random.default_rng(43))
+    for b in range(z["creature_mask"].shape[0]):
+        has_pw = bool(z["power_mask"][b].any())
+        has_in = bool(z["intent_mask"][b].any())
+        if has_pw or has_in:
+            assert z["creature_mask"][b].any(), ("powers/intents without any creature rows", b)
 
 
 def _twin_state():

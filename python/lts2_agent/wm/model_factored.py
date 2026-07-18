@@ -30,8 +30,19 @@ from . import experts as E
 
 # Default per-expert latent-slice widths (divisible by simnorm_group). Cards is the largest (most
 # complex category); scalars is not listed — its deterministic code width is fixed by the field layout.
+#
+# Creature-family split (owner ruling, 2026-07-18): the old single "creatures" slice (768) floored at dist
+# ~0.29 and was judged too big. It is replaced by three parameter-disjoint experts. Each new width is sized
+# from capacity arithmetic — a SimNorm slice of width W (group 8) carries (W/8)*log2(8) = (W/8)*3 robust
+# bits, and the sizing statistic is the p99 of the per-STATE information cost (convergence.state_bits_sample,
+# split into per-type components), targeting (W/8)*3 >= ~1.3x p99 at the smallest multiple of 64:
+#   creature-stats   p99 138.4 bits -> 1.3x = 180 -> W=512  (cap (512/8)*3 = 192 bits)
+#   creature-powers  p99 140.7 bits -> 1.3x = 183 -> W=512  (cap 192 bits)
+#   creature-intents p99  62.6 bits -> 1.3x =  81 -> W=256  (cap  96 bits)
 DEFAULT_SLICE_WIDTHS: Dict[str, int] = {
-    "creatures": 768,    # creatures + their powers + intents (folded)
+    "creature-stats": 512,     # the `creature` token type (identity + kind + HP/block/... numerics)
+    "creature-powers": 512,    # the `power` token type (powerIndex + amount + parent-creature slot)
+    "creature-intents": 256,   # the `intent` token type (type + damage/hits numerics + parent slot)
     "cards": 1536,       # the largest — v3 population rows (content + keywords + zone-count vector)
     "relics": 512,       # positional relic rows (~298-way id + slot); ample capacity for the set
     "potions": 128,      # <=8 slots, a 66-way catalog id
@@ -73,10 +84,14 @@ class FactoredWorldModelAE(nn.Module):
         common = dict(d_model=d_model, static_tables=static_tables, cat_dim=cat_dim, n_heads=n_heads,
                       pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem,
                       simnorm_group=simnorm_group, qk_norm=qk_norm)
-        # The two structurally-rich categories (creatures fold powers/intents; cards are the largest,
-        # keyword-bearing population) get the full encoder/decoder depth; the small single-type experts
-        # (relics/potions/orbs — a flat catalog id + at most two numerics) get 1 enc / 1 dec layer, so
-        # their parameter budget matches their content instead of replicating a deep transformer.
+        # The structurally-rich categories get the full encoder/decoder depth; the small single-type
+        # experts (relics/potions/orbs — a flat catalog id + at most two numerics) get 1 enc / 1 dec layer,
+        # so their parameter budget matches their content instead of replicating a deep transformer. The
+        # creature family (owner ruling, 2026-07-18) is split into three parameter-disjoint single-type
+        # experts — creature-stats / creature-powers / creature-intents — each kept at the SAME deep depth
+        # the old folded "creatures" expert used, so a sub-task loses no modelling power from the split
+        # (powers/intents retain real numerics + a parent-slot embedding + up to MAX_POWERS/MAX_INTENTS
+        # slots, richer than any flat catalog).
         deep = dict(common, enc_layers=enc_layers, dec_layers=dec_layers)
         shallow = dict(common, enc_layers=1, dec_layers=1)
         ov = self.expert_overrides
@@ -85,8 +100,12 @@ class FactoredWorldModelAE(nn.Module):
             return dict(base, **ov.get(name, {}))
 
         self.experts = nn.ModuleDict({
-            "creatures": E.SetExpert("creatures", ["creature", "power", "intent"],
-                                     widths["creatures"], **_kw("creatures", deep)),
+            "creature-stats": E.SetExpert("creature-stats", ["creature"], widths["creature-stats"],
+                                          **_kw("creature-stats", deep)),
+            "creature-powers": E.SetExpert("creature-powers", ["power"], widths["creature-powers"],
+                                           **_kw("creature-powers", deep)),
+            "creature-intents": E.SetExpert("creature-intents", ["intent"], widths["creature-intents"],
+                                            **_kw("creature-intents", deep)),
             "cards": E.SetExpert("cards", ["card"], widths["cards"], **_kw("cards", deep)),
             "relics": E.SetExpert("relics", ["relic"], widths["relics"], **_kw("relics", shallow)),
             "potions": E.SetExpert("potions", ["potion"], widths["potions"], **_kw("potions", shallow)),
@@ -345,9 +364,39 @@ def save_checkpoint(path: str, m: FactoredWorldModelAE, *, step: int = 0,
         json.dump(meta, f, indent=2)
 
 
+# Experts that no longer exist in the roster — an OLD checkpoint naming one is rejected with a CLEAR error
+# rather than silently remapped. The single "creatures" expert was split into three parameter-disjoint
+# experts (owner ruling, 2026-07-18); it floored at dist ~0.29, so there is nothing worth preserving.
+_LEGACY_EXPERTS: Dict[str, str] = {
+    "creatures": "creature-stats/creature-powers/creature-intents",
+}
+
+
+def _meta_expert_names(meta: dict) -> Set[str]:
+    """Every expert name a checkpoint meta references — across the per-expert stamps, the slice layout, and
+    the config's slice_widths — so a legacy name is caught wherever it was stamped."""
+    names: Set[str] = set((meta.get("experts") or {}).keys())
+    names |= {s.get("name") for s in (meta.get("slice_layout") or []) if isinstance(s, dict)}
+    names |= set(((meta.get("config") or {}).get("slice_widths") or {}).keys())
+    return {n for n in names if n}
+
+
+def _reject_legacy_experts(meta: dict, path: str) -> None:
+    """Raise a clear error if ``meta`` names an expert that was removed from the roster (e.g. the split of
+    'creatures'). Do NOT silently map it — the old expert's weights are not compatible with the new layout
+    and (for creatures) were not worth keeping."""
+    legacy = _LEGACY_EXPERTS.keys() & _meta_expert_names(meta)
+    if legacy:
+        detail = "; ".join(f"'{n}' (now {_LEGACY_EXPERTS[n]})" for n in sorted(legacy))
+        raise ValueError(
+            f"Checkpoint {path} has legacy expert {detail}; the roster changed and there is no compatible "
+            f"mapping — retrain against the current expert roster.")
+
+
 def load_checkpoint(path: str, device="cpu") -> Tuple[FactoredWorldModelAE, dict]:
-    """Load ``(model, meta)``, rejecting a stale tokenizer/catalog signature, a non-factored checkpoint,
-    or a slice-layout mismatch (the layout is the predictor's addressing contract)."""
+    """Load ``(model, meta)``, rejecting a stale tokenizer/catalog signature, a non-factored checkpoint, a
+    legacy (removed) expert name, or a slice-layout mismatch (the layout is the predictor's addressing
+    contract)."""
     with open(path + ".meta.json") as f:
         meta = json.load(f)
     want = tokens.tokenizer_signature()
@@ -358,6 +407,7 @@ def load_checkpoint(path: str, device="cpu") -> Tuple[FactoredWorldModelAE, dict
     if meta.get("arch") != "factored":
         raise ValueError(f"Checkpoint {path} arch={meta.get('arch')!r} is not 'factored'; "
                          f"load it with the monolithic loader (wm.model.load_checkpoint).")
+    _reject_legacy_experts(meta, path)
     # Backward compat: a checkpoint trained before the QK-norm fix has NO qk_norm key in its config.
     # Default it to False so the stock trunks are rebuilt and the old state_dict loads byte-identically.
     config = dict(meta["config"])
@@ -384,6 +434,7 @@ def read_meta(path: str) -> dict:
                          f"!= current {want!r}; retrain.")
     if meta.get("arch") != "factored":
         raise ValueError(f"Checkpoint {path} arch={meta.get('arch')!r} is not 'factored'.")
+    _reject_legacy_experts(meta, path)
     return meta
 
 
