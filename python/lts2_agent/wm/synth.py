@@ -245,27 +245,66 @@ def _fill_relics(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> 
         mask[b, :k] = True
 
 
+# Reachability-shaped orb space (owner-directed, 2026-07-18). Uniform sampling over the 32 hashed
+# id buckets x independent [0..250] values trained the expert on a ~90-bit universe of mostly
+# IMPOSSIBLE orbs (the game has 5 orb types with small type-conditional value ranges) - the flat
+# convergence curve was the task design, not the model. Types below are the corpus-observed set
+# with per-type (passive, evoke) ranges extended ~1.5x for margin; ORB_WILDCARD_PROB keeps a thin
+# uniform tail over the full vocab/ranges as coverage insurance for unseen orb types.
+ORB_TYPES = {
+    # id string -> ((passive lo, hi), (evoke lo, hi)); ranges = observed corpus2 max * ~1.5 margin.
+    "LIGHTNING_ORB": ((0, 15), (0, 23)),
+    "FROST_ORB": ((0, 12), (0, 17)),
+    "DARK_ORB": ((0, 20), (0, 102)),
+    "PLASMA_ORB": ((1, 2), (2, 3)),
+    "GLASS_ORB": ((0, 17), (0, 33)),
+}
+ORB_TYPE_BUCKETS = None   # resolved lazily: {hash bucket: (p_range, e_range)}
+ORB_WILDCARD_PROB = 0.05
+ORB_MAX_BELT = 12         # observed max 7 + margin (owner: ~a dozen slots possible, above is rare)
+
+
+def _orb_buckets():
+    global ORB_TYPE_BUCKETS
+    if ORB_TYPE_BUCKETS is None:
+        from .. import catalog as _cat
+        ORB_TYPE_BUCKETS = {_cat.stable_hash(k, tokens.ORB_VOCAB): v for k, v in ORB_TYPES.items()}
+    return ORB_TYPE_BUCKETS
+
+
 def _fill_orbs(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
-    """Orbs: random slot count 0..MAX_ORBS; orb id uniform over the hashed vocab; passive/evoke values
-    uniform inside their ranges (symlog-stored). Empty belts included. The `slot` categorical (v4) is the
-    orb's belt POSITION — with left-packed presence a present orb at slot i has position i, so the slot
-    column is ``arange(k)`` (mirrors the tokenizer's running index). Position is now a learnable field the
-    encoder sees, so the semantic evoke order is representable (the well-posedness fix)."""
+    """Orbs: reachability-shaped — type from the real orb set (hashed to the same buckets the
+    tokenizer uses), passive/evoke uniform within that TYPE's range (+margin); a thin
+    ORB_WILDCARD_PROB tail samples any bucket/full ranges for coverage insurance. Positional slot
+    column == belt index (well-posedness); empty belts included."""
     tspec = S.TYPE_BY_NAME["orb"]
     slot_col = [c for c, _ in tspec.cat_cols].index("slot")
-    cap = tokens.MAX_ORBS
+    orb_col = [c for c, _ in tspec.cat_cols].index("orb")
+    buckets = _orb_buckets()
+    bucket_ids = list(buckets.keys())
+    cap = min(ORB_MAX_BELT, tokens.MAX_ORBS)
     counts = rng.integers(0, cap + 1, size=B)
     idx = z["orb_idx"]
     num = z["orb_num"]
     mask = z["orb_mask"]
+    p_i = tokens.ORB_NUM.index("passiveValue")
+    e_i = tokens.ORB_NUM.index("evokeValue")
     for b in range(B):
         k = int(counts[b])
         if k == 0:
             continue
         cats = _sample_cats(rng, tspec, k)
+        nums = _sample_nums(rng, "orb", tokens.ORB_NUM, k)
+        for j in range(k):
+            if rng.random() >= ORB_WILDCARD_PROB:
+                bk = bucket_ids[int(rng.integers(len(bucket_ids)))]
+                (plo, phi), (elo, ehi) = buckets[bk]
+                cats[j, orb_col] = bk
+                nums[j, p_i] = _symlog_arr(np.asarray([float(rng.integers(plo, phi + 1))]))[0]
+                nums[j, e_i] = _symlog_arr(np.asarray([float(rng.integers(elo, ehi + 1))]))[0]
         cats[:, slot_col] = np.arange(k)                    # left-packed belt position == slot index
         idx[b, :k, :] = cats
-        num[b, :k, :] = _sample_nums(rng, "orb", tokens.ORB_NUM, k)
+        num[b, :k, :] = nums
         mask[b, :k] = True
 
 

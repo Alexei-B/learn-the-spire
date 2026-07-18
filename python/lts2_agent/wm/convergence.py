@@ -71,12 +71,21 @@ def entropy_relics() -> float:
 
 
 def entropy_orbs() -> float:
-    """H(count) + E[k] * (id bits + numeric range bits). Orb numerics dominate."""
-    cap = getattr(SY, "ORB_MAX", 10)
-    n_ids = S.TYPE_BY_NAME["orb"].cat_cols[0][1] - 1
-    per_orb = math.log2(max(2, n_ids))
-    for col in ("passiveValue", "evokeValue"):
-        per_orb += _range_bits("orb", col)
+    """Reachability-shaped space: H(count) + E[k] * (log2(#real types) + mean per-type value bits
+    + wildcard tail). Matches the ORB_TYPES generator (2026-07-18)."""
+    cap = getattr(SY, "ORB_MAX_BELT", 12)
+    types = getattr(SY, "ORB_TYPES", None)
+    if not types:
+        n_ids = S.TYPE_BY_NAME["orb"].cat_cols[0][1] - 1
+        per_orb = math.log2(max(2, n_ids)) + _range_bits("orb", "passiveValue") + _range_bits("orb", "evokeValue")
+        return math.log2(cap + 1) + (cap / 2.0) * per_orb
+    per_type_bits = []
+    for (plo, phi), (elo, ehi) in types.values():
+        per_type_bits.append(math.log2(max(2, phi - plo + 1)) + math.log2(max(2, ehi - elo + 1)))
+    w = getattr(SY, "ORB_WILDCARD_PROB", 0.05)
+    per_orb = math.log2(len(types)) + sum(per_type_bits) / len(per_type_bits)
+    wild = math.log2(S.TYPE_BY_NAME["orb"].cat_cols[0][1]) + _range_bits("orb", "passiveValue") + _range_bits("orb", "evokeValue")
+    per_orb = (1 - w) * per_orb + w * wild
     return math.log2(cap + 1) + (cap / 2.0) * per_orb
 
 
