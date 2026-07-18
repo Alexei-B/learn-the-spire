@@ -47,6 +47,27 @@ from . import catalog
 # ==================================================================================================
 
 # Bump whenever the token layout / vocab semantics change so stale artifacts reject loudly.
+# v6 (2026-07): **cards become INSTANCE rows** (roadmap wm-t3-factored) — the encoding style that solved
+# relics/orbs, applied to cards (ONE change this iteration; creatures/relics/potions/orbs/scalars keep
+# their v5 semantics EXACTLY). The v3 "population rows" (one content-sorted row per distinct content with a
+# 5-column per-zone count vector) are replaced by one token row per physical card COPY: two identical
+# Strikes are two rows. The five ZONE_COUNT_FIELDS are DELETED from CARD_NUM (and spec.NUMERIC_RANGES);
+# instead each row carries a `zone` categorical (the 5 ZONES + the reserved UNKNOWN top slot, same enum
+# convention as every other enum column) and a `slot` positional categorical (0..MAX_CARDS-1, like
+# relics/orbs). CARD_NUM shrinks to the 14 content numerics (energyCost..summon). Keywords multi-hot per row
+# unchanged. CANONICAL LAYOUT: rows are laid out ZONE-MAJOR in the fixed ZONES order; WITHIN a zone,
+# instances are sorted by the content key (`_card_content_key`, unchanged — it never carried zone/counts);
+# slot == the row's index in that layout. RATIONALE (well-posedness): slot is a per-state anchor for the
+# permutation-invariant card expert with NO global joint constraint; identical copies are interchangeable so
+# within-zone ties are harmless (no information leaks through which duplicate lands in which tied slot); and
+# draw-pile ORDER is deliberately NOT exposed — zone-major position within the sorted draw group carries no
+# pile-order information, so the information-set rule stands. Cards remain permutation-invariant
+# (canonicalized): a shuffle of any pile is a re-sort to the same multiset -> byte-identical tokens including
+# the deterministic slot column. Cross-state-stable instance ids (deck order) are a later C# iteration, not
+# now. MAX_CARDS stays 64 this iteration (decks can exceed 100 via doubling effects — a later iteration will
+# raise the cap to ~256; the strict-overflow _check is the loud clamp meanwhile). detokenize rebuilds the
+# per-zone card lists from the instance rows (the canonical dict is BYTE-IDENTICAL to v5's — same per-zone
+# lists — so statefmt/legal_actions/corpus consumers are unaffected).
 # v5 / "v3.2" (2026-07): **relics become a POSITIONAL type** (roadmap M3.5). Product facts corrected the
 # v3.1 relic model on two counts: (a) relic ORDER IS SEMANTIC — wax relics (e.g. Tezcatara via Toy Box)
 # expire in ACQUISITION order and the wire's ordered id list is the only carrier of that state; and (b)
@@ -75,17 +96,10 @@ from . import catalog
 # v3 (2026-07): **factored population rows** — the T3 "expert-per-category" redesign (roadmap M3.5).
 # `zone` leaves the card grouping key: one row per distinct card CONTENT (id + every dynamic field +
 # keywords), carrying a **count-per-zone vector** (`count_hand/draw/discard/exhaust/offered`) instead of
-# a single `count`. Population membership is now structural (a card that moves hand->discard is the SAME
-# row with the count shifting between two columns — a future predictor expresses zone transitions as
-# count arithmetic, and creation/transform as rows appearing/disappearing). Cards whose live fields
-# differ across zones (e.g. a cost-reduced copy in hand vs its twin in draw) fall into separate rows,
-# which is correct. detokenize expands the zone-count vector back to per-instance-per-zone canonical
-# dicts, so the canonical dict stays BYTE-IDENTICAL to v2/v1 (statefmt/legal_actions/corpus untouched).
-# Every numeric column also gains a measured per-field integer range in wm.spec (the exactness contract
-# a per-field decoder bins against); the tokenizer keeps symlog storage for cache/decoder compat.
+# a single `count`. (Superseded by v6's instance rows.)
 # v2 (2026-07): count-grouped card tokens WITH zone in the grouping key (one `count` per zone-scoped row).
 # v1: raw per-instance card tokens.
-TOKENIZER_VERSION = 5
+TOKENIZER_VERSION = 6
 
 _CARDS = catalog.load("cards")
 _POWERS = catalog.load("powers")
@@ -127,10 +141,6 @@ INTENT_TYPES = ["Attack", "Buff", "Debuff", "DebuffStrong", "Defend", "Escape", 
 ZONES = ["hand", "draw", "discard", "exhaust", "offered"]
 CREATURE_KINDS = ["player", "osty", "enemy"]
 
-# v3: per-zone count columns on a card population row (one integer per zone; symlog-stored like every
-# other numeric). The vector is the row's membership across all piles at once.
-ZONE_COUNT_FIELDS = ["count_" + z for z in ZONES]
-
 # Zone <-> the combatState pile key it comes from (offered comes from pendingChoice.options).
 _ZONE_PILE = {"hand": "hand", "draw": "drawPile", "discard": "discardPile", "exhaust": "exhaustPile"}
 
@@ -162,15 +172,14 @@ def _enum_name(idx: int, table: List[str]) -> str:
 # Scan: hand<=10, draw<=44, discard<=46, exhaust<=40, offered<=29 (sum<=169); enemies<=6; powers
 # player<=13 / enemy<=7 each / osty<=1; intents<=3/enemy; orbs<=8; relics<=8; potions(slots)<=5.
 #
-# v3: cards are POPULATION ROWS (one per distinct content, zone excluded from the key), not raw
-# instances. Re-measured over a shard-strided 336k-state scan of data/corpus
-# (`python -m lts2_agent.wm.ranges --shard-stride 12`): v3 rows max 32 (v2 zone-scoped grouped max 42,
-# v1 instance max 82); mean 14.21 instances/state -> 10.21 rows (1.39x shorter). Dropping zone from the
-# key merges a content's hand/draw/… copies into one row, so v3 rows <= v2. Cap 64 keeps generous slack
-# (~2x) over the worst case while holding the padded card dim at <1/3 of v1's.
+# v6: cards are INSTANCE ROWS again (one token per physical copy). MAX_CARDS stays 64 this iteration:
+# most act-0..2 states hold far fewer instances than 64, and the strict-overflow _check is the loud clamp.
+# NOTE (owner): decks CAN exceed 100 instances via doubling effects — a LATER iteration will raise the cap
+# to ~256 (and add cross-state-stable C# instance ids); not this iteration (ONE change at a time). The v6
+# corpus re-scan reports the instances/state distribution + the count of states over this cap.
 # ==================================================================================================
 
-MAX_CARDS = 64         # all zones pooled, v3 population rows (strided max 32; v2 grouped max 42; v1 cap 200)
+MAX_CARDS = 64         # v6 instance rows; owner: raise to ~256 in a later iteration (doubling-effect decks)
 MAX_CREATURES = 12     # player + osty + <=6 enemies (measured <=8)
 MAX_POWERS = 96        # across all creatures (measured <=56)
 MAX_INTENTS = 32       # across all enemies (measured <=18)
@@ -191,15 +200,17 @@ GLOBAL_NUM = ["act", "floor", "ascension", "score", "isGameOver", "isVictory", "
 # pending: [present, minSelect, maxSelect, isUpgradeSelection]
 PENDING_NUM = ["present", "minSelect", "maxSelect", "isUpgradeSelection"]
 
-# v3: `zone` is gone from the card categorical block — population membership lives in the trailing
-# count-per-zone vector instead, so one row spans every pile a given content occupies.
-CARD_IDX = ["cardIndex", "type", "rarity", "targetType", "enchant", "afflict"]
-# v3: the trailing five `count_<zone>` columns are how many identical-content instances this row holds
-# in each zone (symlog; each >= 0, sum >= 1). detokenize expands them back into per-zone per-instance
-# copies so the canonical dict is unchanged from v1/v2.
+# v6: cards are INSTANCE rows. `cardIndex` stays first (the static-catalog gather column). `zone` returns
+# as a categorical (the 5 ZONES + reserved UNKNOWN top slot) and `slot` (0..MAX_CARDS-1) is the row's index
+# in the zone-major, within-zone-content-sorted layout — the positional anchor the card expert reads, the
+# same treatment relics/orbs get. Keep cardIndex..afflict as the first six columns (their positions are a
+# wire contract several consumers index by; zone/slot are appended).
+CARD_IDX = ["cardIndex", "type", "rarity", "targetType", "enchant", "afflict", "zone", "slot"]
+# v6: the 14 content numerics ONLY (the five per-zone count columns are deleted — instance membership is now
+# the `zone` categorical, not a count vector). symlog-stored (flags raw), inverted by round(symexp(.)).
 CARD_NUM = ["energyCost", "costsX", "starCost", "upgraded", "canPlay", "replayCount",
             "hasDamage", "damage", "baseDamage", "hasBlock", "block", "baseBlock",
-            "hasSummon", "summon"] + ZONE_COUNT_FIELDS
+            "hasSummon", "summon"]
 
 CREATURE_IDX = ["kind", "identity"]
 CREATURE_NUM = ["currentHp", "maxHp", "block", "active", "combatId"]
@@ -335,37 +346,14 @@ def _card_sort_key(c: Dict[str, Any]) -> Tuple:
 
 
 def _card_content_key(c: Dict[str, Any]) -> Tuple:
-    """v3 population key: the full content tuple WITHOUT ``zone`` — the grouping/order key for the
-    zone-spanning population rows. Two instances with identical live fields in different zones share
-    this key (and merge into one row); any live-field divergence keeps them apart."""
+    """v6 within-zone order key: the full content tuple WITHOUT ``zone`` (and without ``slot`` — that is
+    the layout index, not content). Instance rows in one zone are laid out in this order; identical copies
+    tie here (harmless — they are interchangeable). Unchanged from v3: it never carried zone or the deleted
+    count columns, so the ``slot`` layout matches the generator's content sort bit-for-bit."""
     return (c["cardIndex"], c["type"], c["rarity"], c["targetType"], c["enchant"],
             c["afflict"], c["energyCost"], c["costsX"], c["starCost"], c["upgraded"], c["canPlay"],
             c["replayCount"], c["hasDamage"], c["damage"], c["baseDamage"], c["hasBlock"], c["block"],
             c["baseBlock"], c["hasSummon"], c["summon"], tuple(c["keywords"]))
-
-
-def _group_cards(cv: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """v3: pool ALL zones and collapse identical-CONTENT cards (zone excluded from the key) into ONE
-    population row carrying a per-zone ``counts`` vector. A content that occupies several piles is a
-    single row whose counts spread across those zones; content that differs in any live field (an
-    upgraded twin, a cost-reduced copy) stays a separate row. Rows are order-canonicalized by their
-    content key so the token order is deterministic and shuffle-invariant. Returns representative
-    canonical card dicts each with an added ``counts`` (a ``{zone: n}`` dict, each n >= 0, sum >= 1);
-    the underlying per-instance dicts are left untouched."""
-    groups: Dict[Tuple, Dict[str, Any]] = {}
-    for z in ZONES:
-        for c in cv["cards"][z]:
-            key = _card_content_key(c)
-            g = groups.get(key)
-            if g is None:
-                groups[key] = {"card": c, "counts": {zz: 0 for zz in ZONES}}
-                g = groups[key]
-            g["counts"][z] += 1
-    rows: List[Dict[str, Any]] = []
-    for key in sorted(groups):
-        g = groups[key]
-        rows.append({**g["card"], "counts": g["counts"]})
-    return rows
 
 
 def _power_canonical(p: Dict[str, Any]) -> Dict[str, Any]:
@@ -557,16 +545,22 @@ def tokenize(state: Dict[str, Any], *, strict: bool = True) -> Dict[str, np.ndar
                                     float(p["isUpgradeSelection"])]], dtype=np.float32)
     out["token_type_global"] = np.int32(TOKEN_TYPE_ID["global"])
 
-    # Cards: v3 population rows — identical content pooled across ALL zones into one row carrying a
-    # per-zone count vector (zone is no longer a categorical column). Rows are content-ordered.
-    all_cards: List[Dict] = _group_cards(cv)
+    # Cards: v6 INSTANCE rows — one row per physical copy, laid out ZONE-MAJOR (fixed ZONES order); within
+    # a zone sorted by the content key. `zone` and `slot` (== the row's layout index) are categorical
+    # columns; identical copies tie on the content key (harmless — interchangeable) and draw-pile order is
+    # never exposed (the sorted zone-major position carries no pile order).
+    all_cards: List[Dict] = []
+    for z in ZONES:
+        for c in sorted(cv["cards"][z], key=_card_content_key):
+            all_cards.append(c)
     _check("cards", len(all_cards), MAX_CARDS)
     card_idx = np.zeros((MAX_CARDS, len(CARD_IDX)), dtype=np.int32)
     card_num = np.zeros((MAX_CARDS, len(CARD_NUM)), dtype=np.float32)
     card_kw = np.zeros((MAX_CARDS, KW_BUCKETS), dtype=np.float32)
     card_mask = np.zeros(MAX_CARDS, dtype=bool)
     for i, c in enumerate(all_cards[:MAX_CARDS]):
-        card_idx[i] = [c[k] for k in CARD_IDX]
+        row = {**c, "slot": i}                       # slot == the row's index in the zone-major layout
+        card_idx[i] = [row[k] for k in CARD_IDX]
         card_num[i] = [_num_field(c, k) for k in CARD_NUM]
         for b in c["keywords"]:
             card_kw[i, b] = 1.0
@@ -657,19 +651,10 @@ def tokenize(state: Dict[str, Any], *, strict: bool = True) -> Dict[str, np.ndar
 
 
 def _num_field(c: Dict[str, Any], key: str) -> float:
-    """symlog for numeric card fields, pass-through 0/1 for the boolean/presence flags. The v3
-    ``count_<zone>`` columns read the row's ``counts`` vector; for an ungrouped single card (e.g. an
-    option-card featurization, which has no ``counts``) they default to 1 in the card's own zone and 0
-    elsewhere, so a lone option card reads as a one-instance population row."""
+    """symlog for the content card numerics, pass-through 0/1 for the boolean/presence flags (v6: the
+    per-zone count columns are gone — a card row's zone is now the ``zone`` categorical)."""
     if key in ("costsX", "upgraded", "canPlay", "hasDamage", "hasBlock", "hasSummon"):
         return float(c[key])
-    if key in ZONE_COUNT_FIELDS:
-        zone = key[len("count_"):]
-        counts = c.get("counts")
-        if counts is not None:
-            return symlog(float(counts.get(zone, 0)))
-        own = ZONES[c["zone"]] if 0 <= c.get("zone", -1) < len(ZONES) else None
-        return symlog(1.0 if zone == own else 0.0)
     return symlog(c[key])
 
 
@@ -691,27 +676,25 @@ def detokenize(tok: Dict[str, np.ndarray]) -> Dict[str, Any]:
         pending = {"minSelect": _int(pv[1]), "maxSelect": _int(pv[2]),
                    "isUpgradeSelection": int(round(pv[3]))}
 
+    # Cards: v6 instance rows. Each present row rebuilds one canonical per-instance card dict and is filed
+    # into the pile named by its `zone` categorical; `slot` is positional (the layout index) so it is NOT
+    # part of the canonical dict. Piles are re-sorted by the full per-instance key, matching
+    # _canonical_from_state, so the canonical dict is byte-identical to v5's.
     cards: Dict[str, List[Dict]] = {z: [] for z in ZONES}
     ci, cn, ckw, cm = tok["card_idx"], tok["card_num"], tok["card_kw"], tok["card_mask"]
+    zone_col = CARD_IDX.index("zone")
     for i in range(len(cm)):
         if not cm[i]:
             continue
-        c: Dict[str, Any] = {CARD_IDX[j]: int(ci[i, j]) for j in range(len(CARD_IDX))}
-        counts: Dict[str, int] = {}
+        c: Dict[str, Any] = {CARD_IDX[j]: int(ci[i, j]) for j in range(len(CARD_IDX))
+                             if CARD_IDX[j] != "slot"}
         for j, k in enumerate(CARD_NUM):
-            if k in ZONE_COUNT_FIELDS:
-                # v3: this population row holds `n` identical instances in this zone (clamp >= 0).
-                counts[k[len("count_"):]] = max(0, _int(cn[i, j]))
-                continue
             c[k] = int(round(cn[i, j])) if k in ("costsX", "upgraded", "canPlay",
                                                  "hasDamage", "hasBlock", "hasSummon") else _int(cn[i, j])
         c["keywords"] = sorted(int(b) for b in np.nonzero(ckw[i])[0])
-        # Expand the per-zone counts back into per-instance canonical dicts, each stamped with its own
-        # `zone` index (byte-identical to v1/v2's per-instance-per-zone canonical list).
-        for zone in ZONES:
-            zone_idx = _enum_idx(zone, ZONES)
-            for _ in range(counts.get(zone, 0)):
-                cards[zone].append({**c, "zone": zone_idx, "keywords": list(c["keywords"])})
+        zi = int(ci[i, zone_col])
+        zone = ZONES[zi] if 0 <= zi < len(ZONES) else ZONES[0]
+        cards[zone].append(c)
     for z in ZONES:
         cards[z].sort(key=_card_sort_key)
 
@@ -983,10 +966,11 @@ def _check(root: str, limit: Optional[int]) -> int:
     n_records = 0
     rt_fail = 0
     rt_examples: List[str] = []
-    # v3 sequence-length saving: card INSTANCES (v1 token count) vs POPULATION ROWS (v3 token count).
+    # v6: cards are INSTANCE rows (one token per physical copy) — track total instances/state and how many
+    # states exceed the MAX_CARDS padded cap (the strict-overflow clamp).
     sum_instances = 0
-    sum_grouped = 0
     max_instances = 0
+    n_overflow = 0
 
     for ridx, which, st in _iter_states(root, limit):
         n_records = ridx + 1
@@ -1001,11 +985,11 @@ def _check(root: str, limit: Optional[int]) -> int:
 
         cv = _canonical_from_state(st)
         instances = sum(len(cv["cards"][z]) for z in ZONES)
-        grouped = len(_group_cards(cv))
         sum_instances += instances
-        sum_grouped += grouped
         max_instances = max(max_instances, instances)
-        maxima["cards"] = max(maxima["cards"], grouped)
+        if instances > MAX_CARDS:
+            n_overflow += 1
+        maxima["cards"] = max(maxima["cards"], instances)
         maxima["creatures"] = max(maxima["creatures"], len(cv["creatures"]))
         maxima["powers"] = max(maxima["powers"], sum(len(c["powers"]) for c in cv["creatures"]))
         maxima["intents"] = max(maxima["intents"], sum(len(c["intents"]) for c in cv["creatures"]))
@@ -1030,12 +1014,12 @@ def _check(root: str, limit: Optional[int]) -> int:
     print("Measured token maxima (this scan) vs padded caps:")
     for k in ("cards", "creatures", "powers", "intents", "orbs", "relics", "potions"):
         flag = "  !! OVER CAP" if maxima[k] > caps[k] else ""
-        note = "  (v3 population rows; v1 instance max %d)" % max_instances if k == "cards" else ""
+        note = "  (v6 instance rows)" if k == "cards" else ""
         print(f"  {k:10s} max {maxima[k]:4d}   cap {caps[k]:4d}{flag}{note}")
     if n_states:
-        print(f"  card tokens/state — mean instances (v1) {sum_instances / n_states:6.2f}  ->  "
-              f"mean rows (v3) {sum_grouped / n_states:6.2f}  "
-              f"({sum_instances / max(1, sum_grouped):.2f}x shorter)")
+        print(f"  card tokens/state — mean instances {sum_instances / n_states:6.2f}  "
+              f"max {max_instances}  states over cap({MAX_CARDS}): {n_overflow} "
+              f"({100.0 * n_overflow / n_states:.3f}%)")
     print()
     print(f"COVERED fields ({len(covered_seen)}):")
     for p in sorted(covered_seen):

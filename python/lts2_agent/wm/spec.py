@@ -58,15 +58,19 @@ TYPES: List[TypeSpec] = [
     # pending is a single token: its 4-wide numeric block carries [present, minSelect, maxSelect,
     # isUpgradeSelection]; no categorical columns.
     TypeSpec("pending", "", "pending", "", [], 4, 1, "", False),
-    # v3: `zone` left the categorical block — a card population row spans all zones, its membership
-    # carried by the five `count_<zone>` numeric columns (CARD_NUM tail). cat_cols tracks CARD_IDX.
+    # v6: cards are INSTANCE rows — `zone` returns as a categorical (5 ZONES + reserved UNKNOWN) and `slot`
+    # (0..MAX_CARDS-1) is the positional layout-index column, the relic/orb treatment. The five per-zone
+    # count columns are gone from the numeric block (num_width == 14 content numerics). cat_cols tracks
+    # CARD_IDX; cardIndex stays first (the static-catalog gather column).
     TypeSpec("card", "card_idx", "card_num", "card_mask",
              [("cardIndex", _CARDS_N),
               ("type", _enum_size(tokens.CARD_TYPES)),
               ("rarity", _enum_size(tokens.CARD_RARITIES)),
               ("targetType", _enum_size(tokens.TARGET_TYPES)),
               ("enchant", tokens.ENCHANT_VOCAB),
-              ("afflict", tokens.AFFLICT_VOCAB)],
+              ("afflict", tokens.AFFLICT_VOCAB),
+              ("zone", _enum_size(tokens.ZONES)),
+              ("slot", tokens.MAX_CARDS)],
              len(tokens.CARD_NUM), tokens.MAX_CARDS, "cards", True),
     TypeSpec("creature", "creature_idx", "creature_num", "creature_mask",
              [("kind", _enum_size(tokens.CREATURE_KINDS)),
@@ -106,13 +110,9 @@ CREATURE_HP_IDX = tokens.CREATURE_NUM.index("currentHp")
 CREATURE_BLOCK_IDX = tokens.CREATURE_NUM.index("block")
 INTENT_DAMAGE_IDX = tokens.INTENT_NUM.index("damage")
 POWER_AMOUNT_IDX = 0  # POWER_NUM == ["amount"]
-# v3: zone is a per-zone count VECTOR in the card numeric block, not a categorical column. These are the
-# CARD_NUM column indices of the five count_<zone> fields (ZONES order); the report's card_zone_acc now
-# scores the whole count vector rather than a single categorical zone id.
-CARD_COUNT_COLS = [tokens.CARD_NUM.index(f) for f in tokens.ZONE_COUNT_FIELDS]
-CARD_COUNT_COL_BY_ZONE = {z: tokens.CARD_NUM.index("count_" + z) for z in tokens.ZONES}
-HAND_COUNT_COL = CARD_COUNT_COL_BY_ZONE["hand"]
-PILE_COUNT_COLS = {z: CARD_COUNT_COL_BY_ZONE[z] for z in ("draw", "discard", "exhaust")}
+# v6: cards are instance rows — `zone` is a categorical column again (not a count vector), so the report's
+# card_zone_acc scores that categorical. This is its cat_cols column index (used by report.slot_acc).
+CARD_ZONE_CAT_COL = [c for c, _ in TYPE_BY_NAME["card"].cat_cols].index("zone")
 
 
 # ==================================================================================================
@@ -194,11 +194,7 @@ _RANGES_RAW: Dict[str, Dict[str, Tuple[int, int, int]]] = {
         "block": (0, 150, 1),         # observed [0, 100]
         "baseBlock": (0, 70, 1),      # observed [0, 50]
         "summon": (0, 40, 1),         # observed [0, 25]
-        "count_hand": (0, 20, 1),     # observed [0, 10]
-        "count_draw": (0, 40, 1),     # observed [0, 28]
-        "count_discard": (0, 40, 1),  # observed [0, 29]
-        "count_exhaust": (0, 40, 1),  # observed [0, 29]
-        "count_offered": (0, 30, 1),  # observed [0, 18]
+        # v6: the five per-zone count columns are deleted — a card's zone is now the `zone` categorical.
     },
     "creature": {
         "currentHp": (0, 1000, 1),    # observed max = NUM_CLIP sentinel; capped to design ~800+slack, clamps loud

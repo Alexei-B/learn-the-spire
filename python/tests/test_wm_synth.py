@@ -88,6 +88,11 @@ def _fixture_raw():
             "powers_per_state": {"0": 4, "1": 3, "2": 2},
             "intents_per_state": {"0": 4, "1": 3, "2": 1},
             "powers_per_creature": {"0": 5, "1": 3, "2": 1},
+            # v6 cards-as-instances: instances-per-state count + the per-zone instance marginal. Values
+            # include several distinct counts and all five zones so the card generator/entropy exercise a
+            # non-degenerate distribution.
+            "instances_per_state": {"0": 1, "3": 4, "5": 5, "8": 3, "12": 2},
+            "card_zone": {"0": 30, "1": 33, "2": 26, "3": 10, "4": 1},
         },
     }
 
@@ -256,14 +261,21 @@ def test_numerics_within_measured_ranges():
                 assert set(np.unique(vals).astype(int)).issubset({0, 1}), (tn, c)   # a flag column
 
 
-def test_card_zone_counts_positive_and_small():
-    # Each present card row holds >=1 instance somewhere (a row exists because it has an instance).
+def test_card_instance_zone_and_slot_columns():
+    # v6: each present card INSTANCE row carries a valid zone categorical (0..len(ZONES)-1, drawn from the
+    # measured marginal) and slot == its layout index; multiple zones are covered across the batch.
     z = SY.synth_batch(["cards"], 80, np.random.default_rng(6))
-    cols = S.CARD_COUNT_COLS
-    cn, cm = z["card_num"], z["card_mask"]
-    counts = np.round(np.sign(cn[..., cols]) * np.expm1(np.abs(cn[..., cols]))).astype(int)
-    present = counts[cm]
-    assert (present.sum(axis=1) >= 1).all(), "a population row must have >=1 instance"
+    zcol = [c for c, _ in S.TYPE_BY_NAME["card"].cat_cols].index("zone")
+    scol = [c for c, _ in S.TYPE_BY_NAME["card"].cat_cols].index("slot")
+    ci, cm = z["card_idx"], z["card_mask"]
+    seen_zones = set()
+    for b in range(80):
+        k = int(cm[b].sum())
+        zones = ci[b, :k, zcol]
+        assert ((zones >= 0) & (zones < len(tokens.ZONES))).all(), "zone out of range"
+        assert list(ci[b, :k, scol]) == list(range(k)), "slot must equal the layout index"
+        seen_zones.update(int(x) for x in zones)
+    assert len(seen_zones) >= 2, "zone marginal should cover multiple zones"
 
 
 def test_numeric_storage_roundtrips_through_bin_targets():
@@ -365,14 +377,19 @@ def test_synth_batch_forward_and_report():
 # ==================================================================================================
 
 def _assert_card_rows_content_sorted(z):
-    """Every state's present card rows are already in the tokenizer's content-canonical order (the
-    generator reproduces tokens._card_content_key ordering; permutation to sorted is the identity)."""
+    """v6: every state's present card rows are ZONE-MAJOR then within-zone in the tokenizer's content order,
+    with slot == the layout index. lexsort by (zone, content-key) is therefore the identity permutation."""
     ci, cn, ckw, cm = z["card_idx"], z["card_num"], z["card_kw"], z["card_mask"]
+    zcol = tokens.CARD_IDX.index("zone")
+    scol = tokens.CARD_IDX.index("slot")
     for b in range(ci.shape[0]):
         k = int(cm[b].sum())
+        assert list(ci[b, :k, scol]) == list(range(k)), ("slot != index", b)
         if k <= 1:
             continue
-        assert SY._card_content_order(ci[b], cn[b], ckw[b], k) == list(range(k)), b
+        content_cols = SY._card_content_key_columns(ci[b, :k], cn[b, :k], ckw[b, :k])
+        order = np.lexsort(content_cols[::-1] + [ci[b, :k, zcol].astype(np.int64)])
+        assert list(order) == list(range(k)), ("card rows not zone-major/content-sorted", b)
 
 
 def _assert_creatures_lexsorted(z):
@@ -431,7 +448,7 @@ def test_card_content_order_matches_reference():
         # on all categorical+numeric columns and is separated only by its keyword multiset.
         if k >= 2 and not saw_tie_broken_by_keywords:
             cols = SY._card_content_key_columns(ci[:k], cn[:k], ckw[:k])
-            no_kw = np.stack(cols[:len(tokens.CARD_IDX) + len(SY._CARD_NONZONE_NUM)], axis=1)
+            no_kw = np.stack(cols[:len(SY._CARD_CONTENT_CAT_COLS) + len(SY._CARD_NONZONE_NUM)], axis=1)
             for a, b in zip(want, want[1:]):
                 if np.array_equal(no_kw[a], no_kw[b]) and not np.array_equal(ckw[a], ckw[b]):
                     saw_tie_broken_by_keywords = True

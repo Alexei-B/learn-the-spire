@@ -119,7 +119,9 @@ def _encode_options(state: Dict[str, Any], options: List[Dict[str, Any]]) -> Dic
         card = opt.get("card")
         if card:
             cv = tokens._card_canonical(card, "hand")
-            opt_card_idx[i] = [cv[k] for k in tokens.CARD_IDX]
+            # v6: CARD_IDX includes `slot` (a layout index absent from a lone option card's canonical dict);
+            # an option card is a single row, so slot defaults to 0. `zone` is present (from _card_canonical).
+            opt_card_idx[i] = [cv.get(k, 0) for k in tokens.CARD_IDX]
             opt_card_num[i] = [tokens._num_field(cv, k) for k in tokens.CARD_NUM]
             for b in cv["keywords"]:
                 opt_card_kw[i, b] = 1.0
@@ -224,12 +226,12 @@ class TokenActorCritic(nn.Module):
 
         cd = cat_dim
         # --- Card embedder (shared: state card tokens AND option cards) -------------------------------
-        # v3: `zone` is no longer a card categorical column (it moved into the per-zone count vector in
-        # CARD_NUM), so card_sizes tracks CARD_IDX = [cardIndex, type, rarity, targetType, enchant,
-        # afflict].
+        # v6: cards are INSTANCE rows — CARD_IDX = [cardIndex, type, rarity, targetType, enchant, afflict,
+        # zone, slot]; card_sizes tracks it (zone is a 5+UNKNOWN enum, slot is a MAX_CARDS positional col).
         card_sizes = [catalog.load("cards").size,
                       _enum_size(tokens.CARD_TYPES), _enum_size(tokens.CARD_RARITIES),
-                      _enum_size(tokens.TARGET_TYPES), tokens.ENCHANT_VOCAB, tokens.AFFLICT_VOCAB]
+                      _enum_size(tokens.TARGET_TYPES), tokens.ENCHANT_VOCAB, tokens.AFFLICT_VOCAB,
+                      _enum_size(tokens.ZONES), tokens.MAX_CARDS]
         self.card_cat = _MultiEmbed(card_sizes, cd)
         card_in = cd + self._static_dim["cards"] + len(tokens.CARD_NUM) + tokens.KW_BUCKETS
         self.card_proj = nn.Linear(card_in, d_model)

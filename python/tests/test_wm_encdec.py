@@ -158,15 +158,14 @@ def test_overfit_one_batch_decreases_loss():
     assert last < 0.5 * first, f"loss did not drop enough: {first:.3f} -> {last:.3f}"
 
 
-def test_card_spec_num_width_includes_zone_counts():
-    # v3: the card numeric block carries the per-zone count vector (5 count_<zone> columns) and zone
-    # left the categorical block; the spec follows tokens.CARD_* mechanically, so the decoder heads
-    # widen/narrow automatically.
+def test_card_spec_num_width_is_content_numerics():
+    # v6: cards are INSTANCE rows — the numeric block is exactly the 14 content numerics (no per-zone count
+    # columns), and `zone`/`slot` are categorical columns. The spec follows tokens.CARD_* mechanically, so
+    # the decoder heads widen/narrow automatically.
     card = S.TYPE_BY_NAME["card"]
-    assert card.num_width == len(tokens.CARD_NUM)
-    assert tokens.ZONE_COUNT_FIELDS == ["count_" + z for z in tokens.ZONES]
-    assert all(f in tokens.CARD_NUM for f in tokens.ZONE_COUNT_FIELDS)
-    assert [c[0] for c in card.cat_cols] == tokens.CARD_IDX  # zone no longer a categorical column
+    assert card.num_width == len(tokens.CARD_NUM) == 14
+    assert [c[0] for c in card.cat_cols] == tokens.CARD_IDX  # zone + slot are categorical columns now
+    assert "zone" in tokens.CARD_IDX and "slot" in tokens.CARD_IDX
     # The decoder emits a num vector of exactly that width for the card type.
     batch = _batch([_state()])
     model = _small_model()
@@ -174,16 +173,15 @@ def test_card_spec_num_width_includes_zone_counts():
     assert out["card"]["num"].shape[-1] == len(tokens.CARD_NUM)
 
 
-def test_grouped_cards_reduce_token_count_through_model_path():
-    # A duplicate-heavy hand tokenizes to fewer card tokens than instances; the batch/model path and
-    # the reconstruct->detokenize handoff still work with grouped tokens.
+def test_instance_cards_one_row_per_copy_through_model_path():
+    # v6: a duplicate-heavy pile tokenizes to ONE card token PER physical copy (no grouping); the
+    # batch/model path and the reconstruct->detokenize handoff still work with instance rows.
     st = _state(n_hand=1)
     cs = st["players"][0]["combatState"]
     cs["drawPile"] = [_card(damage=6, baseDamage=6) for _ in range(6)]  # 6 identical strikes
     tok = tokens.tokenize(st)
-    n_draw_instances = 6
     n_tokens = int(tok["card_mask"].sum())
-    assert n_tokens < n_draw_instances + len(cs["hand"])  # grouping happened
+    assert n_tokens == 6 + len(cs["hand"])   # one row per instance (not grouped)
     batch = _batch([st])
     model = _small_model()
     _z, out = model(batch)

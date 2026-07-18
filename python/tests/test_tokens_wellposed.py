@@ -176,27 +176,34 @@ def test_synth_positional_types_carry_slot_index():
             assert list(z[tspec.idx_key][b, m, col]) == list(range(k)), (tname, b)
 
 
-def _synth_card_keys(ci_b, cn_b, ckw_b, k):
-    keys = []
+_ZONE_COL = tokens.CARD_IDX.index("zone")
+_SLOT_COL = tokens.CARD_IDX.index("slot")
+
+
+def _synth_card_zone_keys(ci_b, cn_b, ckw_b, k):
+    """Per present card row: (zone_idx, content_key). v6 layout = zone-major then within-zone content sort,
+    so the full sequence must be sorted by this pair."""
+    out = []
     for r in range(k):
         d = {n: int(ci_b[r, j]) for j, n in enumerate(tokens.CARD_IDX)}
         for j, n in enumerate(tokens.CARD_NUM):
-            if n in tokens.ZONE_COUNT_FIELDS:
-                continue
             v = float(cn_b[r, j])
             d[n] = int(round(v)) if n in SY._CARD_RAW_COLS else int(round(tokens.symexp(v)))
         d["keywords"] = sorted(int(x) for x in np.nonzero(ckw_b[r])[0])
-        keys.append(tokens._card_content_key(d))
-    return keys
+        out.append((int(ci_b[r, _ZONE_COL]), tokens._card_content_key(d)))
+    return out
 
 
-def test_synth_cards_are_content_sorted():
+def test_synth_cards_are_zone_major_content_sorted():
+    # v6: generated card rows are laid out ZONE-MAJOR, within a zone content-sorted, and slot == index —
+    # byte-identical to the tokenizer's layout (the generator-canonicality twin of the tokenizer contract).
     z = SY.synth_batch(["cards"], 48, np.random.default_rng(12))
     ci, cn, ckw, cm = z["card_idx"], z["card_num"], z["card_kw"], z["card_mask"]
     for b in range(48):
         k = int(cm[b].sum())
-        keys = _synth_card_keys(ci[b], cn[b], ckw[b], k)
-        assert keys == sorted(keys), ("synth card rows not in tokenizer content order", b)
+        pairs = _synth_card_zone_keys(ci[b], cn[b], ckw[b], k)
+        assert pairs == sorted(pairs), ("synth card rows not zone-major/content-sorted", b)
+        assert list(ci[b, :k, _SLOT_COL]) == list(range(k)), ("card slot != layout index", b)
 
 
 def test_synth_creatures_are_canonically_sorted():

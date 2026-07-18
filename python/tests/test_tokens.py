@@ -219,7 +219,7 @@ def test_relic_overflow_is_loud():
 
 def test_version_and_signature_stable():
     assert isinstance(tokens.TOKENIZER_VERSION, int)
-    assert tokens.TOKENIZER_VERSION == 5  # v5 = relics positional (per-instance rows + slot, duplicates)
+    assert tokens.TOKENIZER_VERSION == 6  # v6 = cards positional instance rows (zone + slot; no counts)
     sig = tokens.tokenizer_signature()
     assert sig == tokens.tokenizer_signature()
     assert sig.startswith("tok-v" + str(tokens.TOKENIZER_VERSION))
@@ -228,81 +228,81 @@ def test_version_and_signature_stable():
 
 
 # --------------------------------------------------------------------------------------------------
-# v3: factored population rows — one row per card CONTENT, with a per-zone count vector (zone removed
-# from the grouping key).
+# v6: card INSTANCE rows — one token row per physical copy, laid out zone-major with within-zone content
+# sort + a `slot` == layout-index column and a `zone` categorical. No per-zone count vector.
 # --------------------------------------------------------------------------------------------------
 
-def _count_cols():
-    return [tokens.CARD_NUM.index(f) for f in tokens.ZONE_COUNT_FIELDS]
+_ZONE_COL = tokens.CARD_IDX.index("zone")
+_SLOT_COL = tokens.CARD_IDX.index("slot")
 
 
-def _row_zone_counts(tok):
-    """For each present card row: a dict {zone: count} decoded from the count-vector columns."""
-    cols = {z: tokens.CARD_NUM.index("count_" + z) for z in tokens.ZONES}
+def _present_rows(tok):
+    """List of present card rows as (zone_name, slot, cardIndex) tuples, in array order."""
     rows = []
     for i in range(tokens.MAX_CARDS):
         if not tok["card_mask"][i]:
             continue
-        rows.append({z: max(0, tokens._int(tok["card_num"][i, c])) for z, c in cols.items()})
+        zi = int(tok["card_idx"][i, _ZONE_COL])
+        rows.append((tokens.ZONES[zi], int(tok["card_idx"][i, _SLOT_COL]),
+                     int(tok["card_idx"][i, 0])))
     return rows
 
 
-def test_count_vector_columns_exist():
-    # v3: zone left CARD_IDX; the five count_<zone> columns are the CARD_NUM tail.
-    assert "zone" not in tokens.CARD_IDX
-    assert tokens.ZONE_COUNT_FIELDS == ["count_" + z for z in tokens.ZONES]
-    assert tokens.CARD_NUM[-len(tokens.ZONES):] == tokens.ZONE_COUNT_FIELDS
+def test_card_layout_columns_v6():
+    # v6: zone + slot are categorical columns; the numeric block is exactly the 14 content numerics.
+    assert tokens.CARD_IDX == ["cardIndex", "type", "rarity", "targetType", "enchant", "afflict",
+                               "zone", "slot"]
+    assert len(tokens.CARD_NUM) == 14
+    assert not hasattr(tokens, "ZONE_COUNT_FIELDS")
+    assert not hasattr(tokens, "_group_cards")
 
 
-def test_identical_cards_group_into_one_row_with_zone_count():
+def test_identical_cards_are_separate_instance_rows():
     draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(5)]
     st = _state(draw=draw, enemies=[_enemy("JawWorm", 40)])
     tok = tokens.tokenize(st)
-    # Five identical strikes collapse to ONE population row carrying count_draw = 5.
-    assert int(tok["card_mask"].sum()) == 1
-    counts = _row_zone_counts(tok)[0]
-    assert counts["draw"] == 5
-    assert sum(counts.values()) == 5
+    # Five identical strikes -> FIVE instance rows (no grouping), all in the draw zone.
+    assert int(tok["card_mask"].sum()) == 5
+    rows = _present_rows(tok)
+    assert all(z == "draw" for z, _slot, _ci in rows)
 
 
-def test_same_card_in_three_zones_is_one_row_with_zone_counts():
-    # THE core v3 change: identical content in hand + draw + discard -> ONE row, counts spread by zone.
+def test_zone_major_layout_and_slot_index():
+    # Rows are laid out ZONE-MAJOR (fixed ZONES order) and slot == the row's index in that layout.
     st = _state(hand=[_card("StrikeIronclad", damage=6, baseDamage=6)],
-                draw=[_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(2)],
-                discard=[_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(2)],
+                draw=[_card("Bash", damage=8, baseDamage=8) for _ in range(2)],
+                discard=[_card("DefendIronclad", type="Skill", targetType="Self", block=5, baseBlock=5)],
                 enemies=[_enemy("JawWorm", 40)])
     tok = tokens.tokenize(st)
-    assert int(tok["card_mask"].sum()) == 1
-    counts = _row_zone_counts(tok)[0]
-    assert counts == {"hand": 1, "draw": 2, "discard": 2, "exhaust": 0, "offered": 0}
+    rows = _present_rows(tok)
+    # slot == array index for every present row.
+    assert [slot for _z, slot, _ci in rows] == list(range(len(rows)))
+    # Zone order is the fixed ZONES order (hand, then draw, then discard here).
+    zone_seq = [z for z, _slot, _ci in rows]
+    assert zone_seq == ["hand", "draw", "draw", "discard"]
 
 
-def test_cross_zone_live_field_divergence_stays_separate_rows():
-    # A cost-reduced copy in hand vs its full-cost twin in draw differ in a live field (energyCost),
-    # so they remain TWO distinct population rows — divergence is correct, not merged.
-    st = _state(hand=[_card("StrikeIronclad", energyCost=0, damage=6, baseDamage=6)],
-                draw=[_card("StrikeIronclad", energyCost=1, damage=6, baseDamage=6)],
-                enemies=[_enemy("JawWorm", 40)])
-    tok = tokens.tokenize(st)
-    assert int(tok["card_mask"].sum()) == 2
-    rows = _row_zone_counts(tok)
-    # One row lives entirely in hand, the other entirely in draw (no merge).
-    zones_used = sorted(tuple(sorted(z for z, n in r.items() if n)) for r in rows)
-    assert zones_used == [("draw",), ("hand",)]
+def test_within_zone_content_sorted():
+    # Within a zone, instances are content-sorted by _card_content_key (shuffle-invariant).
+    draw = [_card("StrikeIronclad", damage=6, baseDamage=6),
+            _card("Bash", damage=8, baseDamage=8),
+            _card("Anger", damage=6, baseDamage=6)]
+    base = tokens.tokenize(_state(draw=list(draw), enemies=[_enemy("JawWorm", 40)]))
+    keys = []
+    for i in range(tokens.MAX_CARDS):
+        if not base["card_mask"][i]:
+            continue
+        c = {tokens.CARD_IDX[j]: int(base["card_idx"][i, j]) for j in range(len(tokens.CARD_IDX))
+             if tokens.CARD_IDX[j] != "slot"}
+        for j, k in enumerate(tokens.CARD_NUM):
+            c[k] = int(round(tokens.symexp(base["card_num"][i, j])))
+        c["keywords"] = sorted(int(b) for b in np.nonzero(base["card_kw"][i])[0])
+        keys.append(tokens._card_content_key(c))
+    assert keys == sorted(keys)
 
 
-def test_mixed_upgrades_stay_separate_rows():
-    # 5 plain strikes + 2 upgraded strikes (different content) -> two rows, count_draw 5 and 2.
-    draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(5)]
-    draw += [_card("StrikeIronclad", damage=9, baseDamage=6, upgraded=True) for _ in range(2)]
-    st = _state(draw=draw, enemies=[_enemy("JawWorm", 40)])
-    tok = tokens.tokenize(st)
-    assert int(tok["card_mask"].sum()) == 2
-    assert sorted(r["draw"] for r in _row_zone_counts(tok)) == [2, 5]
-
-
-def test_detokenize_expands_zone_counts_exactly():
-    # Duplicates spread across zones round-trip exactly through zone-count expansion.
+def test_detokenize_rebuilds_per_zone_lists():
+    # v6: instance rows rebuild the per-zone lists exactly (one instance per row).
     strikes_hand = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(3)]
     strikes_draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(7)]
     defends = [_card("DefendIronclad", type="Skill", targetType="Self", block=5, baseBlock=5)
@@ -313,16 +313,30 @@ def test_detokenize_expands_zone_counts_exactly():
     ok, diff = tokens.round_trip(st)
     assert ok, "round-trip mismatch at " + str(diff)
     got = tokens.detokenize(tokens.tokenize(st))
-    # Instances restored per zone exactly (strikes merge across hand+draw into one row).
     assert len(got["cards"]["hand"]) == 3
     assert len(got["cards"]["draw"]) == 11
     assert len(got["cards"]["discard"]) == 3
-    # Strikes are ONE row (hand+draw) + Defend row + Bash row = 3 rows for 21 instances.
-    assert int(tokens.tokenize(st)["card_mask"].sum()) == 3
+    # 3 + 11 + 3 = 17 instances -> 17 instance rows.
+    assert int(tokens.tokenize(st)["card_mask"].sum()) == 17
 
 
-def test_grouping_preserves_shuffle_invariance():
-    # Grouping does not reintroduce order sensitivity: any shuffle of a duplicate-heavy pile is identical.
+def test_duplicate_copies_across_zones_round_trip():
+    # The same content living in several zones round-trips exactly — each copy is its own row filed by its
+    # `zone` categorical (no merging), so the per-zone lists reconstruct byte-for-byte.
+    st = _state(hand=[_card("StrikeIronclad", damage=6, baseDamage=6)],
+                draw=[_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(2)],
+                discard=[_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(2)],
+                enemies=[_enemy("JawWorm", 40)])
+    ok, diff = tokens.round_trip(st)
+    assert ok, "round-trip mismatch at " + str(diff)
+    tok = tokens.tokenize(st)
+    assert int(tok["card_mask"].sum()) == 5
+    zones = sorted(z for z, _s, _c in _present_rows(tok))
+    assert zones == ["discard", "discard", "draw", "draw", "hand"]
+
+
+def test_shuffle_invariance_instance_rows():
+    # Instance rows do not leak pile order: any shuffle of a duplicate-heavy pile is byte-identical.
     draw = ([_card("StrikeIronclad", damage=6, baseDamage=6)] * 4
             + [_card("DefendIronclad", type="Skill", targetType="Self", block=5, baseBlock=5)] * 3
             + [_card("Bash", damage=8, baseDamage=8)] * 2)
@@ -333,6 +347,18 @@ def test_grouping_preserves_shuffle_invariance():
         t = tokens.tokenize(_state(draw=shuffled, enemies=[_enemy("JawWorm", 40)]))
         for k in ("card_idx", "card_num", "card_kw", "card_mask"):
             assert np.array_equal(base[k], t[k]), (k, seed)
+
+
+def test_overflow_truncation_and_strict():
+    # A state with more than MAX_CARDS instances raises TokenOverflow under strict, and truncates to the
+    # cap (one row per copy) under strict=False.
+    import pytest
+    draw = [_card("StrikeIronclad", damage=6, baseDamage=6) for _ in range(tokens.MAX_CARDS + 10)]
+    st = _state(draw=draw, enemies=[_enemy("JawWorm", 40)])
+    with pytest.raises(tokens.TokenOverflow):
+        tokens.tokenize(st, strict=True)
+    tok = tokens.tokenize(st, strict=False)
+    assert int(tok["card_mask"].sum()) == tokens.MAX_CARDS
 
 
 def test_numeric_ranges_present_and_clamp():
@@ -350,8 +376,9 @@ def test_numeric_ranges_present_and_clamp():
     assert clamped == hp.hi and was is True
     ok_val, was2 = S.clamp_to_range("creature", "currentHp", hp.hi)
     assert ok_val == hp.hi and was2 is False
-    # Card per-zone count columns carry ranges too (the v3 population vector).
-    assert "count_draw" in S.NUMERIC_RANGES["card"]
+    # v6: cards are instance rows — the numeric block is content only (no per-zone count columns).
+    assert "count_draw" not in S.NUMERIC_RANGES["card"]
+    assert "damage" in S.NUMERIC_RANGES["card"]
 
 
 def test_catalog_hash_fallback():

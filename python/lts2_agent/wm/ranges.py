@@ -27,7 +27,9 @@ from .. import corpus, tokens
 
 # Numeric (non-boolean) columns to scan, per token type. Names match the tokenizer's canonical dicts.
 _BOOL_CARD = {"costsX", "upgraded", "canPlay", "hasDamage", "hasBlock", "hasSummon"}
-_CARD_SCALARS = [c for c in tokens.CARD_NUM if c not in _BOOL_CARD and c not in tokens.ZONE_COUNT_FIELDS]
+# v6: cards are instance rows — CARD_NUM is the 14 content numerics (no per-zone count columns), so the
+# scalar (non-boolean) columns are just the content numerics minus the flags.
+_CARD_SCALARS = [c for c in tokens.CARD_NUM if c not in _BOOL_CARD]
 _INTENT_BOOL = {"hasDamage", "hasHits"}
 _INTENT_SCALARS = [c for c in tokens.INTENT_NUM if c not in _INTENT_BOOL]
 
@@ -89,15 +91,11 @@ def scan(root: str, split: Optional[str], n: Optional[int], stride: int = 1, sha
                 _upd(acc, "pending", "minSelect", int(pend["minSelect"]))
                 _upd(acc, "pending", "maxSelect", int(pend["maxSelect"]))
 
-            # Card scalars over per-instance dicts; per-zone counts over the grouped population rows.
+            # v6: card scalars over the per-instance dicts (one row per physical copy).
             for z in tokens.ZONES:
                 for c in cv["cards"][z]:
                     for col in _CARD_SCALARS:
                         _upd(acc, "card", col, int(c[col]))
-            rows = tokens._group_cards(cv)
-            for row in rows:
-                for z in tokens.ZONES:
-                    _upd(acc, "card", "count_" + z, int(row["counts"][z]))
 
             for cr in cv["creatures"]:
                 for col in ("currentHp", "maxHp", "block", "combatId"):
@@ -112,7 +110,7 @@ def scan(root: str, split: Optional[str], n: Optional[int], stride: int = 1, sha
                 _upd(acc, "orb", "evokeValue", int(orb["evokeValue"]))
 
             instances = sum(len(cv["cards"][z]) for z in tokens.ZONES)
-            maxima["cards"] = max(maxima["cards"], len(rows))
+            maxima["cards"] = max(maxima["cards"], instances)          # v6: instance rows
             maxima["creatures"] = max(maxima["creatures"], len(cv["creatures"]))
             maxima["powers"] = max(maxima["powers"], sum(len(c["powers"]) for c in cv["creatures"]))
             maxima["intents"] = max(maxima["intents"], sum(len(c["intents"]) for c in cv["creatures"]))
@@ -120,7 +118,7 @@ def scan(root: str, split: Optional[str], n: Optional[int], stride: int = 1, sha
             maxima["relics"] = max(maxima["relics"], len(cv["relics"]))
             maxima["potions"] = max(maxima["potions"], len(cv["potions"]))
             sums["instances"] += instances
-            sums["rows"] += len(rows)
+            sums["rows"] += instances            # v6: rows == instances (one token per copy)
             n_states += 1
             if n and n_states >= n:
                 return acc, maxima, sums, n_states

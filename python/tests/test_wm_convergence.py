@@ -73,6 +73,9 @@ def _fixture_raw():
             "powers_per_state": {"0": 4, "1": 3, "2": 2},
             "intents_per_state": {"0": 4, "1": 3, "2": 1},
             "powers_per_creature": {"0": 5, "1": 3, "2": 1},
+            # v6 cards-as-instances: instances-per-state count + the per-zone instance marginal.
+            "instances_per_state": {"0": 1, "3": 4, "5": 5, "8": 3, "12": 2},
+            "card_zone": {"0": 30, "1": 33, "2": 26, "3": 10, "4": 1},
         },
     }
 

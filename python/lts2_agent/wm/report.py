@@ -225,24 +225,10 @@ def report_pairs(batch: Dict[str, torch.Tensor],
         err = (pred_raw - tgt_raw).abs() * mask.to(pred_raw.dtype)
         return err.sum(dim=1).cpu().numpy(), mask.sum(dim=1).float().cpu().numpy()
 
-    def card_zone_counts_acc() -> Tuple[np.ndarray, np.ndarray]:
-        """v3 card_zone_acc: fraction of present card population rows whose FULL per-zone count vector
-        (the five count_<zone> numeric columns, integer-rounded) is reconstructed exactly. Replaces the
-        v2 single categorical zone column — zone membership is now the count vector."""
-        t = S.TYPE_BY_NAME["card"]
-        mask = batch[t.mask_key]                                   # [B, slots]
-        cols = S.CARD_COUNT_COLS
-        pred = outputs["card"]["num"][..., cols]                  # [B, slots, 5]
-        tgt = batch[t.num_key][..., cols]
-        pred_i = torch.round(torch.sign(pred) * torch.expm1(pred.abs()))
-        tgt_i = torch.round(torch.sign(tgt) * torch.expm1(tgt.abs()))
-        match = (pred_i == tgt_i).all(dim=-1) & mask              # [B, slots]
-        correct = match.sum(dim=1).float().cpu().numpy()
-        den = mask.sum(dim=1).float().cpu().numpy()
-        return correct, den
-
     pairs["card_id_top1"] = slot_acc("card", 0)
-    pairs["card_zone_acc"] = card_zone_counts_acc()
+    # v6: cards are instance rows — `zone` is a categorical column again, so card_zone_acc is the per-row
+    # accuracy of that categorical (fraction of present card rows whose zone is reconstructed exactly).
+    pairs["card_zone_acc"] = slot_acc("card", S.CARD_ZONE_CAT_COL)
     pairs["power_id_top1"] = slot_acc("power", 0)
     pairs["power_amount_mae"] = slot_mae("power", S.POWER_AMOUNT_IDX)
     pairs["creature_hp_mae"] = slot_mae("creature", S.CREATURE_HP_IDX)

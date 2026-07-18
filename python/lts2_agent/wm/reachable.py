@@ -48,10 +48,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .. import corpus, tokens
 
-# Numeric columns to record per type. Cards: the DYNAMIC content numerics (CARD_NUM minus the per-zone
-# count vector, which synth fills from its own game-like small-int distribution). The others: their full
-# numeric block (flag columns included — a flag's observed [lo,hi] is 0/1 and synth samples it directly).
-_CARD_NUM_COLS = [c for c in tokens.CARD_NUM if c not in tokens.ZONE_COUNT_FIELDS]
+# Numeric columns to record per type. Cards (v6 instance rows): the full CARD_NUM content block (14 cols,
+# flags included — a flag's observed [lo,hi] is 0/1 and synth samples it directly). The others: their full
+# numeric block likewise.
+_CARD_NUM_COLS = list(tokens.CARD_NUM)
 _CREATURE_NUM_COLS = list(tokens.CREATURE_NUM)
 _INTENT_NUM_COLS = list(tokens.INTENT_NUM)
 
@@ -110,6 +110,8 @@ def scan(root: str, split: Optional[str], n: Optional[int], shard_stride: int
     counts = {
         "creatures_per_state": {}, "powers_per_state": {},
         "intents_per_state": {}, "powers_per_creature": {},
+        # v6 cards-as-instances: total card copies per state, and the marginal over which zone a copy is in.
+        "instances_per_state": {}, "card_zone": {},
     }
 
     def _bump(hist: Dict[int, int], k: int) -> None:
@@ -125,22 +127,28 @@ def scan(root: str, split: Optional[str], n: Optional[int], shard_stride: int
                 continue
             cv = tokens._canonical_from_state(st)
 
-            # Cards: population rows carry the tokenizer's mapped categorical indices + content numerics.
-            for row in tokens._group_cards(cv):
-                ci = int(row["cardIndex"])
-                e = cards.get(ci)
-                if e is None:
-                    e = cards[ci] = _card_entry()
-                e["type"].add(int(row["type"]))
-                e["rarity"].add(int(row["rarity"]))
-                e["targetType"].add(int(row["targetType"]))
-                ench = int(row["enchant"])
-                e["enchant"][ench] = e["enchant"].get(ench, 0) + 1
-                affl = int(row["afflict"])
-                e["afflict"][affl] = e["afflict"].get(affl, 0) + 1
-                e["keywords"].add(tuple(int(b) for b in row["keywords"]))
-                for col in _CARD_NUM_COLS:
-                    _upd_range(e["num"], col, int(row[col]))
+            # Cards (v6 instance rows): per-instance conditional table keyed by cardIndex, plus the
+            # instances-per-state and per-zone marginals the synth generator samples from.
+            n_inst = 0
+            for z in tokens.ZONES:
+                for row in cv["cards"][z]:
+                    n_inst += 1
+                    _bump(counts["card_zone"], int(row["zone"]))
+                    ci = int(row["cardIndex"])
+                    e = cards.get(ci)
+                    if e is None:
+                        e = cards[ci] = _card_entry()
+                    e["type"].add(int(row["type"]))
+                    e["rarity"].add(int(row["rarity"]))
+                    e["targetType"].add(int(row["targetType"]))
+                    ench = int(row["enchant"])
+                    e["enchant"][ench] = e["enchant"].get(ench, 0) + 1
+                    affl = int(row["afflict"])
+                    e["afflict"][affl] = e["afflict"].get(affl, 0) + 1
+                    e["keywords"].add(tuple(int(b) for b in row["keywords"]))
+                    for col in _CARD_NUM_COLS:
+                        _upd_range(e["num"], col, int(row[col]))
+            _bump(counts["instances_per_state"], n_inst)
 
             # Creatures + their folded powers / intents.
             cr_list = cv["creatures"]
@@ -239,7 +247,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Build the conditional-reachability table for the synthetic experts.")
     ap.add_argument("--corpus", default="data/corpus2", help="corpus root to stream (default data/corpus2)")
-    ap.add_argument("--out", default="data/reachable_v1.json", help="output JSON artifact path")
+    ap.add_argument("--out", default="data/reachable_v2.json", help="output JSON artifact path")
     ap.add_argument("--split", default=None, help="restrict to one split (default: all splits)")
     ap.add_argument("--n", type=int, default=400000, help="max states to scan (default 400k)")
     ap.add_argument("--shard-stride", type=int, default=0,
@@ -276,6 +284,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         ks = sorted(int(k) for k in hist)
         print("  count[%-20s] range %d..%d over %d distinct values"
               % (name, ks[0] if ks else 0, ks[-1] if ks else 0, len(ks)))
+    # v6 cards-as-instances: instances-per-state distribution + how many states exceed the MAX_CARDS cap.
+    ips = doc["counts"]["instances_per_state"]
+    total = sum(ips.values()) or 1
+    max_inst = max((int(k) for k in ips), default=0)
+    over = sum(v for k, v in ips.items() if int(k) > tokens.MAX_CARDS)
+    mean_inst = sum(int(k) * v for k, v in ips.items()) / total
+    print("-" * 78)
+    print("  cards/state (v6 instances): mean %.2f  max %d  cap %d  states over cap: %d (%.4f%%)"
+          % (mean_inst, max_inst, tokens.MAX_CARDS, over, 100.0 * over / total))
+    zn = doc["counts"]["card_zone"]
+    ztot = sum(zn.values()) or 1
+    zfrac = ", ".join("%s %.3f" % (tokens.ZONES[int(zi)], zn.get(str(zi), 0) / ztot)
+                      for zi in range(len(tokens.ZONES)))
+    print("  card zone marginal: %s" % zfrac)
     print("  wrote %s" % args.out)
     print("=" * 78)
     return 0

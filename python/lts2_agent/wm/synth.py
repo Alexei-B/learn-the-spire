@@ -90,7 +90,7 @@ CREATURE_WILDCARD_PROB = 0.05    # per creature/power/intent row: same uniform f
 
 _REACHABLE_JSON = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "reachable_v1.json")
+    "data", "reachable_v2.json")
 
 _REACHABLE_TABLE: Optional[Dict[str, Any]] = None   # module cache (tests may inject a parsed fixture)
 
@@ -243,7 +243,7 @@ def _load_reachable() -> Dict[str, Any]:
         if not os.path.exists(_REACHABLE_JSON):
             raise FileNotFoundError(
                 "reachability table not found at " + _REACHABLE_JSON + "; build it with:\n"
-                "    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v1.json")
+                "    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v2.json")
         with open(_REACHABLE_JSON, encoding="utf-8") as f:
             _REACHABLE_TABLE = _parse_reachable(json.load(f))
     return _REACHABLE_TABLE
@@ -288,24 +288,13 @@ def reach_bins(type_name: str, col: str, lo: int, hi: int) -> int:
 
 
 # ==================================================================================================
-# Measured game-like marginals for the CARDS expert (coverage insurance — cards keep game-shaped
-# population structure; only ids/dynamic-numerics are uniform). Measured 2026-07-17 over one train shard
-# of data/corpus_tok_v3 (4096 states, 43,328 present population rows) — the same scan wm.ranges uses.
-# Everything else (potions/relics/orbs/creatures) is uniform-with-design and needs no game marginal.
+# v6: cards are INSTANCE rows. Their game-shaped marginals (instances-per-state count histogram + the
+# per-zone instance marginal) now live in the reachability table (data/reachable_v2.json,
+# ``counts["instances_per_state"]`` and ``counts["card_zone"]``), sampled exactly like the creature/power
+# count histograms — so the old population-row constants (_CARD_ROWS_HIST / _CARD_NZONES_HIST /
+# _CARD_ZONE_WEIGHTS / _CARD_ZONE_COUNT_HIST) and the zone-vector sampler are deleted. Only ids + dynamic
+# numerics remain uniform-with-design (the per-cardIndex conditional table + a CARD_WILDCARD_PROB tail).
 # ==================================================================================================
-
-# Rows-per-state histogram, k = 0..23 (observed max 23; padded dim MAX_CARDS = 64). Sampled as the card
-# population size so a synthetic state has a game-plausible number of distinct-content rows.
-_CARD_ROWS_HIST = np.array(
-    [33, 0, 1, 10, 100, 247, 389, 549, 412, 253, 104, 78, 186, 372, 411, 476, 236, 118, 64, 32, 20, 2,
-     2, 1], dtype=np.float64)
-# Number of distinct zones a single row occupies: {1: 40564, 2: 2607, 3: 155, 4: 2} (93.6% single-zone).
-_CARD_NZONES_HIST = np.array([0, 40564, 2607, 155, 2], dtype=np.float64)   # index = n_zones (0 unused)
-# Which zones a row tends to occupy (hand/draw/discard/exhaust/offered present-fraction over rows).
-_CARD_ZONE_WEIGHTS = np.array([0.310, 0.349, 0.276, 0.117, 0.015], dtype=np.float64)
-# Per-occupied-zone instance count (small int); index = count. From total-instances/row {1:.815 …}, most
-# rows hold a single instance. Truncated + renormalized to the zone's measured range at sample time.
-_CARD_ZONE_COUNT_HIST = np.array([0, 0.815, 0.100, 0.044, 0.024, 0.007, 0.010], dtype=np.float64)
 
 
 # ==================================================================================================
@@ -349,24 +338,19 @@ def _sample_cats(rng: np.random.Generator, tspec: S.TypeSpec, n: int) -> np.ndar
     return np.stack(cols, axis=-1).astype(np.int32) if cols else np.zeros((n, 0), np.int32)
 
 
-def _sample_nums(rng: np.random.Generator, type_name: str, col_names: List[str], n: int,
-                 zone_cols: Optional[List[str]] = None) -> np.ndarray:
+def _sample_nums(rng: np.random.Generator, type_name: str, col_names: List[str], n: int) -> np.ndarray:
     """``[n, W]`` float32 numeric block. Each column's integer is sampled uniformly inside its measured
     ``spec.NUMERIC_RANGES`` (a flag column with no range is 0/1), then stored symlog (non-flag) / raw
-    (flag) — the exact tokenizer mapping. ``zone_cols`` are skipped here (the CARDS generator fills the
-    per-zone count vector with its own game-like small-int distribution)."""
+    (flag) — the exact tokenizer mapping."""
     raw = RAW_NUM_COLS.get(type_name, set())
-    zone_cols = zone_cols or []
     ints = np.zeros((n, len(col_names)), dtype=np.int64)
     for j, c in enumerate(col_names):
-        if c in zone_cols:
-            continue
         rng_spec = S.NUMERIC_RANGES.get(type_name, {}).get(c)
         lo, hi = (rng_spec.lo, rng_spec.hi) if rng_spec is not None else (0, 1)
         ints[:, j] = rng.integers(lo, hi + 1, size=n)
     out = ints.astype(np.float32)
     for j, c in enumerate(col_names):
-        if c not in raw and c not in zone_cols:
+        if c not in raw:
             out[:, j] = _symlog_arr(ints[:, j].astype(np.float64)).astype(np.float32)
     return out
 
@@ -788,10 +772,13 @@ def _sample_from_hist(rng: np.random.Generator, hist: np.ndarray, size: int) -> 
 
 
 _CARD_RAW_COLS = RAW_NUM_COLS.get("card", set())
-# (numeric-block index, column name, is-raw-flag) for every CARD_NUM column that is NOT a per-zone count —
-# the dynamic content numerics the reachability table conditions on (zone counts keep their own sampler).
-_CARD_NONZONE_NUM = [(j, c, c in _CARD_RAW_COLS) for j, c in enumerate(tokens.CARD_NUM)
-                     if c not in tokens.ZONE_COUNT_FIELDS]
+# (numeric-block index, column name, is-raw-flag) for every CARD_NUM content column — the dynamic numerics
+# the reachability table conditions on. v6: CARD_NUM is exactly the 14 content numerics (no per-zone count
+# columns), so this is the whole numeric block. (Name kept for the reachable/convergence twin references.)
+_CARD_NONZONE_NUM = [(j, c, c in _CARD_RAW_COLS) for j, c in enumerate(tokens.CARD_NUM)]
+# CARD_IDX categorical columns that are part of a card's CONTENT identity (the content-sort key) — i.e.
+# everything except the v6 layout columns `zone` (the zone-major axis) and `slot` (the layout index).
+_CARD_CONTENT_CAT_COLS = [i for i, c in enumerate(tokens.CARD_IDX) if c not in ("zone", "slot")]
 
 
 def _card_content_order_ref(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k: int) -> List[int]:
@@ -805,8 +792,6 @@ def _card_content_order_ref(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarra
     for r in range(k):
         d = {name: int(ci_b[r, j]) for j, name in enumerate(tokens.CARD_IDX)}
         for j, name in enumerate(tokens.CARD_NUM):
-            if name in tokens.ZONE_COUNT_FIELDS:
-                continue
             v = float(cn_b[r, j])
             d[name] = int(round(v)) if name in _CARD_RAW_COLS else int(round(tokens.symexp(v)))
         d["keywords"] = sorted(int(b) for b in np.nonzero(ckw_b[r])[0])
@@ -818,7 +803,9 @@ def _card_content_key_columns(ci: np.ndarray, cn: np.ndarray, ckw: np.ndarray) -
     """Integer lexsort-key columns reproducing :func:`tokens._card_content_key` for a whole block of
     rows, MOST-significant first — the vectorized twin of the per-row tuple key.
 
-    * The six categoricals (CARD_IDX) pass through as-is.
+    * The six CONTENT categoricals (cardIndex..afflict) pass through as-is. v6's `zone`/`slot` columns are
+      EXCLUDED — the content key never carried zone (it is now the zone-major layout axis, handled
+      separately) or slot (the layout index), exactly as :func:`tokens._card_content_key`.
     * Each dynamic numeric is decoded to the exact integer the tuple key carries: raw flags round; symlog
       columns invert (``round(symexp)``). symlog is monotonic so this is order-preserving, but decoding
       to the integer keeps ties/values byte-identical to the reference.
@@ -827,7 +814,7 @@ def _card_content_key_columns(ci: np.ndarray, cn: np.ndarray, ckw: np.ndarray) -
       sorted list is lexicographically smaller, so an absent slot (-1) must sort BEFORE any real bucket
       (0..31) — exactly the order Python gives ``tuple(a) < tuple(b)`` for the two sorted lists. (A single
       packed bitmask can NOT reproduce this: e.g. ``() < (0,) < (0,1) < (1,)`` is not a bitmask order.)"""
-    cols: List[np.ndarray] = [ci[:, j].astype(np.int64) for j in range(len(tokens.CARD_IDX))]
+    cols: List[np.ndarray] = [ci[:, j].astype(np.int64) for j in _CARD_CONTENT_CAT_COLS]
     for j, _col, is_raw in _CARD_NONZONE_NUM:
         v = cn[:, j].astype(np.float64)
         dec = np.rint(v) if is_raw else np.rint(np.sign(v) * np.expm1(np.abs(v)))
@@ -853,9 +840,6 @@ def _card_content_order(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k
         return list(range(k))
     cols = _card_content_key_columns(ci_b[:k], cn_b[:k], ckw_b[:k])
     return np.lexsort(cols[::-1]).tolist()
-
-
-_CARD_ZONE_MAXES = np.array([20, 40, 40, 40, 30], np.int64)   # hand/draw/discard/exhaust/offered (ZONES order)
 
 
 def _exclusive_starts(counts: np.ndarray, B: int) -> np.ndarray:
@@ -899,70 +883,57 @@ def _fill_card_table_rows(rng: np.random.Generator, tbl: Dict[str, Any], cats: n
     kw[tab_pos] = tbl["card_kw_mat"][pick, pat_idx]
 
 
-def _fill_card_zone_counts(rng: np.random.Generator, num: np.ndarray, zone_count_idx: np.ndarray,
-                           N: int) -> None:
-    """Fill the per-zone count vector for every row (game-like): draw n_zones from the measured
-    distribution, pick that many DISTINCT zones weighted by the observed present-fraction, and a small
-    count for each. Weighted sample-without-replacement is done with the Gumbel-top-k trick (drawing
-    ``n_zones`` keys ``log(w)+Gumbel`` and taking the largest) — distributionally identical to the old
-    per-row ``rng.choice(replace=False, p=w)``, but one vectorized pass over the batch."""
-    nzone = zone_count_idx.shape[0]
-    nz = np.clip(_sample_from_hist(rng, _CARD_NZONES_HIST, N), 1, nzone)
-    keys = np.log(_CARD_ZONE_WEIGHTS)[None, :] + rng.gumbel(size=(N, nzone))
-    rank = np.argsort(-keys, axis=1)                         # zone indices by descending key, per row
-    chosen_by_rank = np.arange(nzone)[None, :] < nz[:, None]
-    chosen = np.zeros((N, nzone), bool)
-    np.put_along_axis(chosen, rank, chosen_by_rank, axis=1)
-    cnt = _sample_from_hist(rng, _CARD_ZONE_COUNT_HIST, N * nzone).reshape(N, nzone)
-    cnt = np.clip(cnt, 1, _CARD_ZONE_MAXES[None, :])
-    num[:, zone_count_idx] = np.where(chosen, _symlog_arr(cnt.astype(np.float64)), 0.0).astype(np.float32)
-
-
 def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
-    """Card population rows — REACHABILITY-SHAPED (see the reachable-table section header). Row count from
-    the measured rows/state marginal; each row's identity + static fields + dynamic numerics + keyword
-    pattern drawn from that cardIndex's observed conditional table (values a real card actually takes,
-    numerics widened ~1.5x and clamped), with a :data:`CARD_WILDCARD_PROB` per-row uniform tail as
-    coverage insurance for unseen ids. The per-zone count vector is UNCHANGED — sampled from the measured
-    game-like small-int distribution (n_zones, which zones, per-zone count) with sum >= 1. Rows are finally
-    CONTENT-SORTED into the tokenizer's canonical order (well-posed targets — a permutation-invariant set
-    encoder needs a content-determined slot assignment).
+    """Card INSTANCE rows (v6) — REACHABILITY-SHAPED (see the reachable-table section header). One row per
+    physical card copy: the instances-per-state COUNT is drawn from the measured
+    ``counts["instances_per_state"]`` histogram; each instance's identity + static fields + dynamic numerics
+    + keyword pattern come from that cardIndex's observed conditional table (values a real card actually
+    takes, numerics widened ~1.5x and clamped), with a :data:`CARD_WILDCARD_PROB` per-row uniform tail as
+    coverage insurance for unseen ids; and each instance's ``zone`` is drawn from the measured
+    ``counts["card_zone"]`` marginal. Rows are then laid out ZONE-MAJOR (fixed ZONES order), within a zone
+    CONTENT-SORTED into the tokenizer's canonical order, and stamped with ``slot`` == the layout index —
+    the exact wire layout :func:`tokens.tokenize` produces (well-posed per-slot targets for the
+    permutation-invariant card expert; the same treatment relics/orbs get).
 
-    Fully VECTORIZED (roadmap wm-t3-factored perf): all rows of all states are generated as one flat block
-    (base uniform, then table rows overwritten, then zone counts), and the whole batch is content-sorted in
-    a SINGLE ``np.lexsort`` keyed by state-then-content, then scattered back into the padded arrays — no
-    per-row Python in the hot path. The row ORDER is byte-identical to the old per-state sort (proven in
-    ``test_wm_synth``); only the RNG draw order differs (distributional equivalence, per the design)."""
+    Fully VECTORIZED: all instances of all states are generated as one flat block (base uniform, then table
+    rows overwritten, then zone drawn), and the whole batch is ordered in a SINGLE ``np.lexsort`` keyed by
+    state -> zone -> content, then scattered into the padded arrays with ``slot`` stamped from the
+    within-state position — no per-row Python in the hot path. The row ORDER matches the per-state reference
+    (proven in ``test_wm_synth``); only the RNG draw order differs (distributional equivalence, per design)."""
     tbl = _load_reachable()
     cap = tokens.MAX_CARDS
     tspec = S.TYPE_BY_NAME["card"]
-    zone_cols = list(tokens.ZONE_COUNT_FIELDS)
-    zone_count_idx = np.array([tokens.CARD_NUM.index(zc) for zc in zone_cols], np.int64)
+    zone_col = [c for c, _ in tspec.cat_cols].index("zone")
+    slot_col = [c for c, _ in tspec.cat_cols].index("slot")
     ci, cn, ckw, cm = z["card_idx"], z["card_num"], z["card_kw"], z["card_mask"]
 
-    row_counts = np.clip(_sample_from_hist(rng, _CARD_ROWS_HIST, B), 0, cap).astype(np.int64)
-    N = int(row_counts.sum())
+    inst_counts = np.clip(_hist_draw(rng, tbl["counts"]["instances_per_state"], B),
+                          0, cap).astype(np.int64)
+    N = int(inst_counts.sum())
     if N == 0:
         return
-    bstate = np.repeat(np.arange(B, dtype=np.int64), row_counts)
-    starts = _exclusive_starts(row_counts, B)
+    bstate = np.repeat(np.arange(B, dtype=np.int64), inst_counts)
+    starts = _exclusive_starts(inst_counts, B)
 
-    # Base = fully-uniform WILDCARD content for every flat row; table rows overwrite it below.
-    cats = _sample_cats(rng, tspec, N)                                          # [N, 6]
-    num = _sample_nums(rng, "card", tokens.CARD_NUM, N, zone_cols=zone_cols)    # [N, W] (zone cols 0)
+    # Base = fully-uniform WILDCARD content for every flat instance; table rows overwrite content below.
+    cats = _sample_cats(rng, tspec, N)                                          # [N, 8] (zone/slot rewritten)
+    num = _sample_nums(rng, "card", tokens.CARD_NUM, N)                         # [N, 14] content numerics
     kw = (rng.random((N, tokens.KW_BUCKETS)) < 0.05).astype(np.float32)
     tab_pos = np.nonzero(rng.random(N) >= CARD_WILDCARD_PROB)[0]                 # table (non-wildcard) rows
     if tab_pos.shape[0]:
         _fill_card_table_rows(rng, tbl, cats, num, kw, tab_pos)
-    _fill_card_zone_counts(rng, num, zone_count_idx, N)
+    # Zone per instance from the measured marginal (all rows — table AND wildcard), overwriting the base.
+    cats[:, zone_col] = _hist_draw(rng, tbl["counts"]["card_zone"], N)
 
-    # Content-sort every state's rows into the tokenizer's canonical order in ONE lexsort (state primary),
-    # then scatter each row to its state's sorted slot. lexsort is stable, so equal-content rows keep their
-    # generation order exactly as the per-state reference sorted() would.
-    order = np.lexsort(_card_content_key_columns(cats, num, kw)[::-1] + [bstate])
+    # Order every state's instances ZONE-MAJOR then within-zone by content, in ONE lexsort (state primary,
+    # then zone, then the content key most-significant-first). lexsort is stable, so identical copies keep
+    # their generation order — a harmless tie. Then scatter to the within-state slot and stamp slot==index.
+    order = np.lexsort(_card_content_key_columns(cats, num, kw)[::-1]
+                       + [cats[:, zone_col].astype(np.int64), bstate])
     bs = bstate[order]
     dstslot = np.arange(N) - starts[bs]
     ci[bs, dstslot] = cats[order]
+    ci[bs, dstslot, slot_col] = dstslot                     # positional slot == the layout index
     cn[bs, dstslot] = num[order]
     ckw[bs, dstslot] = kw[order]
     cm[bs, dstslot] = True

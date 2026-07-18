@@ -100,27 +100,29 @@ def _hist_mean(hist) -> float:
     return float((np.arange(len(p)) * p).sum() / p.sum())
 
 
-def _card_zone_bits() -> float:
-    """Approx bits for a row's per-zone count vector (n_zones chosen + which zones + per-zone counts). Same
-    for the table and no-table paths — the zone-vector sampler is identical in both."""
-    return _hist_entropy(SY._CARD_NZONES_HIST) + 2.5 + 3.0
+def _card_zone_bits(tbl) -> float:
+    """v6: per-INSTANCE zone bits — the Shannon entropy of the measured zone marginal
+    (``counts["card_zone"]``), the one categorical the generator draws per instance. No-table fallback:
+    log2(#zones) (a uniform zone)."""
+    if tbl is None:
+        return math.log2(len(tokens.ZONES))
+    return _dist_bits(tbl["counts"]["card_zone"][1])
 
 
 def _card_wild_content_bits() -> float:
-    """Fully-uniform (WILDCARD) per-row CONTENT bits: every card categorical + dynamic numeric sampled
-    independently over its whole range + sparse keywords (excludes the zone vector). This is the old
-    over-generating per-row cost — the reachability path replaces it with the conditional table, keeping
-    only a CARD_WILDCARD_PROB slice of it."""
+    """Fully-uniform (WILDCARD) per-INSTANCE CONTENT bits: every card CONTENT categorical (cardIndex..
+    afflict — NOT the v6 layout columns `zone`/`slot`) + dynamic numeric sampled independently over its
+    whole range + sparse keywords. This is the over-generating per-row cost the reachability path replaces
+    with the conditional table, keeping only a CARD_WILDCARD_PROB slice of it."""
     from .. import tokens as T
     tspec = S.TYPE_BY_NAME["card"]
     bits = 0.0
     for col_name, vocab in tspec.cat_cols:
+        if col_name in ("zone", "slot"):               # zone counted separately; slot is positional (no H)
+            continue
         hi = vocab - 1 if col_name in ("type", "rarity", "targetType") else vocab
         bits += math.log2(max(2, hi))
-    zone_cols = set(T.ZONE_COUNT_FIELDS)
-    for c in T.CARD_NUM:
-        if c in zone_cols:
-            continue
+    for c in T.CARD_NUM:                                # v6: all 14 content numerics
         b = _range_bits("card", c)
         bits += b if b else 1.0                         # flag columns: 1 bit
     p_kw = 0.05                                          # generator keyword on-prob
@@ -137,18 +139,19 @@ def _dist_bits(probs) -> float:
 
 
 def entropy_cards() -> float:
-    """REACHABILITY-SHAPED generator (when data/reachable_v1.json exists): row count from the measured
-    hist, then per row an identity from the observed cardIndex set + that card's OWN conditional value bits
-    (observed type/rarity/targetType choices, enchant/afflict frequency entropy, keyword-pattern choice,
-    per dynamic numeric log2 of its margin-widened observed range), a CARD_WILDCARD_PROB mix with the old
-    fully-uniform content, plus the (unchanged) zone-vector bits. Falls back to the pure independent-uniform
-    formula when the table is absent (the old over-generation tripwire value). Structure mirrors
-    entropy_orbs()."""
+    """v6 INSTANCE-space REACHABILITY-SHAPED generator (when data/reachable_v2.json exists): the
+    instances-per-state COUNT entropy, then per INSTANCE an identity from the observed cardIndex set + that
+    card's OWN conditional content bits (observed type/rarity/targetType choices, enchant/afflict frequency
+    entropy, keyword-pattern choice, per dynamic numeric log2 of its margin-widened observed range), a
+    CARD_WILDCARD_PROB mix with the fully-uniform content, plus per-instance zone bits (the zone marginal
+    entropy). slot carries NO entropy (positional). Falls back to the independent-uniform formula when the
+    table is absent. Structure mirrors entropy_orbs()."""
     tbl = SY._try_load_reachable()
-    zone_bits = _card_zone_bits()
+    zone_bits = _card_zone_bits(tbl)
     if tbl is None:
-        per_row = _card_wild_content_bits() + zone_bits
-        return _hist_entropy(SY._CARD_ROWS_HIST) + _hist_mean(SY._CARD_ROWS_HIST) * per_row
+        cap = tokens.MAX_CARDS
+        per_inst = _card_wild_content_bits() + zone_bits
+        return math.log2(cap + 1) + (cap / 2.0) * per_inst
     cards = tbl["cards"]
     per_id = []
     for e in cards.values():
@@ -162,8 +165,8 @@ def entropy_cards() -> float:
         per_id.append(b)
     content = math.log2(max(2, len(cards))) + (sum(per_id) / len(per_id) if per_id else 0.0)
     w = SY.CARD_WILDCARD_PROB
-    per_row = (1 - w) * content + w * _card_wild_content_bits() + zone_bits
-    return _hist_entropy(SY._CARD_ROWS_HIST) + _hist_mean(SY._CARD_ROWS_HIST) * per_row
+    per_inst = (1 - w) * content + w * _card_wild_content_bits() + zone_bits
+    return _counts_bits(tbl, "instances_per_state") + _counts_mean(tbl, "instances_per_state") * per_inst
 
 
 def _creature_wild_bits() -> float:
@@ -395,18 +398,21 @@ def _card_id_bits(e: Dict) -> float:
 
 
 def _state_bits_cards(rng: np.random.Generator, n: int) -> np.ndarray:
-    """Mirror :func:`synth._fill_cards`: row count from the measured rows/state histogram; each row is a
-    CARD_WILDCARD_PROB fully-uniform draw or a table-conditioned identity (log2(#ids) + that id's content
-    bits), plus the constant zone-vector bits. Reuses entropy_cards' exact per-identity/zone/wildcard
-    costs. Falls back to the constant per-row uniform cost when the reachable table is absent."""
-    hist = SY._CARD_ROWS_HIST
-    cap = tokens_ref().MAX_CARDS
-    count_term = _hist_entropy(hist)
-    zone_bits = _card_zone_bits()
-    k = np.clip(SY._sample_from_hist(rng, hist, n), 0, cap)
+    """Mirror :func:`synth._fill_cards` (v6): instances-per-state count from the measured histogram; each
+    INSTANCE is a CARD_WILDCARD_PROB fully-uniform draw or a table-conditioned identity (log2(#ids) + that
+    id's content bits), plus per-instance zone bits (the zone marginal entropy). slot carries no bits.
+    Reuses entropy_cards' exact per-identity/wildcard costs. Falls back to a uniform count/content when the
+    reachable table is absent."""
+    T = tokens_ref()
+    cap = T.MAX_CARDS
     tbl = SY._try_load_reachable()
+    zone_bits = _card_zone_bits(tbl)
     if tbl is None:
-        return count_term + k.astype(np.float64) * (_card_wild_content_bits() + zone_bits)
+        k = rng.integers(0, cap + 1, size=n).astype(np.float64)
+        return math.log2(cap + 1) + k * (_card_wild_content_bits() + zone_bits)
+    ivals, iprobs = tbl["counts"]["instances_per_state"]
+    count_term = _dist_bits(iprobs)
+    k = np.minimum(rng.choice(ivals, size=n, p=iprobs), cap)
     bits = np.full(n, count_term, dtype=np.float64)
     total = int(k.sum())
     if total == 0:
