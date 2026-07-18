@@ -66,6 +66,35 @@ from .encoder import _PoolLayer, _TypeEmbedder, simnorm
 # is never desirable.
 TWOHOT_HALF_WIDTH = 2
 
+# Numeric HEAD LAYOUT + eval DECODE mode (roadmap M3.5 cross-expert numeric fix).
+#
+# num_head layout ("bins" | "digits"):
+#   * "bins" (default, backward-compatible): one flat softmax over the whole integer range per numeric
+#     column (`sum(n_bins)` logits, split per field). Old checkpoints have no `num_head` key and load as
+#     "bins" byte-identically.
+#   * "digits": for any WIDE column (> DIGIT_MIN_BINS bins) the flat head is replaced by base-`DIGIT_BASE`
+#     positional DIGIT heads (e.g. base 10: a 201-bin damage column becomes 3 softmaxes of <=10 —
+#     hundreds/tens/ones). The exact integer is the JOINED argmax of the digits; the two-hot/soft target
+#     degenerates to a per-digit ONE-HOT of the true integer's digits (no cross-digit smearing). NARROW
+#     columns (<= DIGIT_MIN_BINS) keep the flat bins head even in "digits" mode. The encoder input is the
+#     unchanged symlog float — only the head OUTPUT layout + targets + decode change.
+#
+# num_decode ("argmax" | "expected") — the EVAL/report decode of a BINS column (digit columns always
+# joined-argmax):
+#   * "expected" (default for NEW runs): decode the integer as round(sum_k softmax(logits)_k * k). A
+#     two-hot-trained head learns a DIFFUSE distribution whose EXPECTATION sits on the true value but whose
+#     ARGMAX frequently lands on an adjacent bin — measured on the real cards_cos50k / creature-stats
+#     checkpoints, expected-bin decode nearly DOUBLES the exact rate on every wide column (aggregate card
+#     numeric exact 0.34 -> 0.57; currentHp 0.49 -> 0.59) with no narrow-column regression. This is the
+#     cheap win the cross-expert numeric floor was hiding behind.
+#   * "argmax" (legacy): pick the single highest-logit bin. Old checkpoints (no `num_decode` key) load as
+#     "argmax" so their historically-reported metrics reproduce exactly; pass --num-decode expected (or
+#     re-evaluate) to pick up the win.
+DIGIT_BASE = 10
+DIGIT_MIN_BINS = 64      # a numeric column with MORE bins than this uses digit heads under num_head="digits"
+NUM_HEAD_MODES = ("bins", "digits")
+NUM_DECODE_MODES = ("argmax", "expected")
+
 # Numeric columns the tokenizer stores RAW (a plain 0/1 flag) rather than symlog-compressed. Every other
 # numeric column is symlog (`tokens.symlog`), inverted by `round(symexp(.))`. These must be known
 # per-type so the range-bin target/decode uses the right integer<->stored mapping (mirrors `tokenize`).
@@ -232,9 +261,16 @@ class RangeBinHeads(nn.Module):
     same symlog ``num`` block the MSE head produced (so downstream reconstruct/report are unchanged). A
     flag column (no measured range) is a 2-bin head over {0,1}."""
 
-    def __init__(self, tspec: S.TypeSpec, d_model: int):
+    def __init__(self, tspec: S.TypeSpec, d_model: int, num_head: str = "bins",
+                 num_decode: str = "expected"):
         super().__init__()
+        if num_head not in NUM_HEAD_MODES:
+            raise ValueError(f"num_head {num_head!r} not in {NUM_HEAD_MODES}")
+        if num_decode not in NUM_DECODE_MODES:
+            raise ValueError(f"num_decode {num_decode!r} not in {NUM_DECODE_MODES}")
         self.spec = tspec
+        self.num_head_mode = num_head
+        self.num_decode = num_decode
         self.cat_heads = nn.ModuleList(nn.Linear(d_model, v) for _, v in tspec.cat_cols)
         self.presence_head = nn.Linear(d_model, 1) if tspec.mask_key else None
         self.kw_head = nn.Linear(d_model, tokens.KW_BUCKETS) if tspec.has_kw else None
@@ -251,10 +287,30 @@ class RangeBinHeads(nn.Module):
             self.register_buffer("_is_raw", torch.tensor([c in raw for c in self.num_cols],
                                                         dtype=torch.bool), persistent=False)
             self._bin_sizes = [r.n_bins for r in ranges]
-            self.num_head = nn.Linear(d_model, int(sum(self._bin_sizes)))
+            # Per-column output layout. A column uses base-DIGIT_BASE positional digit heads iff num_head is
+            # "digits" AND it is wide (> DIGIT_MIN_BINS bins); otherwise a flat n_bins head. `_col_digit[f]`
+            # is (n_digits, base) for a digit column, else None; `_col_widths[f]` is the packed logit width
+            # for column f (n_digits*base, or n_bins). In "bins" mode this reduces exactly to the flat
+            # `sum(n_bins)` head — byte-identical shape/params to the pre-digit checkpoint.
+            self._col_digit: List = []
+            self._col_widths: List[int] = []
+            for r in ranges:
+                nb = r.n_bins
+                if num_head == "digits" and nb > DIGIT_MIN_BINS:
+                    nd = 1
+                    while DIGIT_BASE ** nd < nb:
+                        nd += 1
+                    self._col_digit.append((nd, DIGIT_BASE))
+                    self._col_widths.append(nd * DIGIT_BASE)
+                else:
+                    self._col_digit.append(None)
+                    self._col_widths.append(nb)
+            self.num_head = nn.Linear(d_model, int(sum(self._col_widths)))
         else:
             self.num_head = None
             self._bin_sizes = []
+            self._col_digit = []
+            self._col_widths = []
 
     def bin_targets(self, num: torch.Tensor) -> torch.Tensor:
         """``num`` [B, slots, W] stored block -> [B, slots, W] long bin-index targets (for the CE loss)."""
@@ -300,17 +356,90 @@ class RangeBinHeads(nn.Module):
         val = self._lo + idx.float() * self._res
         return torch.where(self._is_raw, val, t_symlog(val))
 
+    def _idx_to_block(self, idx: torch.Tensor) -> torch.Tensor:
+        """Map ``[..., W]`` long bin indices to the stored (raw / symlog) numeric block."""
+        val = self._lo + idx.float() * self._res
+        return torch.where(self._is_raw, val, t_symlog(val))
+
+    def decode_num(self, logits: torch.Tensor) -> torch.Tensor:
+        """Packed head logits ``[..., sum(_col_widths)]`` -> stored numeric block ``[..., W]``.
+
+        A BINS column decodes per :attr:`num_decode` (``expected`` = round(softmax.centers), the eval win;
+        ``argmax`` = highest-logit bin). A DIGIT column always joins the per-position argmax digits into the
+        integer (``sum_d digit_d * base**d``), then clamps to the column's range."""
+        cols = torch.split(logits, self._col_widths, dim=-1)
+        idxs: List[torch.Tensor] = []
+        for f, lg in enumerate(cols):
+            nb = int(self._nbins[f].item())
+            dg = self._col_digit[f]
+            if dg is not None:
+                nd, base = dg
+                d_lg = lg.reshape(*lg.shape[:-1], nd, base)
+                digs = d_lg.argmax(dim=-1)                             # [..., nd]
+                idx = torch.zeros(digs.shape[:-1], dtype=torch.long, device=lg.device)
+                for d in range(nd):
+                    idx = idx + digs[..., d] * (base ** d)
+                idx = idx.clamp(0, nb - 1)
+            elif self.num_decode == "expected":
+                centers = torch.arange(nb, device=lg.device, dtype=torch.float32)
+                e = (lg.float().softmax(dim=-1) * centers).sum(dim=-1)
+                idx = e.round().clamp(0, nb - 1).long()
+            else:
+                idx = lg.argmax(dim=-1)
+            idxs.append(idx)
+        return self._idx_to_block(torch.stack(idxs, dim=-1))
+
+    def numeric_field_ce(self, logits: torch.Tensor, num: torch.Tensor, num_targets: str = "hard",
+                         num_loss_norm: str = "none") -> List[torch.Tensor]:
+        """Per-field cross-entropy terms (a list of ``W`` tensors shaped like the present-slot grid).
+
+        A BINS column uses the flat range-bin CE — ``twohot`` against the distance-aware triangular soft
+        target (partial credit for a near miss), ``hard`` against the exact-bin one-hot. A DIGIT column
+        uses the SUM of its per-position digit CEs against the one-hot of the true integer's base-B digits
+        (num_targets does not smear across digit boundaries). ``num_loss_norm="logbins"`` divides each
+        field's term by ``ln(max(n_bins, 2))`` so a wide (~ln n_bins at chance) column and a narrow one
+        contribute comparably instead of the wide column dominating the summed numeric gradient."""
+        cols = torch.split(logits, self._col_widths, dim=-1)
+        centers = self.bin_targets(num)                              # [..., W] true bin idx
+        soft: List[torch.Tensor] = None
+        out: List[torch.Tensor] = []
+        for f, lg in enumerate(cols):
+            nb = int(self._nbins[f].item())
+            c = centers[..., f]                                       # [...] long
+            dg = self._col_digit[f]
+            if dg is not None:
+                nd, base = dg
+                d_lg = lg.reshape(*c.shape, nd, base)
+                ce_f = torch.zeros_like(c, dtype=torch.float32)
+                for d in range(nd):
+                    digit = torch.div(c, base ** d, rounding_mode="floor") % base
+                    ce_d = F.cross_entropy(d_lg[..., d, :].reshape(-1, base), digit.reshape(-1),
+                                           reduction="none").reshape(c.shape)
+                    ce_f = ce_f + ce_d
+            elif num_targets == "twohot":
+                if soft is None:
+                    soft = self.soft_bin_targets(num)
+                ce_f = F.cross_entropy(lg.reshape(-1, nb), soft[f].reshape(-1, nb),
+                                       reduction="none").reshape(c.shape)
+            else:
+                ce_f = F.cross_entropy(lg.reshape(-1, nb), c.reshape(-1),
+                                       reduction="none").reshape(c.shape)
+            if num_loss_norm == "logbins":
+                ce_f = ce_f / math.log(max(nb, 2))
+            out.append(ce_f)
+        return out
+
     def forward(self, h: torch.Tensor) -> Dict[str, torch.Tensor]:
         out: Dict[str, torch.Tensor] = {}
         out["cat"] = [head(h) for head in self.cat_heads]
         if self.num_head is not None:
-            logits = self.num_head(h)                                  # [B, slots, sum_bins]
-            per_field = list(torch.split(logits, self._bin_sizes, dim=-1))
-            out["num_bin_logits"] = per_field
-            # Decode: argmax bin -> integer -> the stored (symlog / raw) block, identical to the MSE head.
-            idxs = torch.stack([f.argmax(dim=-1) for f in per_field], dim=-1)  # [B, slots, W]
-            val = (self._lo + idxs.float() * self._res)
-            out["num"] = torch.where(self._is_raw, val, t_symlog(val))
+            logits = self.num_head(h)                                  # [B, slots, sum(_col_widths)]
+            out["num_logits"] = logits
+            # Back-compat surface: expose per-field FLAT bin logits when every column is a bins column
+            # (the pre-digit contract the loss/diagnostic/tests consumed). Absent in digit mode.
+            if not any(d is not None for d in self._col_digit):
+                out["num_bin_logits"] = list(torch.split(logits, self._col_widths, dim=-1))
+            out["num"] = self.decode_num(logits)
         if self.presence_head is not None:
             out["presence"] = self.presence_head(h).squeeze(-1)
         if self.kw_head is not None:
@@ -512,7 +641,8 @@ class SetExpert(nn.Module):
     def __init__(self, name: str, type_names: List[str], latent_width: int, d_model: int,
                  static_tables: Dict[str, np.ndarray], cat_dim: int = 24, n_heads: int = 4,
                  enc_layers: int = 2, dec_layers: int = 2, pool_layers: int = 1, pool_latents: int = 4,
-                 n_mem: int = 6, ff_mult: int = 2, simnorm_group: int = 8, qk_norm: bool = True):
+                 n_mem: int = 6, ff_mult: int = 2, simnorm_group: int = 8, qk_norm: bool = True,
+                 num_head: str = "bins", num_decode: str = "expected"):
         super().__init__()
         if latent_width % simnorm_group != 0:
             raise ValueError(f"{name} latent_width {latent_width} not divisible by simnorm_group "
@@ -524,6 +654,8 @@ class SetExpert(nn.Module):
         self.d_model = d_model
         self.n_mem = n_mem
         self.qk_norm = qk_norm
+        self.num_head_mode = num_head
+        self.num_decode = num_decode
         self.embedders = nn.ModuleDict(
             {t.name: _TypeEmbedder(t, d_model, cat_dim, static_tables) for t in self.types})
         self.enc_type_emb = nn.Embedding(len(self.types), d_model)
@@ -568,7 +700,9 @@ class SetExpert(nn.Module):
             dec_layer = nn.TransformerDecoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
                                                    batch_first=True, norm_first=True, activation="gelu")
             self.dec_trunk = nn.TransformerDecoder(dec_layer, dec_layers)
-        self.heads = nn.ModuleDict({t.name: RangeBinHeads(t, d_model) for t in self.types})
+        self.heads = nn.ModuleDict(
+            {t.name: RangeBinHeads(t, d_model, num_head=num_head, num_decode=num_decode)
+             for t in self.types})
         self._offsets: Dict[str, Tuple[int, int]] = {}
         off = 0
         for t in self.types:

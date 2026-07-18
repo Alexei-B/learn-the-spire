@@ -25,7 +25,8 @@ from lts2_agent.wm import report
 from lts2_agent.wm import spec as S
 from lts2_agent.wm.decoder import reconstruct_arrays
 from lts2_agent.wm.encoder import simnorm
-from lts2_agent.wm.experts import EXPERT_ORDER, EXPERT_TYPES, ScalarCodec
+from lts2_agent.wm.experts import (DIGIT_BASE, DIGIT_MIN_BINS, EXPERT_ORDER, EXPERT_TYPES,
+                                   RangeBinHeads, ScalarCodec, t_symlog)
 
 # Reuse the synthetic state/batch builders from the monolith test module.
 from tests.test_wm_encdec import _batch, _state
@@ -870,3 +871,175 @@ def test_mono_arch_unchanged_default_state_dict():
     assert ka.keys() == kb.keys()
     for k in ka:
         assert torch.equal(ka[k], kb[k])
+
+
+# ==================================================================================================
+# Cross-expert numeric fix (roadmap M3.5): eval decode mode, per-field loss norm, digit heads, n_mem.
+# ==================================================================================================
+
+def _perfect_num_logits(head: RangeBinHeads, centers: torch.Tensor) -> torch.Tensor:
+    """Packed head logits that put all mass on the true bin/digits of ``centers`` ([..., W] long)."""
+    import torch.nn.functional as F
+    parts = []
+    for f in range(len(head.num_cols)):
+        nb = int(head._nbins[f].item())
+        c = centers[..., f]
+        dg = head._col_digit[f]
+        if dg is not None:
+            nd, base = dg
+            dparts = []
+            for d in range(nd):
+                digit = torch.div(c, base ** d, rounding_mode="floor") % base
+                dparts.append(F.one_hot(digit, base).float() * 30.0)
+            parts.append(torch.cat(dparts, dim=-1))
+        else:
+            parts.append(F.one_hot(c, nb).float() * 30.0)
+    return torch.cat(parts, dim=-1)
+
+
+def test_digit_head_roundtrip_full_range_including_negatives():
+    # power `amount` spans -30..250 (281 bins > DIGIT_MIN_BINS) -> a base-10, 3-digit column. Getting the
+    # negative offset right is the crux: bin index = value - lo, decoded back must recover the exact
+    # integer for EVERY value in the range, negatives included.
+    head = RangeBinHeads(S.TYPE_BY_NAME["power"], 32, num_head="digits", num_decode="argmax")
+    assert head._col_digit[0] is not None
+    nd, base = head._col_digit[0]
+    assert base == DIGIT_BASE and base ** nd >= 281 and base ** (nd - 1) < 281
+    r = S.NUMERIC_RANGES["power"]["amount"]
+    assert r.n_bins > DIGIT_MIN_BINS
+    vals = torch.arange(r.lo, r.hi + 1)                       # full integer range incl negatives
+    num = t_symlog(vals.float()).reshape(-1, 1, 1)           # symlog-stored (amount is not a raw col)
+    centers = head.bin_targets(num)
+    assert torch.equal(centers[..., 0].reshape(-1), (vals - r.lo))   # offset correct
+    logits = _perfect_num_logits(head, centers)
+    block = head.decode_num(logits)
+    dec = (torch.sign(block) * torch.expm1(block.abs())).round().reshape(-1).long()
+    assert torch.equal(dec, vals), "digit decode did not recover the exact integer across the full range"
+    # Perfect digit logits -> ~0 per-digit CE (twohot degenerates to per-digit one-hot for a digit column).
+    ce = head.numeric_field_ce(logits, num, num_targets="twohot", num_loss_norm="none")
+    assert float(torch.stack(ce).mean()) < 1e-3
+
+
+def test_decode_mode_argmax_vs_expected_on_synthetic_logits():
+    # A diffuse two-hot-style distribution: argmax grabs the higher-mass neighbour, expected-bin decode
+    # rounds the mass-weighted mean. A symmetric triangular distribution recovers the exact centre both ways.
+    exp = RangeBinHeads(S.TYPE_BY_NAME["power"], 16, num_head="bins", num_decode="expected")
+    arg = RangeBinHeads(S.TYPE_BY_NAME["power"], 16, num_head="bins", num_decode="argmax")
+    nb = int(exp._nbins[0].item())
+    lo = float(exp._lo[0].item())
+
+    def to_bin(block):
+        v = (torch.sign(block) * torch.expm1(block.abs())).round()
+        return int((v[0, 0, 0] - lo))
+
+    a = 40
+    p = torch.zeros(1, 1, nb); p[0, 0, a] = 0.4; p[0, 0, a + 2] = 0.6    # mean a+1.2, mode a+2
+    logits = (p + 1e-9).log()
+    assert to_bin(arg.decode_num(logits)) == a + 2                       # argmax = highest-mass bin
+    assert to_bin(exp.decode_num(logits)) == a + 1                       # expected = round(mean)
+    p2 = torch.zeros(1, 1, nb); p2[0, 0, a - 1] = 0.25; p2[0, 0, a] = 0.5; p2[0, 0, a + 1] = 0.25
+    l2 = (p2 + 1e-9).log()
+    assert to_bin(arg.decode_num(l2)) == a and to_bin(exp.decode_num(l2)) == a   # symmetric: both exact
+
+
+def test_num_loss_norm_logbins_divides_each_field_by_log_nbins():
+    import math
+    head = RangeBinHeads(S.TYPE_BY_NAME["card"], 24, num_head="bins")
+    B, slots = 2, 3
+    num = torch.zeros(B, slots, len(head.num_cols))          # valid in-range targets (bin = -lo)
+    torch.manual_seed(0)
+    logits = torch.randn(B, slots, int(sum(head._col_widths)))
+    none = head.numeric_field_ce(logits, num, num_targets="hard", num_loss_norm="none")
+    logb = head.numeric_field_ce(logits, num, num_targets="hard", num_loss_norm="logbins")
+    for f in range(len(head.num_cols)):
+        nb = int(head._nbins[f].item())
+        assert torch.allclose(logb[f], none[f] / math.log(max(nb, 2)), atol=1e-6), f
+
+
+def test_compute_losses_num_loss_norm_changes_numeric_term():
+    torch.manual_seed(0)
+    m = _small()
+    batch = _batch([_state(n_hand=2, n_enemies=2), _state(n_enemies=1)])
+    _z, out = m(batch)
+    none = MF.compute_losses(batch, out, m, num_loss_norm="none")
+    logb = MF.compute_losses(batch, out, m, num_loss_norm="logbins")
+    assert all(torch.isfinite(v) for v in logb.values())
+    assert float(none["loss_numeric"]) != float(logb["loss_numeric"])   # same logits, rescaled fields
+
+
+def test_expert_overrides_n_mem_plumbs_and_roundtrips(tmp_path):
+    # --expert-n-mem lands as expert_overrides[name]["n_mem"], sizing that expert's decoder memory + the
+    # from_slice projection, and round-trips through the per-expert stamp (like dec_layers).
+    m = MF.FactoredWorldModelAE(
+        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
+        cat_dim=16, slice_widths=dict(_TEST_WIDTHS), expert_overrides={"orbs": {"n_mem": 9}})
+    assert m.experts["orbs"].n_mem == 9 and m.experts["cards"].n_mem == 4
+    assert m.experts["orbs"].from_slice.out_features == 9 * 64
+    path = str(tmp_path / "nmem.pt")
+    MF.save_checkpoint(path, m, step=1)
+    meta = MF.read_meta(path)
+    assert meta["experts"]["orbs"]["config"]["n_mem"] == 9
+    loaded, _ = MF.load_checkpoint(path, "cpu")
+    assert loaded.experts["orbs"].n_mem == 9 and loaded.experts["cards"].n_mem == 4
+
+
+def test_old_checkpoint_without_num_head_keys_loads_as_bins_argmax(tmp_path):
+    # Backward compat (hard requirement): a checkpoint predating the numeric fix has neither num_head nor
+    # num_decode in its meta. The loader must rebuild the flat "bins" head + "argmax" decode and load the
+    # old state_dict byte-identically.
+    import json
+    torch.manual_seed(1)
+    m = _small()                                            # defaults: bins head, expected decode
+    path = str(tmp_path / "old.pt")
+    MF.save_checkpoint(path, m, step=2)
+    with open(path + ".meta.json") as f:
+        meta = json.load(f)
+    del meta["config"]["num_head"]; del meta["config"]["num_decode"]
+    for st in meta["experts"].values():
+        st["config"].pop("num_head", None); st["config"].pop("num_decode", None)
+    with open(path + ".meta.json", "w") as f:
+        json.dump(meta, f)
+    loaded, _ = MF.load_checkpoint(path, "cpu")
+    assert loaded.cfg["num_head"] == "bins" and loaded.cfg["num_decode"] == "argmax"
+    src, dst = m.state_dict(), loaded.state_dict()
+    assert src.keys() == dst.keys()
+    for k in src:
+        assert torch.equal(src[k], dst[k]), k
+
+
+def test_digit_head_model_roundtrip_and_meta(tmp_path):
+    m = MF.FactoredWorldModelAE(
+        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
+        cat_dim=16, slice_widths=dict(_TEST_WIDTHS), num_head="digits")
+    ch = m.experts["creature-stats"].heads["creature"]
+    assert any(d is not None for d in ch._col_digit)          # currentHp/maxHp (1000+ bins) -> digit heads
+    path = str(tmp_path / "dig.pt")
+    MF.save_checkpoint(path, m, step=3)
+    meta = MF.read_meta(path)
+    assert meta["config"]["num_head"] == "digits"
+    assert meta["experts"]["creature-stats"]["config"]["num_head"] == "digits"
+    loaded, _ = MF.load_checkpoint(path, "cpu")
+    assert loaded.cfg["num_head"] == "digits"
+    src, dst = m.state_dict(), loaded.state_dict()
+    assert src.keys() == dst.keys()
+    for k in src:
+        assert torch.equal(src[k], dst[k]), k
+    # forward: a digit-carrying head decodes `num` but exposes no flat per-field `num_bin_logits`.
+    batch = _batch([_state(n_enemies=2)])
+    with torch.no_grad():
+        _z, out = loaded(batch)
+    assert "num" in out["creature"] and "num_bin_logits" not in out["creature"]
+    assert "num_logits" in out["creature"]
+
+
+def test_digit_head_compute_losses_finite_both_targets():
+    torch.manual_seed(0)
+    m = MF.FactoredWorldModelAE(
+        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
+        cat_dim=16, slice_widths=dict(_TEST_WIDTHS), num_head="digits")
+    batch = _batch([_state(n_hand=2, n_enemies=2), _state(n_enemies=1)])
+    _z, out = m(batch)
+    for nt in ("hard", "twohot"):
+        for norm in ("none", "logbins"):
+            losses = MF.compute_losses(batch, out, m, num_targets=nt, num_loss_norm=norm)
+            assert all(torch.isfinite(v) for v in losses.values()), (nt, norm)

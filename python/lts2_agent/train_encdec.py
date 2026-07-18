@@ -214,6 +214,30 @@ def main() -> int:
                          "distance-aware symmetric triangular target that rewards near-miss bins "
                          "(restores the numeric metric structure — the M3.5 solo-dynamics fix); 'hard' is "
                          "the legacy one-hot CE (no partial credit). Decode stays argmax either way.")
+    ap.add_argument("--factored-num-head", default="bins", choices=["bins", "digits"],
+                    help="factored arch only: numeric HEAD layout. 'bins' (default) is one flat softmax "
+                         "over each column's full integer range; 'digits' replaces every WIDE column "
+                         "(>64 bins, e.g. damage/HP) with base-10 positional digit heads (hundreds/tens/"
+                         "ones), the structural fix for wide-column reconstruction. Narrow columns stay "
+                         "flat bins either way. Stamped in checkpoint meta; old checkpoints load as 'bins'. "
+                         "NOTE: distinct from the mono-only --num-head {mse,twohot}.")
+    ap.add_argument("--num-decode", default="expected", choices=["argmax", "expected"],
+                    help="factored arch only: eval/report decode of a BINS numeric column. 'expected' "
+                         "(default) decodes round(sum softmax(logits)*bin) — a two-hot-trained head's "
+                         "EXPECTATION sits on the true value while its argmax often lands one bin off, so "
+                         "expected-bin decode nearly doubles the measured exact rate on wide columns. "
+                         "'argmax' is the legacy highest-logit bin. Digit columns always join per-digit "
+                         "argmax. Stamped in meta; old checkpoints load as 'argmax' (their historical "
+                         "decode).")
+    ap.add_argument("--num-loss-norm", default="none", choices=["none", "logbins"],
+                    help="factored arch only: per-field numeric-CE normalization. 'none' (default, "
+                         "byte-identical) sums raw CEs so a 1001-bin field dominates the numeric gradient; "
+                         "'logbins' divides each field's CE by ln(n_bins) so every numeric column "
+                         "contributes comparably.")
+    ap.add_argument("--expert-n-mem", action="append", default=None, metavar="NAME=K",
+                    help="factored only: override an expert's decoder memory-token count (SetExpert n_mem, "
+                         "default 6), e.g. --expert-n-mem creature-stats=12 (repeatable). Stamped per "
+                         "expert in checkpoint meta (expert_overrides) so save/load/compose round-trip it.")
     ap.add_argument("--qk-norm", action=argparse.BooleanOptionalAction, default=True,
                     help="factored arch only: per-head QK LayerNorm in the expert attention trunks "
                          "(Wortsman et al. 2023 fix (a)). Default ON for new runs — it bounds the "
@@ -353,11 +377,23 @@ def main() -> int:
             raise SystemExit(f"--data {args.data!r}: no synthetic generator for {unknown}; "
                              f"choose from {sorted(SY._FILLERS)}")
     if factored:
-        relic_overrides = ({"relics": {"dec_layers": args.relic_dec_layers}}
-                           if args.relic_dec_layers != 1 else None)
+        # Per-expert construction overrides: relic decoder depth + repeatable --expert-n-mem N=K.
+        expert_overrides: Dict[str, Dict[str, Any]] = {}
+        if args.relic_dec_layers != 1:
+            expert_overrides.setdefault("relics", {})["dec_layers"] = args.relic_dec_layers
+        for item in (args.expert_n_mem or []):
+            if "=" not in item:
+                raise SystemExit(f"--expert-n-mem entry {item!r} must be NAME=K")
+            name, k = item.split("=", 1)
+            name = name.strip()
+            if name not in MF.DEFAULT_SLICE_WIDTHS:
+                raise SystemExit(f"--expert-n-mem: unknown expert {name!r}; "
+                                 f"choose from {sorted(MF.DEFAULT_SLICE_WIDTHS)}")
+            expert_overrides.setdefault(name, {})["n_mem"] = int(k)
         model = MF.FactoredWorldModelAE(slice_widths=_slice_width_overrides(args), d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
                                         simnorm_group=args.simnorm_group, qk_norm=args.qk_norm,
-                                        expert_overrides=relic_overrides).to(device)
+                                        num_head=args.factored_num_head, num_decode=args.num_decode,
+                                        expert_overrides=expert_overrides or None).to(device)
         if train_active is not None:
             unknown = [n for n in train_active if n not in model.experts]
             if unknown:
@@ -439,7 +475,8 @@ def main() -> int:
     def loss_fn(batch_, out_, active=None):
         if factored:
             return MF.compute_losses(batch_, out_, model, balance=args.loss_balance, active=active,
-                                      num_targets=args.num_targets, z_weight=args.z_loss)
+                                      num_targets=args.num_targets, num_loss_norm=args.num_loss_norm,
+                                      z_weight=args.z_loss)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.

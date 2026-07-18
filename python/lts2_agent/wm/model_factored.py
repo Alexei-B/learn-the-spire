@@ -59,7 +59,8 @@ class FactoredWorldModelAE(nn.Module):
                  pool_layers: int = 1, pool_latents: int = 4, n_mem: int = 6, cat_dim: int = 24,
                  simnorm_group: int = 8, slice_widths: Optional[Dict[str, int]] = None,
                  expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
-                 static_tables: Optional[Dict[str, np.ndarray]] = None, qk_norm: bool = True):
+                 static_tables: Optional[Dict[str, np.ndarray]] = None, qk_norm: bool = True,
+                 num_head: str = "bins", num_decode: str = "expected"):
         super().__init__()
         widths = dict(DEFAULT_SLICE_WIDTHS)
         if slice_widths:
@@ -71,19 +72,27 @@ class FactoredWorldModelAE(nn.Module):
         # reconstruct the right trunk architecture; an OLD checkpoint's meta has NO qk_norm key, which
         # load_checkpoint reads as qk_norm=False (stock trunks) so it loads byte-identically.
         self.qk_norm = qk_norm
-        # Per-expert construction-kwarg overrides (e.g. a deeper relic decoder) — stamped in cfg so
-        # save/load/compose reconstruct the exact per-expert architecture.
+        # Numeric HEAD layout ("bins" | "digits") + eval DECODE mode ("argmax" | "expected"), model-wide
+        # and stamped in cfg (below) so save/load/compose reconstruct the right head shape and decode. Old
+        # checkpoints have neither key: load_checkpoint defaults them to "bins"/"argmax" so they rebuild the
+        # flat head and reproduce their historically-reported (argmax) metrics byte-identically.
+        self.num_head = num_head
+        self.num_decode = num_decode
+        # Per-expert construction-kwarg overrides (e.g. a deeper relic decoder, a per-expert n_mem A/B) —
+        # stamped in cfg so save/load/compose reconstruct the exact per-expert architecture.
         self.expert_overrides = {k: dict(v) for k, v in (expert_overrides or {}).items()}
         self.cfg = dict(d_model=d_model, n_heads=n_heads, enc_layers=enc_layers, dec_layers=dec_layers,
                         pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem, cat_dim=cat_dim,
                         simnorm_group=simnorm_group, slice_widths=widths, qk_norm=qk_norm,
+                        num_head=num_head, num_decode=num_decode,
                         expert_overrides=self.expert_overrides)
         if static_tables is None:
             static_tables = _static_tables()
         self.scalars = E.ScalarCodec()
         common = dict(d_model=d_model, static_tables=static_tables, cat_dim=cat_dim, n_heads=n_heads,
                       pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem,
-                      simnorm_group=simnorm_group, qk_norm=qk_norm)
+                      simnorm_group=simnorm_group, qk_norm=qk_norm, num_head=num_head,
+                      num_decode=num_decode)
         # The structurally-rich categories get the full encoder/decoder depth; the small single-type
         # experts (relics/potions/orbs — a flat catalog id + at most two numerics) get 1 enc / 1 dec layer,
         # so their parameter budget matches their content instead of replicating a deep transformer. The
@@ -170,7 +179,8 @@ class FactoredWorldModelAE(nn.Module):
                                "cat_dim": self.cfg["cat_dim"], "simnorm_group": self.cfg["simnorm_group"],
                                "pool_layers": self.cfg["pool_layers"],
                                "pool_latents": self.cfg["pool_latents"], "n_mem": self.cfg["n_mem"],
-                               "qk_norm": self.cfg["qk_norm"]}
+                               "qk_norm": self.cfg["qk_norm"], "num_head": self.cfg["num_head"],
+                               "num_decode": self.cfg["num_decode"]}
         cfg.update(self.expert_overrides.get(name, {}))
         return {"name": name, "slice": [a, b], "width": b - a,
                 "tokenizer_signature": tokens.tokenizer_signature(), "config": cfg,
@@ -224,6 +234,7 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                    balance: str = "term",
                    active: Optional[Iterable[str]] = None,
                    num_targets: str = "hard",
+                   num_loss_norm: str = "none",
                    z_weight: float = 0.0) -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
     range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
@@ -239,8 +250,13 @@ def compute_losses(batch: Dict[str, torch.Tensor],
     ``num_targets`` picks the range-bin target geometry: ``"hard"`` (legacy) is one-hot CE on the exact
     bin — no partial credit for a near-miss, which loses the numeric metric structure; ``"twohot"`` is a
     distance-aware symmetric triangular target (:meth:`experts.RangeBinHeads.soft_bin_targets`) that
-    rewards nearby-bin predictions, restoring the ordinal geometry (the M3.5 solo-dynamics fix). Decode
-    is unchanged (argmax → exact bin) in both.
+    rewards nearby-bin predictions, restoring the ordinal geometry (the M3.5 solo-dynamics fix). A DIGIT
+    column (num_head="digits") ignores this and always uses a per-digit one-hot CE.
+
+    ``num_loss_norm`` scales the per-field numeric CE before the fields are averaged: ``"none"`` (default,
+    byte-identical to prior behavior) sums raw CEs, so a 1001-bin field (~ln 1001 = 6.9 at chance)
+    dominates the summed numeric gradient over a converged narrow field (~0); ``"logbins"`` divides each
+    field's CE by ``ln(max(n_bins, 2))`` so every numeric column contributes comparably.
 
     ``balance`` controls gradient allocation across experts:
     - ``"term"`` (legacy): every loss term weighs equally, so an expert's gradient share scales with
@@ -286,21 +302,12 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                     if z_weight > 0.0:
                         lse = torch.logsumexp(logits, dim=-1)        # [B, slots] log-partition
                         _tag(ename, zloss_terms, _masked_mean(lse.pow(2), mask))
-            if "num_bin_logits" in o:
+            if "num_logits" in o:
                 head: E.RangeBinHeads = ex.heads[t.name]
-                field_ce = []
-                if num_targets == "twohot":
-                    soft = head.soft_bin_targets(batch[t.num_key])      # list W of [B, slots, n_bins_f]
-                    for f, logits in enumerate(o["num_bin_logits"]):
-                        ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
-                                             soft[f].reshape(-1, soft[f].shape[-1]), reduction="none")
-                        field_ce.append(ce.reshape(logits.shape[:-1]))
-                else:
-                    tgt_bins = head.bin_targets(batch[t.num_key])       # [B, slots, W]
-                    for f, logits in enumerate(o["num_bin_logits"]):
-                        ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
-                                             tgt_bins[..., f].reshape(-1), reduction="none")
-                        field_ce.append(ce.reshape(tgt_bins.shape[:-1]))
+                # Per-field CE (bins twohot/hard, or per-digit one-hot for a digit column), optionally
+                # log-bins-normalized so a wide column doesn't dominate — all centralized in the head.
+                field_ce = head.numeric_field_ce(o["num_logits"], batch[t.num_key],
+                                                 num_targets=num_targets, num_loss_norm=num_loss_norm)
                 ce = torch.stack(field_ce, dim=0).mean(dim=0)           # [B, slots]
                 _tag(ename, num_terms, _masked_mean(ce, mask))
             if t.has_kw:
@@ -412,6 +419,11 @@ def load_checkpoint(path: str, device="cpu") -> Tuple[FactoredWorldModelAE, dict
     # Default it to False so the stock trunks are rebuilt and the old state_dict loads byte-identically.
     config = dict(meta["config"])
     config.setdefault("qk_norm", False)
+    # Numeric head layout / decode mode (roadmap M3.5): a checkpoint predating the cross-expert numeric fix
+    # has neither key. Default to the historical behavior — flat "bins" head, "argmax" eval decode — so the
+    # old state_dict loads byte-identically and its reported metrics reproduce exactly.
+    config.setdefault("num_head", "bins")
+    config.setdefault("num_decode", "argmax")
     m = FactoredWorldModelAE(**config)
     got_layout = m.slice_layout_list()
     if meta.get("slice_layout") != got_layout:
@@ -451,13 +463,21 @@ def init_expert_from(m: FactoredWorldModelAE, name: str, src_path: str, device="
             raise ValueError(f"--init-expert-from {name}: source slice width {src_stamp.get('width')} "
                              f"!= target {my_stamp['width']}.")
         # A qk_norm difference is TOLERATED here: it only changes the attention trunk, which the graceful
-        # loader skips (non-trunk weights still warm-start across the fix). Every OTHER config key must
-        # match — those govern shapes the non-trunk copy depends on.
-        src_cfg = {k: v for k, v in (src_stamp.get("config") or {}).items() if k != "qk_norm"}
-        my_cfg = {k: v for k, v in my_stamp["config"].items() if k != "qk_norm"}
+        # loader skips (non-trunk weights still warm-start across the fix). num_decode is a pure EVAL knob
+        # (no weights), so it is tolerated too. num_head DOES change the numeric-head Linear shape, so it is
+        # checked separately below (missing key == the historical flat "bins" head). Every OTHER config key
+        # must match — those govern shapes the non-trunk copy depends on.
+        _skip = ("qk_norm", "num_decode", "num_head")
+        src_cfg = {k: v for k, v in (src_stamp.get("config") or {}).items() if k not in _skip}
+        my_cfg = {k: v for k, v in my_stamp["config"].items() if k not in _skip}
         if src_cfg != my_cfg:
             raise ValueError(f"--init-expert-from {name}: source expert config {src_stamp.get('config')} "
                              f"!= target {my_stamp['config']} (architecture differs).")
+        src_nh = (src_stamp.get("config") or {}).get("num_head", "bins")
+        my_nh = my_stamp["config"].get("num_head", "bins")
+        if src_nh != my_nh:
+            raise ValueError(f"--init-expert-from {name}: source numeric head layout {src_nh!r} != target "
+                             f"{my_nh!r} (the num_head Linear shape differs — cannot warm-start).")
     src_state = torch.load(src_path, map_location=device)
     m.load_expert_from_state_dict(name, src_state)
     return src_stamp or my_stamp
