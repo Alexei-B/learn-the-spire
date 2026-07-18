@@ -27,6 +27,7 @@ Pipeline (leading batch dim ``B`` throughout):
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List
 
 import numpy as np
@@ -35,6 +36,39 @@ import torch.nn as nn
 
 from .. import catalog, tokens
 from . import spec as S
+
+# --------------------------------------------------------------------------------------------------
+# Numeric INPUT featurization (roadmap M3.5 cross-expert numeric fix, INPUT half).
+#
+# WHY: numerics enter the encoder as ONE symlog float per column. symlog(500) vs symlog(501) differ by
+# ~0.002 in a single dimension, so large-value precision is lost at the INPUT — the latent never receives
+# the resolution the digit OUTPUT heads try (and fail) to emit. `num_input` optionally ADDS a
+# high-resolution featurization of each numeric column ALONGSIDE the (kept) symlog float:
+#   * "symlog" (default): unchanged — one symlog float per column, byte-identical to the pre-featurization
+#     model (no extra params, in_dim unchanged).
+#   * "digits": each ranged (non-flag) column additionally enters as base-`_DIGIT_BASE` per-digit learned
+#     embeddings — SAME digit decomposition the e03b289 RangeBinHeads output heads use (bin index =
+#     round((symexp(stored)-lo)/res), offset by the column's value-lo so negatives work; n_digits the
+#     smallest nd with base**nd >= n_bins). The per-digit embeddings are concatenated into the projection
+#     input next to the symlog float.
+#   * "fourier": each ranged column additionally enters as sin/cos at `_FOURIER_MAX_K` geometrically-spaced
+#     frequencies chosen from its range (finest wavelength ~2 resolves resolution 1, coarsest ~4*span),
+#     projected by a per-type linear that is ADDED to the token embedding.
+#   * "both": digits + fourier.
+# Everything is derived from the STORED symlog float via the exact symexp->round the RangeBinHeads target
+# already uses, so no tokenizer / cache / generator change is needed — a real-cache batch and a synth batch
+# featurize identically. Flag columns (n_bins <= 2) and columns with no measured range are left as-is.
+NUM_INPUT_MODES = ("symlog", "digits", "fourier", "both")
+_DIGIT_BASE = 10        # base-10 digits — matches experts.DIGIT_BASE (the output-head convention)
+_DIGIT_EMB_DIM = 8      # learned embedding dim per digit position (small)
+_FOURIER_MAX_K = 8      # cap on the number of geometrically-spaced sin/cos frequencies per column
+
+# The tokenizer's numeric column names per type (mirrors experts._num_cols; kept here to avoid importing
+# experts, which imports this module). Only these types carry a numeric block that has measured ranges.
+_NUM_COLS: Dict[str, List[str]] = {
+    "card": tokens.CARD_NUM, "creature": tokens.CREATURE_NUM, "power": tokens.POWER_NUM,
+    "intent": tokens.INTENT_NUM, "orb": tokens.ORB_NUM,
+}
 
 
 def simnorm(z: torch.Tensor, group: int) -> torch.Tensor:
@@ -61,12 +95,21 @@ class _MultiEmbed(nn.Module):
 
 
 class _TypeEmbedder(nn.Module):
-    """Projects one token type's arrays to ``d_model`` (cat embeddings ++ static row ++ numeric ++ kw)."""
+    """Projects one token type's arrays to ``d_model`` (cat embeddings ++ static row ++ numeric ++ kw).
+
+    ``num_input`` (default ``"symlog"`` == byte-identical prior behavior) optionally ADDS a
+    high-resolution featurization of each ranged numeric column derived from the stored symlog float — see
+    :data:`NUM_INPUT_MODES`. Digit embeddings are concatenated into the projection input; a fourier block
+    is projected by a per-type linear ADDED to the token embedding. Flag / no-range columns are untouched.
+    """
 
     def __init__(self, tspec: S.TypeSpec, d_model: int, cat_dim: int,
-                 static_tables: Dict[str, np.ndarray]):
+                 static_tables: Dict[str, np.ndarray], num_input: str = "symlog"):
         super().__init__()
+        if num_input not in NUM_INPUT_MODES:
+            raise ValueError(f"num_input {num_input!r} not in {NUM_INPUT_MODES}")
         self.spec = tspec
+        self.num_input = num_input
         self.cat = _MultiEmbed([v for _, v in tspec.cat_cols], cat_dim) if tspec.cat_cols else None
         static_dim = 0
         if tspec.has_static:
@@ -76,8 +119,98 @@ class _TypeEmbedder(nn.Module):
         else:
             self.static = None
         kw_dim = tokens.KW_BUCKETS if tspec.has_kw else 0
-        in_dim = (cat_dim if tspec.cat_cols else 0) + static_dim + tspec.num_width + kw_dim
+
+        # Numeric-input featurization: which columns get it, and its extra input width.
+        self._use_digits = num_input in ("digits", "both")
+        self._use_fourier = num_input in ("fourier", "both")
+        self._feat_meta: List[Dict] = self._build_feat_meta(tspec) if (self._use_digits or
+                                                                        self._use_fourier) else []
+        digit_dim = 0
+        if self._use_digits and self._feat_meta:
+            # One ModuleList of ``nd`` base-embeddings per featurized column (nested so a column's digit
+            # positions stay grouped). Concatenated into the projection input alongside the symlog float.
+            self.digit_embs = nn.ModuleList(
+                nn.ModuleList(nn.Embedding(_DIGIT_BASE, _DIGIT_EMB_DIM) for _ in range(m["nd"]))
+                for m in self._feat_meta)
+            digit_dim = sum(m["nd"] * _DIGIT_EMB_DIM for m in self._feat_meta)
+        if self._use_fourier and self._feat_meta:
+            fourier_dim = 0
+            for j, m in enumerate(self._feat_meta):
+                # Geometric wavelengths from ~4*span down to ~2 (Nyquist for integer resolution 1).
+                self.register_buffer(f"_fourier_freq_{j}", self._fourier_freqs(m["nbins"]),
+                                     persistent=False)
+                fourier_dim += 2 * int(getattr(self, f"_fourier_freq_{j}").numel())
+            self.fourier_proj = nn.Linear(fourier_dim, d_model)
+
+        in_dim = (cat_dim if tspec.cat_cols else 0) + static_dim + tspec.num_width + kw_dim + digit_dim
         self.proj = nn.Linear(in_dim, d_model)
+
+    # -- featurization spec ------------------------------------------------------------------------
+    @staticmethod
+    def _build_feat_meta(tspec: S.TypeSpec) -> List[Dict]:
+        """Per featurized numeric column: its index into the num block + range params + digit count. A
+        column is featurized iff it has a measured range with > 2 bins (flags / no-range columns are not).
+        The bin mapping (``round((symexp(stored)-lo)/res)``) is IDENTICAL to experts.RangeBinHeads."""
+        meta: List[Dict] = []
+        for f, col in enumerate(_NUM_COLS.get(tspec.name, [])):
+            rng = S.NUMERIC_RANGES.get(tspec.name, {}).get(col)
+            if rng is None or rng.n_bins <= 2:
+                continue
+            nd = 1
+            while _DIGIT_BASE ** nd < rng.n_bins:
+                nd += 1
+            meta.append({"f": f, "col": col, "lo": rng.lo, "res": rng.resolution,
+                         "nbins": rng.n_bins, "nd": nd})
+        return meta
+
+    @staticmethod
+    def _fourier_freqs(nbins: int) -> torch.Tensor:
+        """Angular frequencies for the value offset ``0..nbins-1``: geometrically spaced wavelengths from
+        ~4*span (coarsest) down to ~2 (finest, resolves resolution 1), capped at :data:`_FOURIER_MAX_K`."""
+        span = max(1, nbins - 1)
+        lam_max, lam_min = 4.0 * span, 2.0
+        k = min(_FOURIER_MAX_K, max(1, int(math.ceil(math.log2(lam_max / lam_min))) + 1))
+        if k == 1:
+            lambdas = [lam_max]
+        else:
+            lambdas = [lam_max * (lam_min / lam_max) ** (i / (k - 1)) for i in range(k)]
+        return torch.tensor([2.0 * math.pi / lam for lam in lambdas], dtype=torch.float32)
+
+    # -- exact recovery of the integer bin from the stored symlog float ----------------------------
+    def _bins(self, num: torch.Tensor) -> List[torch.Tensor]:
+        """``num`` [..., W] stored block -> list over featurized cols of [...] long bin indices. Uses the
+        exact ``round(symexp(.))`` inverse of the tokenizer's symlog (ranged columns are never raw), so the
+        recovered integer is exact for any in-range value including negatives — the same mapping the output
+        heads bin against."""
+        out: List[torch.Tensor] = []
+        for m in self._feat_meta:
+            col = num[..., m["f"]]
+            v = torch.round(torch.sign(col) * torch.expm1(torch.abs(col)))
+            b = torch.round((v - m["lo"]) / m["res"]).clamp(0, m["nbins"] - 1).long()
+            out.append(b)
+        return out
+
+    def digit_features(self, num: torch.Tensor) -> torch.Tensor:
+        """Concatenated per-digit embeddings for every featurized column, shape [..., digit_dim]."""
+        bins = self._bins(num)
+        parts: List[torch.Tensor] = []
+        for j, m in enumerate(self._feat_meta):
+            b = bins[j]
+            for d in range(m["nd"]):
+                digit = torch.div(b, _DIGIT_BASE ** d, rounding_mode="floor") % _DIGIT_BASE
+                parts.append(self.digit_embs[j][d](digit))
+        return torch.cat(parts, dim=-1)
+
+    def fourier_features(self, num: torch.Tensor) -> torch.Tensor:
+        """Concatenated sin/cos features for every featurized column, shape [..., fourier_dim]."""
+        bins = self._bins(num)
+        parts: List[torch.Tensor] = []
+        for j in range(len(self._feat_meta)):
+            o = bins[j].float().unsqueeze(-1)                      # [..., 1] value offset (linear domain)
+            ang = o * getattr(self, f"_fourier_freq_{j}")         # [..., K]
+            parts.append(torch.sin(ang))
+            parts.append(torch.cos(ang))
+        return torch.cat(parts, dim=-1)
 
     def forward(self, idx: torch.Tensor, num: torch.Tensor, kw: torch.Tensor) -> torch.Tensor:
         parts = []
@@ -89,7 +222,13 @@ class _TypeEmbedder(nn.Module):
             parts.append(num)
         if kw is not None:
             parts.append(kw)
-        return self.proj(torch.cat(parts, dim=-1))
+        has_num = num is not None and self.spec.num_width and self._feat_meta
+        if self._use_digits and has_num:
+            parts.append(self.digit_features(num))
+        out = self.proj(torch.cat(parts, dim=-1))
+        if self._use_fourier and has_num:
+            out = out + self.fourier_proj(self.fourier_features(num))
+        return out
 
 
 class _PoolLayer(nn.Module):

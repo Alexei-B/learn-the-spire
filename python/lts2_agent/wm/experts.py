@@ -642,7 +642,7 @@ class SetExpert(nn.Module):
                  static_tables: Dict[str, np.ndarray], cat_dim: int = 24, n_heads: int = 4,
                  enc_layers: int = 2, dec_layers: int = 2, pool_layers: int = 1, pool_latents: int = 4,
                  n_mem: int = 6, ff_mult: int = 2, simnorm_group: int = 8, qk_norm: bool = True,
-                 num_head: str = "bins", num_decode: str = "expected"):
+                 num_head: str = "bins", num_decode: str = "expected", num_input: str = "symlog"):
         super().__init__()
         if latent_width % simnorm_group != 0:
             raise ValueError(f"{name} latent_width {latent_width} not divisible by simnorm_group "
@@ -656,8 +656,10 @@ class SetExpert(nn.Module):
         self.qk_norm = qk_norm
         self.num_head_mode = num_head
         self.num_decode = num_decode
+        self.num_input = num_input
         self.embedders = nn.ModuleDict(
-            {t.name: _TypeEmbedder(t, d_model, cat_dim, static_tables) for t in self.types})
+            {t.name: _TypeEmbedder(t, d_model, cat_dim, static_tables, num_input=num_input)
+             for t in self.types})
         self.enc_type_emb = nn.Embedding(len(self.types), d_model)
         self.parent_emb = nn.Embedding(tokens.MAX_CREATURES, d_model)
         # Always-valid sentinel token: a category can be empty in a sample (no orbs / no potions), which

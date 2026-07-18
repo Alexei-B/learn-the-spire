@@ -1043,3 +1043,155 @@ def test_digit_head_compute_losses_finite_both_targets():
         for norm in ("none", "logbins"):
             losses = MF.compute_losses(batch, out, m, num_targets=nt, num_loss_norm=norm)
             assert all(torch.isfinite(v) for v in losses.values()), (nt, norm)
+
+
+# ==================================================================================================
+# Numeric INPUT featurization (roadmap M3.5 INPUT half): --num-input {symlog,digits,fourier,both}.
+#
+# WHY: numerics enter the encoder as ONE symlog float per column, so symlog(500) vs symlog(501) differ by
+# ~0.002 — large-value precision is lost at the INPUT (the decoder can't emit resolution the latent never
+# received). digits/fourier ADD a high-resolution featurization derived exactly from the stored symlog
+# float (no tokenizer/cache change). 'symlog' (default) is byte-identical to the pre-featurization model.
+# ==================================================================================================
+
+def _num_input_widths():
+    return dict(_TEST_WIDTHS)
+
+
+def test_num_input_featurization_roundtrip_including_negatives():
+    # power `amount` spans -30..250 (281 bins) — the negative-offset case. Exact integer recovery from the
+    # stored symlog float is the contract; digit + fourier features derive deterministically from it.
+    from lts2_agent.wm.encoder import _TypeEmbedder, _DIGIT_BASE, _DIGIT_EMB_DIM
+    st = MF._static_tables()
+    emb = _TypeEmbedder(S.TYPE_BY_NAME["power"], 32, 16, st, num_input="both")
+    assert len(emb._feat_meta) == 1
+    m0 = emb._feat_meta[0]
+    assert m0["col"] == "amount" and m0["lo"] == -30 and m0["nbins"] == 281 and m0["nd"] == 3
+    r = S.NUMERIC_RANGES["power"]["amount"]
+    vals = torch.arange(r.lo, r.hi + 1)                          # -30..250, negatives included
+    num = t_symlog(vals.float()).reshape(-1, 1, 1)               # symlog-stored (amount is not a raw col)
+    bins = emb._bins(num)[0]                                     # [N,1] recovered bin index
+    assert torch.equal(bins.reshape(-1), (vals - r.lo).long())   # exact recovery incl the negative offset
+    # Digit features: nd*_DIGIT_EMB_DIM wide, and exactly the per-digit embedding lookups of the recovered
+    # bins (base-10 digits of the value-lo offset — the output-head convention).
+    df = emb.digit_features(num)
+    assert df.shape[-1] == m0["nd"] * _DIGIT_EMB_DIM
+    parts = [emb.digit_embs[0][d](torch.div(bins, _DIGIT_BASE ** d, rounding_mode="floor") % _DIGIT_BASE)
+             for d in range(m0["nd"])]
+    assert torch.equal(df, torch.cat(parts, dim=-1))
+    # Fourier features: 2*K wide, exactly sin/cos of the offset at the stored geometric frequencies.
+    ff = emb.fourier_features(num)
+    freqs = emb._fourier_freq_0
+    assert ff.shape[-1] == 2 * freqs.numel()
+    ang = (vals - r.lo).float().reshape(-1, 1, 1) * freqs
+    assert torch.allclose(ff, torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1), atol=1e-6)
+
+
+def test_num_input_symlog_is_byte_identical_default():
+    # 'symlog' (the default) adds NO params and leaves the embedder proj shape unchanged — a factored model
+    # built with num_input='symlog' is byte-identical to one built without the flag.
+    from lts2_agent.wm.encoder import _TypeEmbedder
+    st = MF._static_tables()
+    plain = _TypeEmbedder(S.TYPE_BY_NAME["creature"], 32, 16, st)
+    sym = _TypeEmbedder(S.TYPE_BY_NAME["creature"], 32, 16, st, num_input="symlog")
+    assert plain.proj.in_features == sym.proj.in_features
+    assert not sym._feat_meta and not hasattr(sym, "digit_embs") and not hasattr(sym, "fourier_proj")
+
+
+def test_num_input_modes_forward_backward_smoke():
+    # Each mode forwards + backwards on a tiny CPU batch with finite loss and finite grads; the non-symlog
+    # modes add real (differentiable) params over symlog.
+    torch.manual_seed(0)
+    batch = _batch([_state(n_hand=2, n_enemies=2), _state(n_enemies=1)])
+    counts = {}
+    for mode in ("symlog", "digits", "fourier", "both"):
+        m = MF.FactoredWorldModelAE(
+            d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
+            cat_dim=16, slice_widths=_num_input_widths(), num_input=mode)
+        assert m.cfg["num_input"] == mode
+        _z, out = m(batch)
+        losses = MF.compute_losses(batch, out, m, num_targets="twohot")
+        assert all(torch.isfinite(v) for v in losses.values()), mode
+        m.zero_grad()
+        losses["loss"].backward()
+        assert all(p.grad is None or torch.isfinite(p.grad).all() for p in m.parameters()), mode
+        counts[mode] = MF.param_count(m)
+    assert counts["digits"] > counts["symlog"]
+    assert counts["fourier"] > counts["symlog"]
+    assert counts["both"] > counts["digits"] and counts["both"] > counts["fourier"]
+
+
+def test_num_input_model_roundtrip_and_meta(tmp_path):
+    # Meta stamps num_input model-wide + per expert; the reload is byte-identical.
+    m = MF.FactoredWorldModelAE(
+        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
+        cat_dim=16, slice_widths=_num_input_widths(), num_input="both")
+    ce = m.experts["creature-stats"].embedders["creature"]
+    assert hasattr(ce, "digit_embs") and hasattr(ce, "fourier_proj")   # ranged expert got both
+    # relics carry no numeric block -> no featurization params even in 'both'.
+    re = m.experts["relics"].embedders["relic"]
+    assert not re._feat_meta and not hasattr(re, "digit_embs") and not hasattr(re, "fourier_proj")
+    path = str(tmp_path / "ni.pt")
+    MF.save_checkpoint(path, m, step=3)
+    meta = MF.read_meta(path)
+    assert meta["config"]["num_input"] == "both"
+    assert meta["experts"]["creature-stats"]["config"]["num_input"] == "both"
+    loaded, _ = MF.load_checkpoint(path, "cpu")
+    assert loaded.cfg["num_input"] == "both"
+    src, dst = m.state_dict(), loaded.state_dict()
+    assert src.keys() == dst.keys()
+    for k in src:
+        assert torch.equal(src[k], dst[k]), k
+
+
+def test_old_checkpoint_without_num_input_key_loads_as_symlog(tmp_path):
+    # Backward compat (hard requirement): a checkpoint predating this fix has no num_input key. The loader
+    # must default it to 'symlog' and load the old state_dict byte-identically.
+    import json
+    torch.manual_seed(1)
+    m = _small()                                                 # default num_input='symlog'
+    path = str(tmp_path / "old.pt")
+    MF.save_checkpoint(path, m, step=2)
+    with open(path + ".meta.json") as f:
+        meta = json.load(f)
+    del meta["config"]["num_input"]
+    for st in meta["experts"].values():
+        st["config"].pop("num_input", None)
+    with open(path + ".meta.json", "w") as f:
+        json.dump(meta, f)
+    loaded, _ = MF.load_checkpoint(path, "cpu")
+    assert loaded.cfg["num_input"] == "symlog"
+    src, dst = m.state_dict(), loaded.state_dict()
+    assert src.keys() == dst.keys()
+    for k in src:
+        assert torch.equal(src[k], dst[k]), k
+
+
+def test_init_expert_from_tolerates_num_input_diff_skips_embedder(tmp_path, capsys):
+    # --init-expert-from across a num_input change: the per-type embedder shapes differ (extra digit params
+    # + wider proj), so those are SKIPPED with a notice while the shared non-embedder weights warm-start.
+    torch.manual_seed(2)
+    src = _small()                                               # symlog embedders
+    path = str(tmp_path / "src.pt")
+    MF.save_checkpoint(path, src, step=5)
+    torch.manual_seed(3)
+    dst = MF.FactoredWorldModelAE(
+        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
+        cat_dim=16, slice_widths=_num_input_widths(), num_input="digits")
+    before = {k: v.clone() for k, v in dst.experts["creature-stats"].state_dict().items()}
+    MF.init_expert_from(dst, "creature-stats", path)
+    out = capsys.readouterr().out
+    assert "skipping" in out and "embedder" in out
+    after = dst.experts["creature-stats"].state_dict()
+    src_sub = src.experts["creature-stats"].state_dict()
+    copied = skipped = 0
+    for k in after:
+        in_src = k in src_sub and src_sub[k].shape == after[k].shape
+        if k.startswith("embedders.") and not in_src:            # digit params / widened proj -> skipped
+            skipped += 1
+            assert torch.equal(after[k], before[k]), f"skipped embedder {k} should keep its init"
+        elif not k.startswith(("embedders.", "enc_trunk.", "pool.", "dec_trunk.")):
+            assert in_src, f"non-embedder {k} unexpectedly absent from source"
+            copied += 1
+            assert torch.equal(after[k], src_sub[k]), f"non-embedder {k} should have been copied"
+    assert copied > 0 and skipped > 0

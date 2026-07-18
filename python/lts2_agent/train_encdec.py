@@ -234,6 +234,15 @@ def main() -> int:
                          "byte-identical) sums raw CEs so a 1001-bin field dominates the numeric gradient; "
                          "'logbins' divides each field's CE by ln(n_bins) so every numeric column "
                          "contributes comparably.")
+    ap.add_argument("--num-input", default="symlog", choices=["symlog", "digits", "fourier", "both"],
+                    help="factored arch only: numeric INPUT featurization. 'symlog' (default, "
+                         "byte-identical) enters each numeric column as ONE symlog float — symlog(500) vs "
+                         "symlog(501) differ by ~0.002, so large-value precision is lost at the INPUT. "
+                         "'digits' ADDS base-10 per-digit learned embeddings of each ranged column (the "
+                         "output-head digit convention, offset by value-lo so negatives work); 'fourier' "
+                         "ADDS sin/cos at geometrically-spaced frequencies resolving resolution 1; 'both' "
+                         "is digits+fourier. All derived from the stored symlog float (no cache change). "
+                         "Stamped in checkpoint meta; old checkpoints load as 'symlog'.")
     ap.add_argument("--expert-n-mem", action="append", default=None, metavar="NAME=K",
                     help="factored only: override an expert's decoder memory-token count (SetExpert n_mem, "
                          "default 6), e.g. --expert-n-mem creature-stats=12 (repeatable). Stamped per "
@@ -393,6 +402,7 @@ def main() -> int:
         model = MF.FactoredWorldModelAE(slice_widths=_slice_width_overrides(args), d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
                                         simnorm_group=args.simnorm_group, qk_norm=args.qk_norm,
                                         num_head=args.factored_num_head, num_decode=args.num_decode,
+                                        num_input=args.num_input,
                                         expert_overrides=expert_overrides or None).to(device)
         if train_active is not None:
             unknown = [n for n in train_active if n not in model.experts]

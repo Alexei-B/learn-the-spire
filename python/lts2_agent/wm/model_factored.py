@@ -60,7 +60,7 @@ class FactoredWorldModelAE(nn.Module):
                  simnorm_group: int = 8, slice_widths: Optional[Dict[str, int]] = None,
                  expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
                  static_tables: Optional[Dict[str, np.ndarray]] = None, qk_norm: bool = True,
-                 num_head: str = "bins", num_decode: str = "expected"):
+                 num_head: str = "bins", num_decode: str = "expected", num_input: str = "symlog"):
         super().__init__()
         widths = dict(DEFAULT_SLICE_WIDTHS)
         if slice_widths:
@@ -78,13 +78,19 @@ class FactoredWorldModelAE(nn.Module):
         # flat head and reproduce their historically-reported (argmax) metrics byte-identically.
         self.num_head = num_head
         self.num_decode = num_decode
+        # Numeric INPUT featurization ("symlog" | "digits" | "fourier" | "both"), model-wide and stamped in
+        # cfg (below) so save/load/compose reconstruct the right embedder shapes. "symlog" (default) is the
+        # unchanged one-float-per-column input — old checkpoints have no key and load byte-identically as
+        # "symlog". "digits"/"fourier"/"both" ADD a high-resolution featurization of each ranged numeric
+        # column derived from the stored symlog float (no tokenizer/cache change) — see wm.encoder.
+        self.num_input = num_input
         # Per-expert construction-kwarg overrides (e.g. a deeper relic decoder, a per-expert n_mem A/B) —
         # stamped in cfg so save/load/compose reconstruct the exact per-expert architecture.
         self.expert_overrides = {k: dict(v) for k, v in (expert_overrides or {}).items()}
         self.cfg = dict(d_model=d_model, n_heads=n_heads, enc_layers=enc_layers, dec_layers=dec_layers,
                         pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem, cat_dim=cat_dim,
                         simnorm_group=simnorm_group, slice_widths=widths, qk_norm=qk_norm,
-                        num_head=num_head, num_decode=num_decode,
+                        num_head=num_head, num_decode=num_decode, num_input=num_input,
                         expert_overrides=self.expert_overrides)
         if static_tables is None:
             static_tables = _static_tables()
@@ -92,7 +98,7 @@ class FactoredWorldModelAE(nn.Module):
         common = dict(d_model=d_model, static_tables=static_tables, cat_dim=cat_dim, n_heads=n_heads,
                       pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem,
                       simnorm_group=simnorm_group, qk_norm=qk_norm, num_head=num_head,
-                      num_decode=num_decode)
+                      num_decode=num_decode, num_input=num_input)
         # The structurally-rich categories get the full encoder/decoder depth; the small single-type
         # experts (relics/potions/orbs — a flat catalog id + at most two numerics) get 1 enc / 1 dec layer,
         # so their parameter budget matches their content instead of replicating a deep transformer. The
@@ -180,7 +186,7 @@ class FactoredWorldModelAE(nn.Module):
                                "pool_layers": self.cfg["pool_layers"],
                                "pool_latents": self.cfg["pool_latents"], "n_mem": self.cfg["n_mem"],
                                "qk_norm": self.cfg["qk_norm"], "num_head": self.cfg["num_head"],
-                               "num_decode": self.cfg["num_decode"]}
+                               "num_decode": self.cfg["num_decode"], "num_input": self.cfg["num_input"]}
         cfg.update(self.expert_overrides.get(name, {}))
         return {"name": name, "slice": [a, b], "width": b - a,
                 "tokenizer_signature": tokens.tokenizer_signature(), "config": cfg,
@@ -193,29 +199,30 @@ class FactoredWorldModelAE(nn.Module):
         """Copy one expert's weights out of a full factored ``state_dict`` (keys ``experts.<name>.*``)
         into this model — the warm-start / compose primitive.
 
-        Non-trunk weights (embedders, to_slice, slice_norm, from_slice, heads, slot_queries, cls,
-        latents, ...) MUST match by name and shape (a mismatch there is a genuine incompatibility and
-        raises). The attention TRUNK (``enc_trunk``/``pool``/``dec_trunk``) is exempt: turning qk_norm on
-        vs off changes the trunk's param NAMES, so warm-starting a qk_norm=True expert from an OLD
-        (qk_norm=False) checkpoint would otherwise fail. Such missing/mismatched trunk keys are SKIPPED
-        with a printed notice (the fresh trunk keeps its init), so the expensive non-trunk weights still
-        warm-start across the fix."""
+        Most weights (to_slice, slice_norm, from_slice, heads, slot_queries, cls, latents, ...) MUST match
+        by name and shape (a mismatch there is a genuine incompatibility and raises). Two families are
+        exempt because a config knob the compose/warm-start contract TOLERATES changes their param
+        names/shapes: the attention TRUNK (``enc_trunk``/``pool``/``dec_trunk`` — qk_norm on vs off renames
+        them) and the per-type EMBEDDERS (``embedders.*`` — num_input adds digit/fourier params and widens
+        the proj). Such missing/mismatched keys are SKIPPED with a printed notice (the fresh module keeps
+        its init), so the expensive shared weights still warm-start across either fix."""
         if name == "scalars":
             return   # parameter-free deterministic codec; nothing to copy
         prefix = f"experts.{name}."
+        skippable = E.TRUNK_PREFIXES + ("embedders.",)
         own = self.experts[name].state_dict()
         sub = {k[len(prefix):]: v for k, v in src_state.items() if k.startswith(prefix)}
         missing = set(own) - set(sub)
         mismatched = {k for k in own if k in sub and tuple(sub[k].shape) != tuple(own[k].shape)}
         skip = missing | mismatched
-        non_trunk = {k for k in skip if not k.startswith(E.TRUNK_PREFIXES)}
-        if non_trunk:
-            raise ValueError(f"source checkpoint is missing/mismatched expert {name!r} non-trunk params: "
-                             f"{sorted(non_trunk)[:4]}{'...' if len(non_trunk) > 4 else ''}")
+        hard = {k for k in skip if not k.startswith(skippable)}
+        if hard:
+            raise ValueError(f"source checkpoint is missing/mismatched expert {name!r} params: "
+                             f"{sorted(hard)[:4]}{'...' if len(hard) > 4 else ''}")
         if skip:
-            print(f"[model_factored] warm-start {name!r}: skipping {len(skip)} trunk param(s) "
-                  f"(qk-norm trunk architecture differs from source); non-trunk weights copied.",
-                  flush=True)
+            print(f"[model_factored] warm-start {name!r}: skipping {len(skip)} trunk/embedder param(s) "
+                  f"(qk-norm trunk and/or num-input embedder architecture differs from source); "
+                  f"other weights copied.", flush=True)
         self.experts[name].load_state_dict({k: sub[k] for k in own if k not in skip}, strict=False)
 
 
@@ -424,6 +431,9 @@ def load_checkpoint(path: str, device="cpu") -> Tuple[FactoredWorldModelAE, dict
     # old state_dict loads byte-identically and its reported metrics reproduce exactly.
     config.setdefault("num_head", "bins")
     config.setdefault("num_decode", "argmax")
+    # Numeric INPUT featurization: a checkpoint predating this fix has no key. Default to "symlog" (the
+    # unchanged one-float-per-column input) so the old state_dict's embedder shapes rebuild byte-identically.
+    config.setdefault("num_input", "symlog")
     m = FactoredWorldModelAE(**config)
     got_layout = m.slice_layout_list()
     if meta.get("slice_layout") != got_layout:
@@ -464,10 +474,12 @@ def init_expert_from(m: FactoredWorldModelAE, name: str, src_path: str, device="
                              f"!= target {my_stamp['width']}.")
         # A qk_norm difference is TOLERATED here: it only changes the attention trunk, which the graceful
         # loader skips (non-trunk weights still warm-start across the fix). num_decode is a pure EVAL knob
-        # (no weights), so it is tolerated too. num_head DOES change the numeric-head Linear shape, so it is
-        # checked separately below (missing key == the historical flat "bins" head). Every OTHER config key
-        # must match — those govern shapes the non-trunk copy depends on.
-        _skip = ("qk_norm", "num_decode", "num_head")
+        # (no weights), so it is tolerated too. num_input changes only the per-type EMBEDDER shapes (extra
+        # digit/fourier params + a wider proj), which the graceful loader skips too, so it is tolerated.
+        # num_head DOES change the numeric-head Linear shape, so it is checked separately below (missing key
+        # == the historical flat "bins" head). Every OTHER config key must match — those govern shapes the
+        # non-trunk copy depends on.
+        _skip = ("qk_norm", "num_decode", "num_head", "num_input")
         src_cfg = {k: v for k, v in (src_stamp.get("config") or {}).items() if k not in _skip}
         my_cfg = {k: v for k, v in my_stamp["config"].items() if k not in _skip}
         if src_cfg != my_cfg:
