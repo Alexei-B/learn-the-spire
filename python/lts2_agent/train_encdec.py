@@ -510,7 +510,10 @@ def main() -> int:
             print(f"[train_encdec] DATA=mixed:{frac_synth:.2f}: {frac_synth:.0%} synthetic + "
                   f"{1 - frac_synth:.0%} real per batch for {train_active}", flush=True)
             cpu = SY.mixed_batches(cache_dir, "train", train_active, args.batch, frac_synth, rng)
-        stream = ((M.to_tensors(s, device), a) for s, a in D.prefetch(cpu, depth=4))
+        # Prefetch the synth/mixed generator on a daemon thread so CPU batch generation overlaps the GPU
+        # step (SY.prefetch_batches re-raises worker exceptions on the consumer). The CPU->device transfer
+        # stays in the consumer. `npr` (synth) / the mixed stream's own rng are not shared elsewhere.
+        stream = ((M.to_tensors(s, device), a) for s, a in SY.prefetch_batches(cpu, depth=4))
     else:
         # Focus-present sampling (solo runs only): oversample states with a present trained-expert token.
         focus_experts = (train_active if (factored and args.focus_present > 0.0

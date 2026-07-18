@@ -32,7 +32,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
 import random
+import threading
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import numpy as np
@@ -125,13 +127,95 @@ def _parse_reachable(doc: Dict[str, Any]) -> Dict[str, Any]:
         items = sorted((int(kk), vv) for kk, vv in hist.items())
         counts[name] = (np.asarray([kk for kk, _ in items], np.int64),
                         _norm_probs(vv for _, vv in items))
-    return {
+    tbl = {
         "cards": cards, "card_ids": np.asarray(sorted(cards), np.int64),
         "creatures": creatures, "creature_ids": np.asarray(sorted(creatures), np.int64),
         "powers": powers, "power_ids": np.asarray(sorted(powers), np.int64),
         "intents": intents, "intent_ids": np.asarray(sorted(intents), np.int64),
         "counts": counts,
     }
+    _augment_reachable(tbl)
+    return tbl
+
+
+def _augment_reachable(tbl: Dict[str, Any]) -> None:
+    """Precompute per-identity numeric ``(lo, hi)`` bound arrays (one row per identity, in the sorted id
+    order of ``*_ids``) so the vectorized fillers draw a whole batch of table rows' numerics in ONE
+    ``rng.integers`` call over gathered bounds — the reachability margin+clamp (:func:`_reach_lohi`) is
+    baked in here, off the hot path, instead of being recomputed per row. This is the single change that
+    lets ``_fill_cards`` / ``_fill_creatures`` avoid a per-row Python table lookup."""
+    def _lohi_block(get_num, ids: np.ndarray, type_name: str, cols: List[str]):
+        lo = np.zeros((len(ids), len(cols)), np.int64)
+        hi = np.zeros((len(ids), len(cols)), np.int64)
+        for r, ident in enumerate(ids.tolist()):
+            num = get_num(ident)
+            for j, col in enumerate(cols):
+                clo, chi = num.get(col, (0, 0))
+                lo[r, j], hi[r, j] = _reach_lohi(type_name, col, clo, chi)
+        return lo, hi
+
+    card_cols = [col for _, col, _ in _CARD_NONZONE_NUM]
+    tbl["card_num_lo"], tbl["card_num_hi"] = _lohi_block(
+        lambda i: tbl["cards"][i]["num"], tbl["card_ids"], "card", card_cols)
+    tbl["creature_num_lo"], tbl["creature_num_hi"] = _lohi_block(
+        lambda i: tbl["creatures"][i]["num"], tbl["creature_ids"], "creature", list(tokens.CREATURE_NUM))
+    tbl["intent_num_lo"], tbl["intent_num_hi"] = _lohi_block(
+        lambda i: tbl["intents"][i], tbl["intent_ids"], "intent", list(tokens.INTENT_NUM))
+    pids = tbl["power_ids"]
+    plo = np.zeros(len(pids), np.int64)
+    phi = np.zeros(len(pids), np.int64)
+    for r, pid in enumerate(pids.tolist()):
+        lo, hi = tbl["powers"][pid]
+        plo[r], phi[r] = _reach_lohi("power", "amount", lo, hi)
+    tbl["power_amt_lo"], tbl["power_amt_hi"] = plo, phi
+
+    # Ragged->padded gather tables for the card's identity-conditioned categoricals, so a whole batch of
+    # table rows draws them WITHOUT a per-identity Python loop: uniform columns (type/rarity/targetType)
+    # store the option values + per-card option counts (draw = pick a random slot < count); weighted
+    # columns (enchant/afflict) store the values + a per-card cumulative-prob row (draw = inverse-CDF,
+    # ``argmax(cdf >= u)``); the keyword pattern set becomes a per-card [pattern, KW_BUCKETS] multi-hot
+    # tensor (draw = pick a random pattern row). All widths are small (enum sizes / distinct-value counts).
+    cards = tbl["cards"]
+    cids = tbl["card_ids"]
+
+    def _pad_uniform(key: str) -> None:
+        opts = [cards[i][key] for i in cids.tolist()]
+        ln = np.array([len(o) for o in opts], np.int64)
+        w = int(ln.max()) if len(ln) else 1
+        mat = np.zeros((len(opts), max(1, w)), np.int64)
+        for r, o in enumerate(opts):
+            mat[r, :len(o)] = o
+        tbl["card_" + key + "_vals"], tbl["card_" + key + "_len"] = mat, ln
+
+    for k in ("type", "rarity", "targetType"):
+        _pad_uniform(k)
+
+    def _pad_weighted(vkey: str, pkey: str, out: str) -> None:
+        vv = [cards[i][vkey] for i in cids.tolist()]
+        pp = [cards[i][pkey] for i in cids.tolist()]
+        w = max((len(v) for v in vv), default=1)
+        vmat = np.zeros((len(vv), max(1, w)), np.int64)
+        cdf = np.ones((len(vv), max(1, w)), np.float64)   # pad with 1.0 so a pad slot never wins argmax
+        for r, (v, p) in enumerate(zip(vv, pp)):
+            vmat[r, :len(v)] = v
+            c = np.cumsum(p)
+            if len(c):
+                c[-1] = 1.0                               # guard fp so some real slot always satisfies u<1
+            cdf[r, :len(c)] = c
+        tbl["card_" + out + "_vals"], tbl["card_" + out + "_cdf"] = vmat, cdf
+
+    _pad_weighted("enchant_vals", "enchant_p", "enchant")
+    _pad_weighted("afflict_vals", "afflict_p", "afflict")
+
+    pats_per = [cards[i]["keywords"] for i in cids.tolist()]
+    pmax = max((len(p) for p in pats_per), default=1)
+    kw_mat = np.zeros((len(pats_per), max(1, pmax), tokens.KW_BUCKETS), np.float32)
+    kw_np = np.array([len(p) for p in pats_per], np.int64)
+    for r, pats in enumerate(pats_per):
+        for pi, pat in enumerate(pats):
+            for bkt in pat:
+                kw_mat[r, pi, bkt] = 1.0
+    tbl["card_kw_mat"], tbl["card_kw_np"] = kw_mat, kw_np
 
 
 def _load_reachable() -> Dict[str, Any]:
@@ -437,6 +521,85 @@ _CREATURE_RAW = [c in RAW_NUM_COLS.get("creature", set()) for c in tokens.CREATU
 _INTENT_RAW = [c in RAW_NUM_COLS.get("intent", set()) for c in tokens.INTENT_NUM]
 
 
+def _hist_draw(rng: np.random.Generator, counts: Tuple[np.ndarray, np.ndarray], size: int) -> np.ndarray:
+    """``size`` draws from a measured count histogram ``(values, probs)`` (creatures/powers/intents per
+    state, powers per creature) — the vectorized twin of the old scalar ``_reach_hist``."""
+    vals, probs = counts
+    return rng.choice(vals, size=size, p=probs)
+
+
+def _reach_num_block(rng: np.random.Generator, lo: np.ndarray, hi: np.ndarray,
+                     is_raw: List[bool]) -> np.ndarray:
+    """``[n, W]`` float block: one uniform integer per cell inside the gathered ``[lo, hi]`` reachability
+    bounds, stored the way the tokenizer does (raw for flag columns, symlog otherwise). One ``rng.integers``
+    over the whole block replaces the old per-row/per-column scalar draws."""
+    vals = rng.integers(lo, hi + 1)                          # [n, W]
+    out = vals.astype(np.float64)
+    for j, raw in enumerate(is_raw):
+        if not raw:
+            out[:, j] = _symlog_arr(out[:, j])
+    return out.astype(np.float32)
+
+
+def _place_powers(rng: np.random.Generator, tbl: Dict[str, Any], pw_spec: S.TypeSpec,
+                  pw_idx: np.ndarray, pw_num: np.ndarray, pw_mask: np.ndarray,
+                  pstate: np.ndarray, pslot: np.ndarray, pparent: np.ndarray) -> None:
+    """Assign powerIndex/amount for a flat block of already-placed power rows (identity-conditioned amount
+    ranges gathered in bulk; a :data:`CREATURE_WILDCARD_PROB` uniform tail), then scatter into the padded
+    power arrays at ``(pstate, pslot)`` with ``pparent`` (the creature slot) as the parent ref."""
+    n = pstate.shape[0]
+    if n == 0:
+        return
+    power_ids = tbl["power_ids"]
+    wild = rng.random(n) < CREATURE_WILDCARD_PROB
+    pid = np.empty(n, np.int64)
+    amt = np.empty(n, np.int64)
+    nw = int(wild.sum())
+    if nw:
+        lo, hi = _lohi("power", "amount")                    # (lo, hi+1) — integers() excludes the top
+        pid[wild] = rng.integers(0, pw_spec.cat_cols[0][1], size=nw)
+        amt[wild] = rng.integers(lo, hi, size=nw)
+    tabm = ~wild
+    nt = int(tabm.sum())
+    if nt:
+        tp = rng.integers(0, len(power_ids), size=nt)
+        pid[tabm] = power_ids[tp]
+        amt[tabm] = rng.integers(tbl["power_amt_lo"][tp], tbl["power_amt_hi"][tp] + 1)
+    pw_idx[pstate, pslot, 0] = pid
+    pw_idx[pstate, pslot, 1] = pparent
+    pw_num[pstate, pslot, 0] = _symlog_arr(amt.astype(np.float64)).astype(np.float32)
+    pw_mask[pstate, pslot] = True
+
+
+def _place_intents(rng: np.random.Generator, tbl: Dict[str, Any], in_spec: S.TypeSpec,
+                   in_idx: np.ndarray, in_num: np.ndarray, in_mask: np.ndarray,
+                   istate: np.ndarray, islot: np.ndarray, parent: np.ndarray) -> None:
+    """Assign type + numerics for a flat block of intent rows (per-type numeric ranges gathered in bulk; a
+    uniform wildcard tail using the base numeric sampler), then scatter into the padded intent arrays."""
+    n = istate.shape[0]
+    if n == 0:
+        return
+    intent_ids = tbl["intent_ids"]
+    W = len(tokens.INTENT_NUM)
+    wild = rng.random(n) < CREATURE_WILDCARD_PROB
+    ty = np.empty(n, np.int64)
+    numblk = np.zeros((n, W), np.float32)
+    nw = int(wild.sum())
+    if nw:
+        ty[wild] = rng.integers(0, _cat_high("intent", "type", in_spec.cat_cols[0][1]), size=nw)
+        numblk[wild] = _sample_nums(rng, "intent", tokens.INTENT_NUM, nw)
+    tabm = ~wild
+    nt = int(tabm.sum())
+    if nt:
+        ip = rng.integers(0, len(intent_ids), size=nt)
+        ty[tabm] = intent_ids[ip]
+        numblk[tabm] = _reach_num_block(rng, tbl["intent_num_lo"][ip], tbl["intent_num_hi"][ip], _INTENT_RAW)
+    in_idx[istate, islot, 0] = ty
+    in_idx[istate, islot, 1] = parent
+    in_num[istate, islot, :] = numblk
+    in_mask[istate, islot] = True
+
+
 def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
     """Creatures (folding their powers + intents) — REACHABILITY-SHAPED (see the reachable-table header).
     Creature count from the measured creatures-per-state histogram (min 1, capped). Per creature: identity
@@ -446,104 +609,83 @@ def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) 
     observed range (+margin — amounts may be negative). Intents: a count from the intents-per-state
     histogram (capped); type from the observed set; numerics per-type range. Each sub-row keeps a
     :data:`CREATURE_WILDCARD_PROB` uniform tail. Creature order uses the tokenizer's v4 lexsort EXACTLY
-    (unchanged) so per-slot targets stay a function of content; powers/intents are placed after the sort so
-    their parent refs index the sorted slots directly."""
+    (unchanged) so per-slot targets stay a function of content.
+
+    Fully VECTORIZED (roadmap wm-t3-factored perf): creatures/powers/intents are each generated as one
+    flat state-major block (base uniform, then table rows overwritten via bulk per-identity draws), the
+    whole batch of creatures is v4-lexsorted in a SINGLE call (state primary) and scattered to slots, and
+    powers/intents are placed by (state, slot) with no per-row Python. powerIndex/amount and intent type/
+    numerics do NOT depend on the parent creature's identity (the old code drew them independently too), so
+    generating them per slot after the creature sort needs no remap. Distributional equivalence holds; the
+    creature per-slot ORDER key is unchanged."""
     tbl = _load_reachable()
     creatures = tbl["creatures"]
-    powers = tbl["powers"]
-    intents = tbl["intents"]
+    creature_ids = tbl["creature_ids"]
     cr_spec = S.TYPE_BY_NAME["creature"]
     pw_spec = S.TYPE_BY_NAME["power"]
     in_spec = S.TYPE_BY_NAME["intent"]
     cr_idx, cr_num, cr_mask = z["creature_idx"], z["creature_num"], z["creature_mask"]
-    pw_idx, pw_num, pw_mask = z["power_idx"], z["power_num"], z["power_mask"]
-    in_idx, in_num, in_mask = z["intent_idx"], z["intent_num"], z["intent_mask"]
-    for b in range(B):
-        # At least one creature, so powers/intents always have a valid parent to reference.
-        c = max(1, min(_reach_hist(rng, tbl["counts"]["creatures_per_state"]), tokens.MAX_CREATURES))
-        cats = _sample_cats(rng, cr_spec, c)                          # [c, 2] uniform base (kind, identity)
-        nums = _sample_nums(rng, "creature", tokens.CREATURE_NUM, c)  # [c, 5], symlog-stored base
-        for i in range(c):
-            if rng.random() < CREATURE_WILDCARD_PROB:
-                continue                                             # keep the uniform base row (wildcard)
-            ident = int(rng.choice(tbl["creature_ids"]))
-            ce = creatures[ident]
-            cats[i, 0] = int(rng.choice(ce["kind"]))                 # CREATURE_IDX[0] = kind
-            cats[i, 1] = ident                                       # CREATURE_IDX[1] = identity
-            for j, col in enumerate(tokens.CREATURE_NUM):
-                lo, hi = ce["num"].get(col, (0, 0))
-                nums[i, j] = _reach_num(rng, "creature", col, lo, hi, _CREATURE_RAW[j])
-        # Canonicalize creature order to match the tokenizer (v4): sort by (kind, combatId, identity,
-        # currentHp, maxHp, block, active). symlog is monotonic so sorting the stored floats matches the
-        # integer order. Powers/intents are generated AFTER placing, so their parent refs index the
-        # sorted positions automatically (no remap). Key columns: kind=cats0, combatId=nums4,
-        # identity=cats1, currentHp=nums0, maxHp=nums1, block=nums2, active=nums3.
-        order = np.lexsort((nums[:, 3], nums[:, 2], nums[:, 1], nums[:, 0], cats[:, 1],
-                            nums[:, 4], cats[:, 0]))
-        cr_idx[b, :c, :] = cats[order]
-        cr_num[b, :c, :] = nums[order]
-        cr_mask[b, :c] = True
-        # Powers: a per-creature count from the measured powers-per-creature histogram, each attached to
-        # its creature's (post-sort) slot, capped so the state total never exceeds MAX_POWERS.
-        n_pw = 0
-        for s in range(c):
-            if n_pw >= tokens.MAX_POWERS:
-                break
-            for _ in range(_reach_hist(rng, tbl["counts"]["powers_per_creature"])):
-                if n_pw >= tokens.MAX_POWERS:
-                    break
-                if rng.random() < CREATURE_WILDCARD_PROB:
-                    pid = int(rng.integers(0, pw_spec.cat_cols[0][1]))
-                    amt = int(rng.integers(*_lohi("power", "amount")))
-                else:
-                    pid = int(rng.choice(tbl["power_ids"]))
-                    lo, hi = powers[pid]
-                    l, h = _reach_lohi("power", "amount", lo, hi)
-                    amt = int(rng.integers(l, h + 1))
-                pw_idx[b, n_pw, 0] = pid
-                pw_idx[b, n_pw, 1] = s
-                pw_num[b, n_pw, 0] = tokens.symlog(amt)
-                pw_mask[b, n_pw] = True
-                n_pw += 1
-        # Intents: a count from the measured intents-per-state histogram, each on a valid creature slot.
-        ni = min(_reach_hist(rng, tbl["counts"]["intents_per_state"]), tokens.MAX_INTENTS)
-        for i in range(ni):
-            parent = int(rng.integers(0, c))
-            if rng.random() < CREATURE_WILDCARD_PROB:
-                ty = int(rng.integers(0, _cat_high("intent", "type", in_spec.cat_cols[0][1])))
-                nrow = _sample_nums(rng, "intent", tokens.INTENT_NUM, 1)[0]
-            else:
-                ty = int(rng.choice(tbl["intent_ids"]))
-                ie = intents[ty]
-                nrow = np.zeros(len(tokens.INTENT_NUM), np.float32)
-                for j, col in enumerate(tokens.INTENT_NUM):
-                    lo, hi = ie.get(col, (0, 0))
-                    nrow[j] = _reach_num(rng, "intent", col, lo, hi, _INTENT_RAW[j])
-            in_idx[b, i, 0] = ty
-            in_idx[b, i, 1] = parent
-            in_num[b, i, :] = nrow
-            in_mask[b, i] = True
+
+    # ---- creatures: >=1 per state (so powers/intents always have a valid parent), capped ----
+    c_arr = np.clip(np.maximum(_hist_draw(rng, tbl["counts"]["creatures_per_state"], B), 1),
+                    1, tokens.MAX_CREATURES).astype(np.int64)
+    Nc = int(c_arr.sum())
+    bstate = np.repeat(np.arange(B, dtype=np.int64), c_arr)
+    starts = _exclusive_starts(c_arr, B)
+    within = np.arange(Nc) - starts[bstate]                  # each creature's slot index 0..c-1 in its state
+
+    cats = _sample_cats(rng, cr_spec, Nc)                    # [Nc, 2] uniform base (kind, identity)
+    nums = _sample_nums(rng, "creature", tokens.CREATURE_NUM, Nc)   # [Nc, 5] symlog-stored base
+    tab_pos = np.nonzero(rng.random(Nc) >= CREATURE_WILDCARD_PROB)[0]
+    if tab_pos.shape[0]:
+        pick = rng.integers(0, len(creature_ids), size=tab_pos.shape[0])
+        cats[tab_pos, 1] = creature_ids[pick]               # CREATURE_IDX[1] = identity
+        nums[tab_pos, :] = _reach_num_block(rng, tbl["creature_num_lo"][pick],
+                                            tbl["creature_num_hi"][pick], _CREATURE_RAW)
+        uniq, inv = np.unique(pick, return_inverse=True)     # kind is a per-identity variable-length list
+        for ui, pidx in enumerate(uniq.tolist()):
+            rows = tab_pos[inv == ui]
+            cats[rows, 0] = rng.choice(creatures[int(creature_ids[pidx])]["kind"], size=rows.shape[0])
+
+    # Canonical v4 creature order (kind, combatId, identity, currentHp, maxHp, block, active), state-major.
+    # symlog is monotonic so sorting the stored floats matches the integer order. Key columns: kind=cats0,
+    # combatId=nums4, identity=cats1, currentHp=nums0, maxHp=nums1, block=nums2, active=nums3.
+    order = np.lexsort((nums[:, 3], nums[:, 2], nums[:, 1], nums[:, 0], cats[:, 1],
+                        nums[:, 4], cats[:, 0], bstate))
+    bs = bstate[order]
+    dstslot = np.arange(Nc) - starts[bs]
+    cr_idx[bs, dstslot] = cats[order]
+    cr_num[bs, dstslot] = nums[order]
+    cr_mask[bs, dstslot] = True
+
+    # ---- powers: a count per creature SLOT, capped per state at MAX_POWERS in slot order ----
+    pc = _hist_draw(rng, tbl["counts"]["powers_per_creature"], Nc).astype(np.int64)
+    power_parent = np.repeat(within, pc)                     # parent = creature slot (post-sort position)
+    power_state = np.repeat(bstate, pc)                      # state-major (bstate is state-major)
+    Np = power_parent.shape[0]
+    if Np:
+        state_pw_total = np.bincount(bstate, weights=pc, minlength=B).astype(np.int64)
+        pw_start = _exclusive_starts(state_pw_total, B)
+        pw_rank = np.arange(Np) - pw_start[power_state]      # power index within its state (fill order)
+        keep = pw_rank < tokens.MAX_POWERS
+        _place_powers(rng, tbl, pw_spec, z["power_idx"], z["power_num"], z["power_mask"],
+                      power_state[keep], pw_rank[keep], power_parent[keep])
+
+    # ---- intents: a count per state, each on a random creature slot ----
+    ni = np.minimum(_hist_draw(rng, tbl["counts"]["intents_per_state"], B), tokens.MAX_INTENTS).astype(np.int64)
+    Ni = int(ni.sum())
+    if Ni:
+        istate = np.repeat(np.arange(B, dtype=np.int64), ni)
+        istart = _exclusive_starts(ni, B)
+        islot = np.arange(Ni) - istart[istate]
+        parent = (rng.random(Ni) * c_arr[istate]).astype(np.int64)   # uniform creature slot 0..c-1
+        _place_intents(rng, tbl, in_spec, z["intent_idx"], z["intent_num"], z["intent_mask"],
+                       istate, islot, parent)
 
 
 def _sample_from_hist(rng: np.random.Generator, hist: np.ndarray, size: int) -> np.ndarray:
     p = hist / hist.sum()
     return rng.choice(len(hist), size=size, p=p)
-
-
-def _reach_hist(rng: np.random.Generator, counts: Tuple[np.ndarray, np.ndarray]) -> int:
-    """One draw from a measured count histogram ``(values, probs)`` (creatures/powers/intents per state,
-    powers per creature)."""
-    vals, probs = counts
-    return int(rng.choice(vals, p=probs))
-
-
-def _reach_num(rng: np.random.Generator, type_name: str, col: str, lo: int, hi: int,
-               is_raw: bool) -> float:
-    """Sample one integer inside an identity's reachability range (margin+clamp for dynamic numerics,
-    verbatim for flags) and store it the way the tokenizer does (raw for flags, symlog otherwise)."""
-    l, h = _reach_lohi(type_name, col, lo, hi)
-    v = int(rng.integers(l, h + 1))
-    return float(v) if is_raw else float(tokens.symlog(v))
 
 
 _CARD_RAW_COLS = RAW_NUM_COLS.get("card", set())
@@ -553,12 +695,13 @@ _CARD_NONZONE_NUM = [(j, c, c in _CARD_RAW_COLS) for j, c in enumerate(tokens.CA
                      if c not in tokens.ZONE_COUNT_FIELDS]
 
 
-def _card_content_order(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k: int) -> List[int]:
-    """Row permutation that sorts the first ``k`` synthetic card rows by the SAME content key the
-    tokenizer orders population rows with (:func:`tokens._card_content_key`) — so synthetic card targets
-    obey the identical canonical order as real tokenized states (generator-canonicality guard: synth
-    bypasses tokenize, so it must reproduce the invariant itself). The key excludes the per-zone count
-    columns (they are the count vector, not part of a row's content identity)."""
+def _card_content_order_ref(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k: int) -> List[int]:
+    """Reference (per-row Python) row permutation that sorts the first ``k`` synthetic card rows by the
+    SAME content key the tokenizer orders population rows with (:func:`tokens._card_content_key`). Kept
+    verbatim as the ORACLE the vectorized :func:`_card_content_order` is proven identical to (see
+    ``test_wm_synth.test_card_content_order_matches_reference``): the canonical row order is a wire-format
+    contract with the tokenizer, so the fast path must reproduce it bit-for-bit. The key excludes the
+    per-zone count columns (they are the count vector, not part of a row's content identity)."""
     keys = []
     for r in range(k):
         d = {name: int(ci_b[r, j]) for j, name in enumerate(tokens.CARD_IDX)}
@@ -572,29 +715,108 @@ def _card_content_order(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k
     return sorted(range(k), key=lambda r: keys[r])
 
 
-def _fill_card_row_from_table(rng: np.random.Generator, tbl: Dict[str, Any], ci_row: np.ndarray,
-                              cn_row: np.ndarray, ckw_row: np.ndarray) -> None:
-    """Overwrite one card row's content (categoricals + dynamic numerics + keyword multi-hot) with a
-    reachability-shaped draw: a real cardIndex, its observed type/rarity/targetType/enchant/afflict and a
-    real keyword pattern, and each dynamic numeric uniform in that card's observed range (+margin, clamped
-    to spec). The per-zone count columns are left untouched (the zone-vector sampler fills them)."""
-    cards = tbl["cards"]
-    cid = int(rng.choice(tbl["card_ids"]))
-    e = cards[cid]
-    # CARD_IDX = [cardIndex, type, rarity, targetType, enchant, afflict].
-    ci_row[0] = cid
-    ci_row[1] = int(rng.choice(e["type"]))
-    ci_row[2] = int(rng.choice(e["rarity"]))
-    ci_row[3] = int(rng.choice(e["targetType"]))
-    ci_row[4] = int(rng.choice(e["enchant_vals"], p=e["enchant_p"]))
-    ci_row[5] = int(rng.choice(e["afflict_vals"], p=e["afflict_p"]))
-    for j, col, is_raw in _CARD_NONZONE_NUM:
-        lo, hi = e["num"].get(col, (0, 0))
-        cn_row[j] = _reach_num(rng, "card", col, lo, hi, is_raw)
-    ckw_row[:] = 0.0
-    pat = e["keywords"][int(rng.integers(len(e["keywords"])))]
-    for b in pat:
-        ckw_row[b] = 1.0
+def _card_content_key_columns(ci: np.ndarray, cn: np.ndarray, ckw: np.ndarray) -> List[np.ndarray]:
+    """Integer lexsort-key columns reproducing :func:`tokens._card_content_key` for a whole block of
+    rows, MOST-significant first — the vectorized twin of the per-row tuple key.
+
+    * The six categoricals (CARD_IDX) pass through as-is.
+    * Each dynamic numeric is decoded to the exact integer the tuple key carries: raw flags round; symlog
+      columns invert (``round(symexp)``). symlog is monotonic so this is order-preserving, but decoding
+      to the integer keeps ties/values byte-identical to the reference.
+    * The keyword multiset (``sorted(present buckets)``, compared as a tuple) becomes KW_BUCKETS
+      fixed-width columns holding the sorted-ascending bucket indices, RIGHT-padded with -1. A shorter
+      sorted list is lexicographically smaller, so an absent slot (-1) must sort BEFORE any real bucket
+      (0..31) — exactly the order Python gives ``tuple(a) < tuple(b)`` for the two sorted lists. (A single
+      packed bitmask can NOT reproduce this: e.g. ``() < (0,) < (0,1) < (1,)`` is not a bitmask order.)"""
+    cols: List[np.ndarray] = [ci[:, j].astype(np.int64) for j in range(len(tokens.CARD_IDX))]
+    for j, _col, is_raw in _CARD_NONZONE_NUM:
+        v = cn[:, j].astype(np.float64)
+        dec = np.rint(v) if is_raw else np.rint(np.sign(v) * np.expm1(np.abs(v)))
+        cols.append(dec.astype(np.int64))
+    # Sorted-ascending keyword bucket indices per row, padded with -1: set buckets get their index, absent
+    # buckets get KW_BUCKETS (sorts to the tail), then the tail is rewritten to -1 (sorts to the front on
+    # comparison, matching "shorter tuple is smaller").
+    present = ckw > 0
+    grid = np.where(present, np.arange(tokens.KW_BUCKETS, dtype=np.int64)[None, :], tokens.KW_BUCKETS)
+    srt = np.sort(grid, axis=1)
+    srt = np.where(srt == tokens.KW_BUCKETS, -1, srt)
+    cols.extend(srt[:, c] for c in range(tokens.KW_BUCKETS))
+    return cols
+
+
+def _card_content_order(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k: int) -> List[int]:
+    """Vectorized drop-in for :func:`_card_content_order_ref` — one ``np.lexsort`` over the integer key
+    columns (:func:`_card_content_key_columns`) instead of building a Python tuple per row. ``np.lexsort``
+    is stable and its last key is primary, so passing the columns most-significant-LAST (``[::-1]``)
+    reproduces Python's tuple order, and equal-key rows keep their original relative order exactly as
+    ``sorted()`` does."""
+    if k <= 1:
+        return list(range(k))
+    cols = _card_content_key_columns(ci_b[:k], cn_b[:k], ckw_b[:k])
+    return np.lexsort(cols[::-1]).tolist()
+
+
+_CARD_ZONE_MAXES = np.array([20, 40, 40, 40, 30], np.int64)   # hand/draw/discard/exhaust/offered (ZONES order)
+
+
+def _exclusive_starts(counts: np.ndarray, B: int) -> np.ndarray:
+    """Per-state start offset into a flat (state-major) row array: ``[0, c0, c0+c1, …]``."""
+    starts = np.zeros(B, np.int64)
+    if B > 1:
+        np.cumsum(counts[:-1], out=starts[1:])
+    return starts
+
+
+def _fill_card_table_rows(rng: np.random.Generator, tbl: Dict[str, Any], cats: np.ndarray,
+                          num: np.ndarray, kw: np.ndarray, tab_pos: np.ndarray) -> None:
+    """Overwrite the table (non-wildcard) card rows in-place with reachability-shaped content. Numerics
+    are drawn for the WHOLE block in one ``rng.integers`` over the identities' gathered bounds; the
+    identity-conditioned categoricals + keyword pattern are drawn per DISTINCT identity (a handful of
+    ``rng.choice`` calls each) rather than per row — the vectorization that replaces the old per-row
+    Python table lookup."""
+    n_tab = tab_pos.shape[0]
+    card_ids = tbl["card_ids"]
+    pick = rng.integers(0, len(card_ids), size=n_tab)        # index into card_ids (uniform == rng.choice)
+    ar = np.arange(n_tab)
+    cats[tab_pos, 0] = card_ids[pick]                        # CARD_IDX[0] = cardIndex
+    # Numerics: gather each drawn identity's (lo, hi) and draw the block at once, symlog/raw-store per col.
+    vals = rng.integers(tbl["card_num_lo"][pick], tbl["card_num_hi"][pick] + 1)   # [n_tab, n_nonzone]
+    for j, (col_j, _col, is_raw) in enumerate(_CARD_NONZONE_NUM):
+        cv = vals[:, j].astype(np.float64)
+        num[tab_pos, col_j] = (cv if is_raw else _symlog_arr(cv)).astype(np.float32)
+    # Uniform identity-conditioned categoricals: gather the padded option table, pick a random slot < count.
+    for col_i, key in ((1, "type"), (2, "rarity"), (3, "targetType")):
+        vmat = tbl["card_" + key + "_vals"][pick]                                 # [n_tab, L]
+        pos = (rng.random(n_tab) * tbl["card_" + key + "_len"][pick]).astype(np.int64)
+        cats[tab_pos, col_i] = vmat[ar, pos]
+    # Weighted categoricals (enchant/afflict): inverse-CDF gather — first slot whose cumulative prob >= u.
+    for col_i, key in ((4, "enchant"), (5, "afflict")):
+        vmat = tbl["card_" + key + "_vals"][pick]
+        pos = np.argmax(tbl["card_" + key + "_cdf"][pick] >= rng.random((n_tab, 1)), axis=1)
+        cats[tab_pos, col_i] = vmat[ar, pos]
+    # Keyword pattern: pick a random pattern row from the identity's [pattern, KW_BUCKETS] multi-hot table
+    # (replaces the base random bits on table rows).
+    pat_idx = (rng.random(n_tab) * tbl["card_kw_np"][pick]).astype(np.int64)
+    kw[tab_pos] = tbl["card_kw_mat"][pick, pat_idx]
+
+
+def _fill_card_zone_counts(rng: np.random.Generator, num: np.ndarray, zone_count_idx: np.ndarray,
+                           N: int) -> None:
+    """Fill the per-zone count vector for every row (game-like): draw n_zones from the measured
+    distribution, pick that many DISTINCT zones weighted by the observed present-fraction, and a small
+    count for each. Weighted sample-without-replacement is done with the Gumbel-top-k trick (drawing
+    ``n_zones`` keys ``log(w)+Gumbel`` and taking the largest) — distributionally identical to the old
+    per-row ``rng.choice(replace=False, p=w)``, but one vectorized pass over the batch."""
+    nzone = zone_count_idx.shape[0]
+    nz = np.clip(_sample_from_hist(rng, _CARD_NZONES_HIST, N), 1, nzone)
+    keys = np.log(_CARD_ZONE_WEIGHTS)[None, :] + rng.gumbel(size=(N, nzone))
+    rank = np.argsort(-keys, axis=1)                         # zone indices by descending key, per row
+    chosen_by_rank = np.arange(nzone)[None, :] < nz[:, None]
+    chosen = np.zeros((N, nzone), bool)
+    np.put_along_axis(chosen, rank, chosen_by_rank, axis=1)
+    cnt = _sample_from_hist(rng, _CARD_ZONE_COUNT_HIST, N * nzone).reshape(N, nzone)
+    cnt = np.clip(cnt, 1, _CARD_ZONE_MAXES[None, :])
+    num[:, zone_count_idx] = np.where(chosen, _symlog_arr(cnt.astype(np.float64)), 0.0).astype(np.float32)
 
 
 def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
@@ -605,45 +827,46 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> N
     coverage insurance for unseen ids. The per-zone count vector is UNCHANGED — sampled from the measured
     game-like small-int distribution (n_zones, which zones, per-zone count) with sum >= 1. Rows are finally
     CONTENT-SORTED into the tokenizer's canonical order (well-posed targets — a permutation-invariant set
-    encoder needs a content-determined slot assignment)."""
+    encoder needs a content-determined slot assignment).
+
+    Fully VECTORIZED (roadmap wm-t3-factored perf): all rows of all states are generated as one flat block
+    (base uniform, then table rows overwritten, then zone counts), and the whole batch is content-sorted in
+    a SINGLE ``np.lexsort`` keyed by state-then-content, then scattered back into the padded arrays — no
+    per-row Python in the hot path. The row ORDER is byte-identical to the old per-state sort (proven in
+    ``test_wm_synth``); only the RNG draw order differs (distributional equivalence, per the design)."""
     tbl = _load_reachable()
     cap = tokens.MAX_CARDS
     tspec = S.TYPE_BY_NAME["card"]
     zone_cols = list(tokens.ZONE_COUNT_FIELDS)
-    zone_maxes = {"count_hand": 20, "count_draw": 40, "count_discard": 40, "count_exhaust": 40,
-                  "count_offered": 30}
+    zone_count_idx = np.array([tokens.CARD_NUM.index(zc) for zc in zone_cols], np.int64)
     ci, cn, ckw, cm = z["card_idx"], z["card_num"], z["card_kw"], z["card_mask"]
-    row_counts = np.clip(_sample_from_hist(rng, _CARD_ROWS_HIST, B), 0, cap)
-    zone_count_idx = [tokens.CARD_NUM.index(zc) for zc in zone_cols]
-    for b in range(B):
-        k = int(row_counts[b])
-        if k == 0:
-            continue
-        # Base = fully-uniform WILDCARD content for every row; table-conditioned rows overwrite it below.
-        ci[b, :k, :] = _sample_cats(rng, tspec, k)
-        cn[b, :k, :] = _sample_nums(rng, "card", tokens.CARD_NUM, k, zone_cols=zone_cols)
-        ckw[b, :k, :] = (rng.random((k, tokens.KW_BUCKETS)) < 0.05).astype(np.float32)
-        wild = rng.random(k) < CARD_WILDCARD_PROB
-        for r in range(k):
-            if not wild[r]:
-                _fill_card_row_from_table(rng, tbl, ci[b, r], cn[b, r], ckw[b, r])
-        # Per-zone count vector (game-like): pick n_zones, which zones, then a small count each.
-        for r in range(k):
-            nz = int(_sample_from_hist(rng, _CARD_NZONES_HIST, 1)[0])
-            nz = max(1, min(nz, len(zone_cols)))
-            chosen = rng.choice(len(zone_cols), size=nz, replace=False,
-                                p=_CARD_ZONE_WEIGHTS / _CARD_ZONE_WEIGHTS.sum())
-            for zi in chosen:
-                zc = zone_cols[zi]
-                cnt = int(_sample_from_hist(rng, _CARD_ZONE_COUNT_HIST, 1)[0])
-                cnt = max(1, min(cnt, zone_maxes[zc]))
-                cn[b, r, zone_count_idx[zi]] = _symlog_arr(np.float64(cnt))
-        # Canonicalize row order to the tokenizer's content sort (well-posedness — see helper docstring).
-        order = _card_content_order(ci[b], cn[b], ckw[b], k)
-        ci[b, :k] = ci[b, order]
-        cn[b, :k] = cn[b, order]
-        ckw[b, :k] = ckw[b, order]
-        cm[b, :k] = True
+
+    row_counts = np.clip(_sample_from_hist(rng, _CARD_ROWS_HIST, B), 0, cap).astype(np.int64)
+    N = int(row_counts.sum())
+    if N == 0:
+        return
+    bstate = np.repeat(np.arange(B, dtype=np.int64), row_counts)
+    starts = _exclusive_starts(row_counts, B)
+
+    # Base = fully-uniform WILDCARD content for every flat row; table rows overwrite it below.
+    cats = _sample_cats(rng, tspec, N)                                          # [N, 6]
+    num = _sample_nums(rng, "card", tokens.CARD_NUM, N, zone_cols=zone_cols)    # [N, W] (zone cols 0)
+    kw = (rng.random((N, tokens.KW_BUCKETS)) < 0.05).astype(np.float32)
+    tab_pos = np.nonzero(rng.random(N) >= CARD_WILDCARD_PROB)[0]                 # table (non-wildcard) rows
+    if tab_pos.shape[0]:
+        _fill_card_table_rows(rng, tbl, cats, num, kw, tab_pos)
+    _fill_card_zone_counts(rng, num, zone_count_idx, N)
+
+    # Content-sort every state's rows into the tokenizer's canonical order in ONE lexsort (state primary),
+    # then scatter each row to its state's sorted slot. lexsort is stable, so equal-content rows keep their
+    # generation order exactly as the per-state reference sorted() would.
+    order = np.lexsort(_card_content_key_columns(cats, num, kw)[::-1] + [bstate])
+    bs = bstate[order]
+    dstslot = np.arange(N) - starts[bs]
+    ci[bs, dstslot] = cats[order]
+    cn[bs, dstslot] = num[order]
+    ckw[bs, dstslot] = kw[order]
+    cm[bs, dstslot] = True
 
 
 _FILLERS = {
@@ -676,6 +899,52 @@ def synth_batches(experts: List[str], batch_size: int, rng: np.random.Generator
     so the report's by-act group-by keeps them separable)."""
     while True:
         yield synth_batch(experts, batch_size, rng), ["synth"] * batch_size
+
+
+class _PrefetchError:
+    """Envelope carrying a worker-thread exception across the queue so :func:`prefetch_batches` can
+    re-raise it on the consumer side (a bare exception object could be confused with a real batch item)."""
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+
+def prefetch_batches(inner: Iterator[Tuple[Dict[str, np.ndarray], List[Any]]], depth: int = 2
+                     ) -> Iterator[Tuple[Dict[str, np.ndarray], List[Any]]]:
+    """Overlap synthetic batch GENERATION with GPU compute: a daemon worker thread pulls ``(batch, acts)``
+    tuples from ``inner`` into a bounded ``queue.Queue(depth)`` and the consumer yields them, so the next
+    batch is being built on the CPU while the current one trains on the GPU (generation is otherwise serial
+    with — and starves — the train step; measured ~19x on the cards generator).
+
+    WHY a dedicated wrapper (vs the fire-and-forget :func:`wm.data.prefetch`): this one PROPAGATES a
+    worker exception to the consumer — it is re-raised on the next ``get`` — so a generator bug fails the
+    run loudly instead of silently ending the stream and starving the loop. The worker is a daemon (never
+    blocks interpreter exit) and a sentinel on normal end is enough shutdown protocol.
+
+    RNG note: ``inner`` keeps generating on this single worker thread using the ``np.random.Generator`` it
+    already owns. That Generator must not be shared with any other concurrent consumer — the caller
+    (``train_encdec``) builds a dedicated ``default_rng`` per synthetic stream, so it is not."""
+    q: "queue.Queue" = queue.Queue(maxsize=max(1, depth))
+    sentinel = object()
+
+    def worker() -> None:
+        try:
+            for item in inner:
+                q.put(item)
+        except BaseException as ex:                          # propagate to the consumer rather than die silently
+            q.put(_PrefetchError(ex))
+        else:
+            q.put(sentinel)
+
+    threading.Thread(target=worker, name="synth-prefetch", daemon=True).start()
+    while True:
+        item = q.get()
+        if item is sentinel:
+            return
+        if isinstance(item, _PrefetchError):
+            raise item.exc
+        yield item
 
 
 def mixed_batches(cache_dir: str, split: str, experts: List[str], batch_size: int, frac_synth: float,

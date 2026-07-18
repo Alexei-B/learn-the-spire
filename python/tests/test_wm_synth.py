@@ -381,6 +381,57 @@ def _assert_creatures_lexsorted(z):
         assert list(order) == list(range(k)), b
 
 
+def _encode_card_num(ints):
+    """Encode an integer [k, CARD_NUM] block into the stored array form (raw flags raw, else symlog)."""
+    cn = ints.astype(np.float32)
+    for j, col in enumerate(tokens.CARD_NUM):
+        if col not in SY._CARD_RAW_COLS:
+            cn[:, j] = SY._symlog_arr(ints[:, j].astype(np.float64)).astype(np.float32)
+    return cn
+
+
+def _random_card_rows(rng, k):
+    """A block of ``k`` random UNSORTED card rows in valid stored-array form, drawn from a SMALL pool of
+    content templates so many rows share an identical categorical+numeric key and the keyword multiset is
+    the actual tiebreak (the case the vectorized sort must get exactly right), while distinct templates
+    still exercise the categorical/numeric ordering."""
+    n_templ = max(1, k // 3)
+    templ_ci = rng.integers(0, 4, size=(n_templ, len(tokens.CARD_IDX))).astype(np.int32)
+    templ_int = np.zeros((n_templ, len(tokens.CARD_NUM)), np.int64)
+    for j, col in enumerate(tokens.CARD_NUM):
+        templ_int[:, j] = rng.integers(0, 2, size=n_templ) if col in SY._CARD_RAW_COLS \
+            else rng.integers(-1, 4, size=n_templ)
+    pick = rng.integers(0, n_templ, size=k)
+    ci = templ_ci[pick]
+    cn = _encode_card_num(templ_int[pick])
+    ckw = (rng.random((k, tokens.KW_BUCKETS)) < 0.12).astype(np.float32)         # sparse keyword sets
+    return ci, cn, ckw
+
+
+def test_card_content_order_matches_reference():
+    # The vectorized content sort must reproduce the per-row reference (tokens._card_content_key order)
+    # EXACTLY for every possible row — the canonical row order is a wire-format contract with the
+    # tokenizer. Over many random batches with forced ties, the two permutations are identical.
+    rng = np.random.default_rng(0xC0DE)
+    saw_tie_broken_by_keywords = False
+    for _ in range(200):
+        k = int(rng.integers(0, 25))
+        ci, cn, ckw = _random_card_rows(rng, k)
+        want = SY._card_content_order_ref(ci, cn, ckw, k)
+        got = SY._card_content_order(ci, cn, ckw, k)
+        assert got == want, (k, got, want)
+        # Confirm the keyword tiebreak is genuinely exercised: some adjacent pair in the sorted order ties
+        # on all categorical+numeric columns and is separated only by its keyword multiset.
+        if k >= 2 and not saw_tie_broken_by_keywords:
+            cols = SY._card_content_key_columns(ci[:k], cn[:k], ckw[:k])
+            no_kw = np.stack(cols[:len(tokens.CARD_IDX) + len(SY._CARD_NONZONE_NUM)], axis=1)
+            for a, b in zip(want, want[1:]):
+                if np.array_equal(no_kw[a], no_kw[b]) and not np.array_equal(ckw[a], ckw[b]):
+                    saw_tie_broken_by_keywords = True
+                    break
+    assert saw_tie_broken_by_keywords, "keyword-only tiebreak never exercised — test is not covering it"
+
+
 def test_reshaped_cards_are_content_sorted():
     z = SY.synth_batch(["cards"], 64, np.random.default_rng(20))
     _assert_card_rows_content_sorted(z)
