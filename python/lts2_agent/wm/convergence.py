@@ -100,51 +100,158 @@ def _hist_mean(hist) -> float:
     return float((np.arange(len(p)) * p).sum() / p.sum())
 
 
-def entropy_cards() -> float:
-    """CURRENT generator (independent-uniform content): row count from the measured hist, then per row
-    every categorical + dynamic numeric sampled independently, sparse keywords, game-like zone vector.
-    NOTE: the real game's card fields are largely FUNCTIONS of cardIndex — this measures the GENERATOR's
-    designed space, and a large value here vs. slice capacity is exactly the over-generation tripwire."""
+def _card_zone_bits() -> float:
+    """Approx bits for a row's per-zone count vector (n_zones chosen + which zones + per-zone counts). Same
+    for the table and no-table paths — the zone-vector sampler is identical in both."""
+    return _hist_entropy(SY._CARD_NZONES_HIST) + 2.5 + 3.0
+
+
+def _card_wild_content_bits() -> float:
+    """Fully-uniform (WILDCARD) per-row CONTENT bits: every card categorical + dynamic numeric sampled
+    independently over its whole range + sparse keywords (excludes the zone vector). This is the old
+    over-generating per-row cost — the reachability path replaces it with the conditional table, keeping
+    only a CARD_WILDCARD_PROB slice of it."""
+    from .. import tokens as T
     tspec = S.TYPE_BY_NAME["card"]
-    per_row = 0.0
+    bits = 0.0
     for col_name, vocab in tspec.cat_cols:
         hi = vocab - 1 if col_name in ("type", "rarity", "targetType") else vocab
-        per_row += math.log2(max(2, hi))
-    zone_cols = set(getattr(__import__("lts2_agent.tokens", fromlist=["tokens"]), "ZONE_COUNT_FIELDS"))
-    from .. import tokens as T
+        bits += math.log2(max(2, hi))
+    zone_cols = set(T.ZONE_COUNT_FIELDS)
     for c in T.CARD_NUM:
         if c in zone_cols:
             continue
         b = _range_bits("card", c)
-        per_row += b if b else 1.0                      # flag columns: 1 bit
+        bits += b if b else 1.0                         # flag columns: 1 bit
     p_kw = 0.05                                          # generator keyword on-prob
     h_kw = -(p_kw * math.log2(p_kw) + (1 - p_kw) * math.log2(1 - p_kw))
-    per_row += T.KW_BUCKETS * h_kw
-    per_row += _hist_entropy(SY._CARD_NZONES_HIST) + 2.5 + 3.0   # zones chosen + per-zone counts (approx)
+    bits += T.KW_BUCKETS * h_kw
+    return bits
+
+
+def _dist_bits(probs) -> float:
+    """Shannon entropy (bits) of a probability vector (0 for a deterministic single value)."""
+    p = np.asarray(probs, dtype=np.float64)
+    p = p[p > 0]
+    return float(-(p * np.log2(p)).sum()) if len(p) else 0.0
+
+
+def entropy_cards() -> float:
+    """REACHABILITY-SHAPED generator (when data/reachable_v1.json exists): row count from the measured
+    hist, then per row an identity from the observed cardIndex set + that card's OWN conditional value bits
+    (observed type/rarity/targetType choices, enchant/afflict frequency entropy, keyword-pattern choice,
+    per dynamic numeric log2 of its margin-widened observed range), a CARD_WILDCARD_PROB mix with the old
+    fully-uniform content, plus the (unchanged) zone-vector bits. Falls back to the pure independent-uniform
+    formula when the table is absent (the old over-generation tripwire value). Structure mirrors
+    entropy_orbs()."""
+    tbl = SY._try_load_reachable()
+    zone_bits = _card_zone_bits()
+    if tbl is None:
+        per_row = _card_wild_content_bits() + zone_bits
+        return _hist_entropy(SY._CARD_ROWS_HIST) + _hist_mean(SY._CARD_ROWS_HIST) * per_row
+    cards = tbl["cards"]
+    per_id = []
+    for e in cards.values():
+        b = (math.log2(max(1, len(e["type"]))) + math.log2(max(1, len(e["rarity"])))
+             + math.log2(max(1, len(e["targetType"]))))
+        b += _dist_bits(e["enchant_p"]) + _dist_bits(e["afflict_p"])
+        b += math.log2(max(1, len(e["keywords"])))
+        for _, col, _is_raw in SY._CARD_NONZONE_NUM:
+            lo, hi = e["num"].get(col, (0, 0))
+            b += math.log2(max(1, SY.reach_bins("card", col, lo, hi)))
+        per_id.append(b)
+    content = math.log2(max(2, len(cards))) + (sum(per_id) / len(per_id) if per_id else 0.0)
+    w = SY.CARD_WILDCARD_PROB
+    per_row = (1 - w) * content + w * _card_wild_content_bits() + zone_bits
     return _hist_entropy(SY._CARD_ROWS_HIST) + _hist_mean(SY._CARD_ROWS_HIST) * per_row
 
 
-def entropy_creatures() -> float:
-    """CURRENT generator: creatures + folded powers + intents, all independent-uniform. Dominated by the
-    uniform power count 0..MAX_POWERS x (id + parent + amount) term. Same over-generation caveat as
-    entropy_cards()."""
+def _creature_wild_bits() -> float:
+    """Fully-uniform per-creature content bits (kind enum + identity vocab + all numerics) — the WILDCARD
+    creature cost the reachability path keeps only a CREATURE_WILDCARD_PROB slice of."""
     from .. import tokens as T
     cr = S.TYPE_BY_NAME["creature"]
-    per_cr = math.log2(cr.cat_cols[0][1] - 1) + math.log2(cr.cat_cols[1][1])   # kind (enum) + identity
+    bits = math.log2(cr.cat_cols[0][1] - 1) + math.log2(cr.cat_cols[1][1])
     for c in T.CREATURE_NUM:
         b = _range_bits("creature", c)
-        per_cr += b if b else 1.0
-    e_c = (1 + T.MAX_CREATURES) / 2.0
-    pw = S.TYPE_BY_NAME["power"]
-    per_pw = math.log2(pw.cat_cols[0][1]) + math.log2(e_c) + _range_bits("power", "amount")
+        bits += b if b else 1.0
+    return bits
+
+
+def _counts_mean(tbl, name: str, floor1: bool = False) -> float:
+    vals, probs = tbl["counts"][name]
+    m = float((np.asarray(vals) * np.asarray(probs)).sum())
+    return max(1.0, m) if floor1 else m
+
+
+def _counts_bits(tbl, name: str) -> float:
+    return _dist_bits(tbl["counts"][name][1])
+
+
+def entropy_creatures() -> float:
+    """REACHABILITY-SHAPED generator (when the table exists): creatures + folded powers + intents, each
+    from its observed conditional table, with count TERMS driven by the measured per-state / per-creature
+    histograms (replacing the old uniform 0..MAX caps that dominated the estimate). Per creature: observed
+    identity + kind + margin-widened numerics; per power: observed powerIndex + amount range + parent bits;
+    per intent: observed type + numerics + parent bits. A CREATURE_WILDCARD_PROB slice keeps the old
+    uniform cost. Falls back to the independent-uniform formula when the table is absent. Mirrors
+    entropy_orbs()."""
+    from .. import tokens as T
+    tbl = SY._try_load_reachable()
+    if tbl is None:
+        cr = S.TYPE_BY_NAME["creature"]
+        per_cr = _creature_wild_bits()
+        e_c = (1 + T.MAX_CREATURES) / 2.0
+        pw = S.TYPE_BY_NAME["power"]
+        per_pw = math.log2(pw.cat_cols[0][1]) + math.log2(e_c) + _range_bits("power", "amount")
+        inn = S.TYPE_BY_NAME["intent"]
+        per_in = math.log2(inn.cat_cols[0][1] - 1) + math.log2(e_c)
+        for c in T.INTENT_NUM:
+            b = _range_bits("intent", c)
+            per_in += b if b else 1.0
+        return (math.log2(T.MAX_CREATURES) + e_c * per_cr
+                + math.log2(T.MAX_POWERS + 1) + (T.MAX_POWERS / 2.0) * per_pw
+                + math.log2(T.MAX_INTENTS + 1) + (T.MAX_INTENTS / 2.0) * per_in)
+
+    w = SY.CREATURE_WILDCARD_PROB
+    e_c = _counts_mean(tbl, "creatures_per_state", floor1=True)
+    parent_bits = math.log2(max(2, e_c))
+    # Creatures.
+    per_id = []
+    for ce in tbl["creatures"].values():
+        b = math.log2(max(1, len(ce["kind"])))
+        for col in T.CREATURE_NUM:
+            lo, hi = ce["num"].get(col, (0, 0))
+            b += math.log2(max(1, SY.reach_bins("creature", col, lo, hi)))
+        per_id.append(b)
+    cr_content = math.log2(max(2, len(tbl["creatures"]))) + (sum(per_id) / len(per_id) if per_id else 0.0)
+    per_cr = (1 - w) * cr_content + w * _creature_wild_bits()
+    # Powers (parent adds log2(E[creatures]) bits in both paths).
+    ps = tbl["powers"]
+    amt_bits = (sum(math.log2(max(1, SY.reach_bins("power", "amount", lo, hi)))
+                    for lo, hi in ps.values()) / len(ps)) if ps else 0.0
+    pw_content = math.log2(max(2, len(ps))) + amt_bits
+    pw_wild = math.log2(S.TYPE_BY_NAME["power"].cat_cols[0][1]) + _range_bits("power", "amount")
+    per_pw = (1 - w) * pw_content + w * pw_wild + parent_bits
+    # Intents.
+    per_in_id = []
+    for ie in tbl["intents"].values():
+        b = 0.0
+        for col in T.INTENT_NUM:
+            lo, hi = ie.get(col, (0, 0))
+            b += math.log2(max(1, SY.reach_bins("intent", col, lo, hi)))
+        per_in_id.append(b)
+    in_content = (math.log2(max(2, len(tbl["intents"])))
+                  + (sum(per_in_id) / len(per_in_id) if per_in_id else 0.0))
     inn = S.TYPE_BY_NAME["intent"]
-    per_in = math.log2(inn.cat_cols[0][1] - 1) + math.log2(e_c)
+    in_wild = math.log2(inn.cat_cols[0][1] - 1)
     for c in T.INTENT_NUM:
         b = _range_bits("intent", c)
-        per_in += b if b else 1.0
-    return (math.log2(T.MAX_CREATURES) + e_c * per_cr
-            + math.log2(T.MAX_POWERS + 1) + (T.MAX_POWERS / 2.0) * per_pw
-            + math.log2(T.MAX_INTENTS + 1) + (T.MAX_INTENTS / 2.0) * per_in)
+        in_wild += b if b else 1.0
+    per_in = (1 - w) * in_content + w * in_wild + parent_bits
+    return (_counts_bits(tbl, "creatures_per_state") + e_c * per_cr
+            + _counts_bits(tbl, "powers_per_state") + _counts_mean(tbl, "powers_per_state") * per_pw
+            + _counts_bits(tbl, "intents_per_state") + _counts_mean(tbl, "intents_per_state") * per_in)
 
 
 ENTROPY_FNS = {"potions": entropy_potions, "relics": entropy_relics, "orbs": entropy_orbs,

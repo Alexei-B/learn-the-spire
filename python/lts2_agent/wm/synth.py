@@ -29,6 +29,9 @@ Conventions preserved EXACTLY (mirrors :func:`tokens.tokenize`):
 
 from __future__ import annotations
 
+import json
+import math
+import os
 import random
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -59,6 +62,128 @@ def _symlog_arr(a: np.ndarray) -> np.ndarray:
     python float). Kept as the vectorized twin so a whole numeric block encodes at once; a test asserts it
     agrees with ``tokens.symlog`` element-for-element so it can never drift from the tokenizer's storage."""
     return np.sign(a) * np.log1p(np.abs(a))
+
+
+# ==================================================================================================
+# Conditional-reachability table (data/reachable_v1.json, built by wm.reachable). The cards + creatures
+# generators are REACHABILITY-SHAPED: identities are drawn from the corpus-observed set, and every value
+# a real state derives from an identity (a card's type/rarity/cost envelope, a creature's kind, a power's
+# amount range) is sampled from THAT identity's observed conditional range (+ a 1.5x margin, clamped to
+# the spec range) instead of independently-uniform over the whole padded space — mirroring the orbs
+# generator's ORB_TYPES design, but measured rather than hand-authored. A thin per-row WILDCARD tail keeps
+# the old fully-uniform path as coverage insurance for unseen ids. The table is loaded lazily once into a
+# module cache; a test may inject a parsed fixture straight into ``_REACHABLE_TABLE`` (see _parse_reachable
+# for the shape) so the suite runs without the (gitignored) artifact.
+# ==================================================================================================
+
+CARD_WILDCARD_PROB = 0.05        # per card row: fall back to fully-uniform sampling (coverage insurance)
+CREATURE_WILDCARD_PROB = 0.05    # per creature/power/intent row: same uniform fallback
+
+_REACHABLE_JSON = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "reachable_v1.json")
+
+_REACHABLE_TABLE: Optional[Dict[str, Any]] = None   # module cache (tests may inject a parsed fixture)
+
+
+def _norm_probs(counts: Iterable[float]) -> np.ndarray:
+    a = np.asarray(list(counts), dtype=np.float64)
+    s = a.sum()
+    return (a / s) if s > 0 else np.full(len(a), 1.0 / max(1, len(a)))
+
+
+def _parse_reachable(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert the on-disk JSON (string keys, count dicts) into the parsed in-memory table the fillers
+    sample from: integer identity keys, numpy id arrays, per-identity value sets / (value, prob) arrays,
+    per-column ``(lo, hi)`` integer ranges, and per-count-histogram ``(values, probs)`` arrays."""
+    cards: Dict[int, Dict[str, Any]] = {}
+    for k, e in doc["cards"].items():
+        ench = sorted((int(vk), vv) for vk, vv in e["enchant"].items())
+        affl = sorted((int(vk), vv) for vk, vv in e["afflict"].items())
+        cards[int(k)] = {
+            "type": np.asarray(e["type"], np.int64),
+            "rarity": np.asarray(e["rarity"], np.int64),
+            "targetType": np.asarray(e["targetType"], np.int64),
+            "enchant_vals": np.asarray([v for v, _ in ench], np.int64),
+            "enchant_p": _norm_probs(c for _, c in ench),
+            "afflict_vals": np.asarray([v for v, _ in affl], np.int64),
+            "afflict_p": _norm_probs(c for _, c in affl),
+            "keywords": [tuple(int(b) for b in pat) for pat in e["keywords"]] or [()],
+            "num": {col: (int(lo), int(hi)) for col, (lo, hi) in e["num"].items()},
+        }
+    creatures: Dict[int, Dict[str, Any]] = {}
+    for k, ce in doc["creatures"].items():
+        creatures[int(k)] = {
+            "kind": np.asarray(ce["kind"], np.int64),
+            "num": {col: (int(lo), int(hi)) for col, (lo, hi) in ce["num"].items()},
+        }
+    powers = {int(k): (int(v[0]), int(v[1])) for k, v in doc["powers"].items()}
+    intents = {int(k): {col: (int(lo), int(hi)) for col, (lo, hi) in v.items()}
+               for k, v in doc["intents"].items()}
+    counts: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for name, hist in doc["counts"].items():
+        items = sorted((int(kk), vv) for kk, vv in hist.items())
+        counts[name] = (np.asarray([kk for kk, _ in items], np.int64),
+                        _norm_probs(vv for _, vv in items))
+    return {
+        "cards": cards, "card_ids": np.asarray(sorted(cards), np.int64),
+        "creatures": creatures, "creature_ids": np.asarray(sorted(creatures), np.int64),
+        "powers": powers, "power_ids": np.asarray(sorted(powers), np.int64),
+        "intents": intents, "intent_ids": np.asarray(sorted(intents), np.int64),
+        "counts": counts,
+    }
+
+
+def _load_reachable() -> Dict[str, Any]:
+    """Return the parsed reachability table (cached). Raises a clear, actionable error if the artifact is
+    missing — the cards/creatures generators MUST NOT silently fall back to the old uniform space."""
+    global _REACHABLE_TABLE
+    if _REACHABLE_TABLE is None:
+        if not os.path.exists(_REACHABLE_JSON):
+            raise FileNotFoundError(
+                "reachability table not found at " + _REACHABLE_JSON + "; build it with:\n"
+                "    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v1.json")
+        with open(_REACHABLE_JSON, encoding="utf-8") as f:
+            _REACHABLE_TABLE = _parse_reachable(json.load(f))
+    return _REACHABLE_TABLE
+
+
+def _try_load_reachable() -> Optional[Dict[str, Any]]:
+    """Like :func:`_load_reachable` but returns ``None`` when the artifact is absent (used by the entropy
+    estimators in :mod:`wm.convergence`, which keep an analytic no-table fallback)."""
+    try:
+        return _load_reachable()
+    except FileNotFoundError:
+        return None
+
+
+def _margin_lohi(type_name: str, col: str, lo: int, hi: int) -> Tuple[int, int]:
+    """The reachability margin rule: widen an observed integer range ~1.5x outward (lo'=floor(lo*1.5) when
+    lo<0 else lo; hi'=ceil(hi*1.5) when hi>0 else hi), then clamp to the spec's decode range so a sampled
+    value is always exactly representable. Never inverts the interval."""
+    lo2 = math.floor(lo * 1.5) if lo < 0 else lo
+    hi2 = math.ceil(hi * 1.5) if hi > 0 else hi
+    lo2, _ = S.clamp_to_range(type_name, col, int(lo2))
+    hi2, _ = S.clamp_to_range(type_name, col, int(hi2))
+    if lo2 > hi2:
+        lo2 = hi2
+    return int(lo2), int(hi2)
+
+
+def _reach_lohi(type_name: str, col: str, lo: int, hi: int) -> Tuple[int, int]:
+    """Sampling bounds for a reachability numeric column: a dynamic numeric (has a spec range) gets the
+    1.5x margin + clamp; a flag / no-range column keeps its observed integer range verbatim (so a 0/1
+    flag stays a 0/1 flag rather than being widened to 2)."""
+    if S.NUMERIC_RANGES.get(type_name, {}).get(col) is None:
+        return int(lo), int(hi)
+    return _margin_lohi(type_name, col, lo, hi)
+
+
+def reach_bins(type_name: str, col: str, lo: int, hi: int) -> int:
+    """Number of distinct integers the reshaped generator can emit for one identity's numeric column —
+    the entropy estimators in :mod:`wm.convergence` turn this into ``log2(bins)``."""
+    l, h = _reach_lohi(type_name, col, lo, hi)
+    return h - l + 1
 
 
 # ==================================================================================================
@@ -308,22 +433,46 @@ def _fill_orbs(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> No
         mask[b, :k] = True
 
 
+_CREATURE_RAW = [c in RAW_NUM_COLS.get("creature", set()) for c in tokens.CREATURE_NUM]
+_INTENT_RAW = [c in RAW_NUM_COLS.get("intent", set()) for c in tokens.INTENT_NUM]
+
+
 def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
-    """Creatures (folding their powers + intents). Random creature count 1..MAX_CREATURES; kind/identity
-    uniform; numerics uniform in ranges. Powers/intents get uniform ids + in-range amounts and a VALID
-    parent ref (a present creature slot). Counts respect the per-type caps."""
+    """Creatures (folding their powers + intents) — REACHABILITY-SHAPED (see the reachable-table header).
+    Creature count from the measured creatures-per-state histogram (min 1, capped). Per creature: identity
+    from the observed set, kind from that identity's observed kinds, numerics uniform in the identity's
+    observed range (+margin, clamped). Powers: a per-creature count from the powers-per-creature histogram
+    (capped so the state total <= MAX_POWERS); powerIndex from the observed set; amount from that power's
+    observed range (+margin — amounts may be negative). Intents: a count from the intents-per-state
+    histogram (capped); type from the observed set; numerics per-type range. Each sub-row keeps a
+    :data:`CREATURE_WILDCARD_PROB` uniform tail. Creature order uses the tokenizer's v4 lexsort EXACTLY
+    (unchanged) so per-slot targets stay a function of content; powers/intents are placed after the sort so
+    their parent refs index the sorted slots directly."""
+    tbl = _load_reachable()
+    creatures = tbl["creatures"]
+    powers = tbl["powers"]
+    intents = tbl["intents"]
     cr_spec = S.TYPE_BY_NAME["creature"]
     pw_spec = S.TYPE_BY_NAME["power"]
     in_spec = S.TYPE_BY_NAME["intent"]
     cr_idx, cr_num, cr_mask = z["creature_idx"], z["creature_num"], z["creature_mask"]
     pw_idx, pw_num, pw_mask = z["power_idx"], z["power_num"], z["power_mask"]
     in_idx, in_num, in_mask = z["intent_idx"], z["intent_num"], z["intent_mask"]
-    # At least one creature, so powers/intents always have a valid parent to reference.
-    cr_counts = rng.integers(1, tokens.MAX_CREATURES + 1, size=B)
     for b in range(B):
-        c = int(cr_counts[b])
-        cats = _sample_cats(rng, cr_spec, c)                        # [c, 2] (kind, identity)
-        nums = _sample_nums(rng, "creature", tokens.CREATURE_NUM, c)  # [c, 5], symlog-stored
+        # At least one creature, so powers/intents always have a valid parent to reference.
+        c = max(1, min(_reach_hist(rng, tbl["counts"]["creatures_per_state"]), tokens.MAX_CREATURES))
+        cats = _sample_cats(rng, cr_spec, c)                          # [c, 2] uniform base (kind, identity)
+        nums = _sample_nums(rng, "creature", tokens.CREATURE_NUM, c)  # [c, 5], symlog-stored base
+        for i in range(c):
+            if rng.random() < CREATURE_WILDCARD_PROB:
+                continue                                             # keep the uniform base row (wildcard)
+            ident = int(rng.choice(tbl["creature_ids"]))
+            ce = creatures[ident]
+            cats[i, 0] = int(rng.choice(ce["kind"]))                 # CREATURE_IDX[0] = kind
+            cats[i, 1] = ident                                       # CREATURE_IDX[1] = identity
+            for j, col in enumerate(tokens.CREATURE_NUM):
+                lo, hi = ce["num"].get(col, (0, 0))
+                nums[i, j] = _reach_num(rng, "creature", col, lo, hi, _CREATURE_RAW[j])
         # Canonicalize creature order to match the tokenizer (v4): sort by (kind, combatId, identity,
         # currentHp, maxHp, block, active). symlog is monotonic so sorting the stored floats matches the
         # integer order. Powers/intents are generated AFTER placing, so their parent refs index the
@@ -334,24 +483,46 @@ def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) 
         cr_idx[b, :c, :] = cats[order]
         cr_num[b, :c, :] = nums[order]
         cr_mask[b, :c] = True
-        # Powers.
-        np_ = int(rng.integers(0, tokens.MAX_POWERS + 1))
-        if np_:
-            ids = rng.integers(0, pw_spec.cat_cols[0][1], size=np_)      # powerIndex over catalog
-            parents = rng.integers(0, c, size=np_)                      # valid present-creature parent
-            pw_idx[b, :np_, 0] = ids
-            pw_idx[b, :np_, 1] = parents
-            pw_num[b, :np_, :] = _sample_nums(rng, "power", tokens.POWER_NUM, np_)
-            pw_mask[b, :np_] = True
-        # Intents.
-        ni = int(rng.integers(0, tokens.MAX_INTENTS + 1))
-        if ni:
-            types = rng.integers(0, _cat_high("intent", "type", in_spec.cat_cols[0][1]), size=ni)
-            parents = rng.integers(0, c, size=ni)
-            in_idx[b, :ni, 0] = types
-            in_idx[b, :ni, 1] = parents
-            in_num[b, :ni, :] = _sample_nums(rng, "intent", tokens.INTENT_NUM, ni)
-            in_mask[b, :ni] = True
+        # Powers: a per-creature count from the measured powers-per-creature histogram, each attached to
+        # its creature's (post-sort) slot, capped so the state total never exceeds MAX_POWERS.
+        n_pw = 0
+        for s in range(c):
+            if n_pw >= tokens.MAX_POWERS:
+                break
+            for _ in range(_reach_hist(rng, tbl["counts"]["powers_per_creature"])):
+                if n_pw >= tokens.MAX_POWERS:
+                    break
+                if rng.random() < CREATURE_WILDCARD_PROB:
+                    pid = int(rng.integers(0, pw_spec.cat_cols[0][1]))
+                    amt = int(rng.integers(*_lohi("power", "amount")))
+                else:
+                    pid = int(rng.choice(tbl["power_ids"]))
+                    lo, hi = powers[pid]
+                    l, h = _reach_lohi("power", "amount", lo, hi)
+                    amt = int(rng.integers(l, h + 1))
+                pw_idx[b, n_pw, 0] = pid
+                pw_idx[b, n_pw, 1] = s
+                pw_num[b, n_pw, 0] = tokens.symlog(amt)
+                pw_mask[b, n_pw] = True
+                n_pw += 1
+        # Intents: a count from the measured intents-per-state histogram, each on a valid creature slot.
+        ni = min(_reach_hist(rng, tbl["counts"]["intents_per_state"]), tokens.MAX_INTENTS)
+        for i in range(ni):
+            parent = int(rng.integers(0, c))
+            if rng.random() < CREATURE_WILDCARD_PROB:
+                ty = int(rng.integers(0, _cat_high("intent", "type", in_spec.cat_cols[0][1])))
+                nrow = _sample_nums(rng, "intent", tokens.INTENT_NUM, 1)[0]
+            else:
+                ty = int(rng.choice(tbl["intent_ids"]))
+                ie = intents[ty]
+                nrow = np.zeros(len(tokens.INTENT_NUM), np.float32)
+                for j, col in enumerate(tokens.INTENT_NUM):
+                    lo, hi = ie.get(col, (0, 0))
+                    nrow[j] = _reach_num(rng, "intent", col, lo, hi, _INTENT_RAW[j])
+            in_idx[b, i, 0] = ty
+            in_idx[b, i, 1] = parent
+            in_num[b, i, :] = nrow
+            in_mask[b, i] = True
 
 
 def _sample_from_hist(rng: np.random.Generator, hist: np.ndarray, size: int) -> np.ndarray:
@@ -359,7 +530,27 @@ def _sample_from_hist(rng: np.random.Generator, hist: np.ndarray, size: int) -> 
     return rng.choice(len(hist), size=size, p=p)
 
 
+def _reach_hist(rng: np.random.Generator, counts: Tuple[np.ndarray, np.ndarray]) -> int:
+    """One draw from a measured count histogram ``(values, probs)`` (creatures/powers/intents per state,
+    powers per creature)."""
+    vals, probs = counts
+    return int(rng.choice(vals, p=probs))
+
+
+def _reach_num(rng: np.random.Generator, type_name: str, col: str, lo: int, hi: int,
+               is_raw: bool) -> float:
+    """Sample one integer inside an identity's reachability range (margin+clamp for dynamic numerics,
+    verbatim for flags) and store it the way the tokenizer does (raw for flags, symlog otherwise)."""
+    l, h = _reach_lohi(type_name, col, lo, hi)
+    v = int(rng.integers(l, h + 1))
+    return float(v) if is_raw else float(tokens.symlog(v))
+
+
 _CARD_RAW_COLS = RAW_NUM_COLS.get("card", set())
+# (numeric-block index, column name, is-raw-flag) for every CARD_NUM column that is NOT a per-zone count —
+# the dynamic content numerics the reachability table conditions on (zone counts keep their own sampler).
+_CARD_NONZONE_NUM = [(j, c, c in _CARD_RAW_COLS) for j, c in enumerate(tokens.CARD_NUM)
+                     if c not in tokens.ZONE_COUNT_FIELDS]
 
 
 def _card_content_order(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k: int) -> List[int]:
@@ -381,13 +572,41 @@ def _card_content_order(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k
     return sorted(range(k), key=lambda r: keys[r])
 
 
+def _fill_card_row_from_table(rng: np.random.Generator, tbl: Dict[str, Any], ci_row: np.ndarray,
+                              cn_row: np.ndarray, ckw_row: np.ndarray) -> None:
+    """Overwrite one card row's content (categoricals + dynamic numerics + keyword multi-hot) with a
+    reachability-shaped draw: a real cardIndex, its observed type/rarity/targetType/enchant/afflict and a
+    real keyword pattern, and each dynamic numeric uniform in that card's observed range (+margin, clamped
+    to spec). The per-zone count columns are left untouched (the zone-vector sampler fills them)."""
+    cards = tbl["cards"]
+    cid = int(rng.choice(tbl["card_ids"]))
+    e = cards[cid]
+    # CARD_IDX = [cardIndex, type, rarity, targetType, enchant, afflict].
+    ci_row[0] = cid
+    ci_row[1] = int(rng.choice(e["type"]))
+    ci_row[2] = int(rng.choice(e["rarity"]))
+    ci_row[3] = int(rng.choice(e["targetType"]))
+    ci_row[4] = int(rng.choice(e["enchant_vals"], p=e["enchant_p"]))
+    ci_row[5] = int(rng.choice(e["afflict_vals"], p=e["afflict_p"]))
+    for j, col, is_raw in _CARD_NONZONE_NUM:
+        lo, hi = e["num"].get(col, (0, 0))
+        cn_row[j] = _reach_num(rng, "card", col, lo, hi, is_raw)
+    ckw_row[:] = 0.0
+    pat = e["keywords"][int(rng.integers(len(e["keywords"])))]
+    for b in pat:
+        ckw_row[b] = 1.0
+
+
 def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
-    """Card population rows (coverage insurance — game-shaped structure, uniform content). Row count from
-    the measured rows/state marginal; each row's categoricals + dynamic numerics uniform in ranges;
-    keywords random-sparse; the per-zone count vector sampled from the measured game-like small-int
-    distribution (n_zones, which zones, per-zone count) with sum >= 1 (a row exists because it has an
-    instance somewhere). Rows are finally CONTENT-SORTED into the tokenizer's canonical order (well-posed
-    targets — a permutation-invariant set encoder needs a content-determined slot assignment)."""
+    """Card population rows — REACHABILITY-SHAPED (see the reachable-table section header). Row count from
+    the measured rows/state marginal; each row's identity + static fields + dynamic numerics + keyword
+    pattern drawn from that cardIndex's observed conditional table (values a real card actually takes,
+    numerics widened ~1.5x and clamped), with a :data:`CARD_WILDCARD_PROB` per-row uniform tail as
+    coverage insurance for unseen ids. The per-zone count vector is UNCHANGED — sampled from the measured
+    game-like small-int distribution (n_zones, which zones, per-zone count) with sum >= 1. Rows are finally
+    CONTENT-SORTED into the tokenizer's canonical order (well-posed targets — a permutation-invariant set
+    encoder needs a content-determined slot assignment)."""
+    tbl = _load_reachable()
     cap = tokens.MAX_CARDS
     tspec = S.TYPE_BY_NAME["card"]
     zone_cols = list(tokens.ZONE_COUNT_FIELDS)
@@ -400,10 +619,14 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> N
         k = int(row_counts[b])
         if k == 0:
             continue
+        # Base = fully-uniform WILDCARD content for every row; table-conditioned rows overwrite it below.
         ci[b, :k, :] = _sample_cats(rng, tspec, k)
         cn[b, :k, :] = _sample_nums(rng, "card", tokens.CARD_NUM, k, zone_cols=zone_cols)
-        # Per-row keyword multi-hot: sparse (each of KW_BUCKETS on with small prob).
         ckw[b, :k, :] = (rng.random((k, tokens.KW_BUCKETS)) < 0.05).astype(np.float32)
+        wild = rng.random(k) < CARD_WILDCARD_PROB
+        for r in range(k):
+            if not wild[r]:
+                _fill_card_row_from_table(rng, tbl, ci[b, r], cn[b, r], ckw[b, r])
         # Per-zone count vector (game-like): pick n_zones, which zones, then a small count each.
         for r in range(k):
             nz = int(_sample_from_hist(rng, _CARD_NZONES_HIST, 1)[0])

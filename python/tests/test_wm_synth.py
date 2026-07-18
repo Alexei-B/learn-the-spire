@@ -27,6 +27,72 @@ from lts2_agent.wm.experts import EXPERT_TYPES, RAW_NUM_COLS
 
 ALL_EXPERTS = ["scalars", "potions", "relics", "orbs", "creatures", "cards"]
 
+# The reachability-shaped cards/creatures generators load their conditional table from
+# data/reachable_v1.json. Tests MUST NOT depend on that (gitignored) artifact, so we build a tiny fixture
+# table inline and inject the PARSED form straight into the module cache (autouse, per-test, auto-restored
+# by monkeypatch). The two fixture card/creature identities are deliberately distinct small indices so a
+# WILDCARD row (uniform over the whole catalog) is almost surely detectable by an out-of-fixture id.
+_FIXTURE_CARD_IDS = [5, 42]
+_FIXTURE_CREATURE_IDS = [3, 77]
+
+
+def _fixture_card_num():
+    d = {}
+    for _, col, _is_raw in SY._CARD_NONZONE_NUM:
+        r = S.NUMERIC_RANGES.get("card", {}).get(col)
+        d[col] = [0, 1] if r is None else [r.lo, min(r.lo + 2, r.hi)]
+    return d
+
+
+def _fixture_creature_num():
+    d = {}
+    for col in tokens.CREATURE_NUM:
+        r = S.NUMERIC_RANGES.get("creature", {}).get(col)
+        d[col] = [0, 1] if r is None else [r.lo, min(r.lo + 2, r.hi)]
+    return d
+
+
+def _fixture_intent_num():
+    d = {}
+    for col in tokens.INTENT_NUM:
+        r = S.NUMERIC_RANGES.get("intent", {}).get(col)
+        d[col] = [0, 1] if r is None else [r.lo, min(r.lo + 2, r.hi)]
+    return d
+
+
+def _fixture_raw():
+    """A minimal on-disk-shaped reachability doc (string keys, count dicts) — the exact shape
+    wm.reachable emits and SY._parse_reachable consumes."""
+    return {
+        "cards": {
+            "5": {"type": [1], "rarity": [2], "targetType": [1],
+                  "enchant": {"0": 100, "7": 5}, "afflict": {"0": 100},
+                  "keywords": [[], [3, 9]], "num": _fixture_card_num()},
+            "42": {"type": [1, 2], "rarity": [3], "targetType": [1, 2],
+                   "enchant": {"0": 50}, "afflict": {"0": 40, "11": 3},
+                   "keywords": [[]], "num": _fixture_card_num()},
+        },
+        "creatures": {
+            "3": {"kind": [0], "num": _fixture_creature_num()},
+            "77": {"kind": [2], "num": _fixture_creature_num()},
+        },
+        "powers": {"11": [0, 3], "20": [-2, 5]},
+        "intents": {"0": _fixture_intent_num(), "1": _fixture_intent_num()},
+        "counts": {
+            "creatures_per_state": {"1": 5, "2": 3, "3": 1},
+            "powers_per_state": {"0": 4, "1": 3, "2": 2},
+            "intents_per_state": {"0": 4, "1": 3, "2": 1},
+            "powers_per_creature": {"0": 5, "1": 3, "2": 1},
+        },
+    }
+
+
+@pytest.fixture(autouse=True)
+def _inject_reachable_table(monkeypatch):
+    """Inject the fixture table into synth's module cache for every test, so the reshaped cards/creatures
+    generators run without the real data/reachable_v1.json artifact."""
+    monkeypatch.setattr(SY, "_REACHABLE_TABLE", SY._parse_reachable(_fixture_raw()))
+
 # The current-version pre-tokenized cache (rebuilt per tokenizer version — see wm/cache.py). A test that
 # mixes synthetic with REAL cache batches needs a cache whose signature matches the live tokenizer;
 # otherwise (fresh clone, or a stale cache after a version bump) it skips rather than concatenating
@@ -283,3 +349,118 @@ def test_synth_batch_forward_and_report():
         assert f"expert_dist::{e}" in pairs and f"expert_exact::{e}" in pairs
         num, den = pairs[f"expert_dist::{e}"]
         assert den.sum() > 0 and num.shape == (4,)
+
+
+# ==================================================================================================
+# Reachability-shaped cards/creatures (roadmap M3.5, wm-t3-factored) — the reshaped generators keep the
+# tokenizer's canonical order, sample only in-range values, symlog-store integers, and hit both the
+# table and the wildcard paths.
+# ==================================================================================================
+
+def _assert_card_rows_content_sorted(z):
+    """Every state's present card rows are already in the tokenizer's content-canonical order (the
+    generator reproduces tokens._card_content_key ordering; permutation to sorted is the identity)."""
+    ci, cn, ckw, cm = z["card_idx"], z["card_num"], z["card_kw"], z["card_mask"]
+    for b in range(ci.shape[0]):
+        k = int(cm[b].sum())
+        if k <= 1:
+            continue
+        assert SY._card_content_order(ci[b], cn[b], ckw[b], k) == list(range(k)), b
+
+
+def _assert_creatures_lexsorted(z):
+    """Every state's present creatures obey the tokenizer's v4 lexsort key exactly (unchanged in v5)."""
+    m = z["creature_mask"]
+    for b in range(m.shape[0]):
+        k = int(m[b].sum())
+        if k <= 1:
+            continue
+        cats, nums = z["creature_idx"][b, :k], z["creature_num"][b, :k]
+        order = np.lexsort((nums[:, 3], nums[:, 2], nums[:, 1], nums[:, 0], cats[:, 1],
+                            nums[:, 4], cats[:, 0]))
+        assert list(order) == list(range(k)), b
+
+
+def test_reshaped_cards_are_content_sorted():
+    z = SY.synth_batch(["cards"], 64, np.random.default_rng(20))
+    _assert_card_rows_content_sorted(z)
+
+
+def test_reshaped_creatures_are_lexsorted():
+    z = SY.synth_batch(["creatures"], 64, np.random.default_rng(21))
+    _assert_creatures_lexsorted(z)
+
+
+def test_table_conditioned_values_within_spec_ranges():
+    # Force the pure table path (no wildcard): every sampled numeric must decode to an integer inside
+    # spec.NUMERIC_RANGES (the margin+clamp contract), and flag columns must stay 0/1.
+    import pytest as _pytest  # local alias to avoid shadowing the module-level fixture arg name
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SY, "CARD_WILDCARD_PROB", 0.0)
+        mp.setattr(SY, "CREATURE_WILDCARD_PROB", 0.0)
+        rng = np.random.default_rng(22)
+        for e, tn in [("cards", "card"), ("creatures", "creature")]:
+            z = SY.synth_batch([e], 80, rng)
+            dec = _decoded_ints(tn, z[S.TYPE_BY_NAME[tn].num_key], z[S.TYPE_BY_NAME[tn].mask_key])
+            for c, vals in dec.items():
+                if len(vals) == 0:
+                    continue
+                r = S.NUMERIC_RANGES.get(tn, {}).get(c)
+                if r is not None:
+                    assert vals.min() >= r.lo and vals.max() <= r.hi, (tn, c, vals.min(), vals.max())
+                else:
+                    assert set(np.unique(vals).astype(int)).issubset({0, 1}), (tn, c)
+            # Powers folded into the creatures expert (amount can be negative) also stay in range.
+            if tn == "creature":
+                amt = _decoded_ints("power", z["power_num"], z["power_mask"])["amount"]
+                if len(amt):
+                    r = S.NUMERIC_RANGES["power"]["amount"]
+                    assert amt.min() >= r.lo and amt.max() <= r.hi
+
+
+def test_reshaped_symlog_storage_is_integer_exact():
+    # symlog storage identity: every stored non-flag numeric is exactly symlog(integer) — symexp recovers
+    # a whole number (no drift), the same contract the tokenizer/bin_targets rely on.
+    rng = np.random.default_rng(23)
+    for e, tn, cols in [("cards", "card", tokens.CARD_NUM), ("creatures", "creature", tokens.CREATURE_NUM)]:
+        z = SY.synth_batch([e], 48, rng)
+        raw = RAW_NUM_COLS.get(tn, set())
+        num = z[S.TYPE_BY_NAME[tn].num_key][z[S.TYPE_BY_NAME[tn].mask_key]]
+        for j, c in enumerate(cols):
+            v = num[:, j].astype(np.float64)
+            if c in raw:
+                assert np.allclose(v, np.round(v), atol=0), (tn, c)      # flags stored raw (integers)
+            else:
+                sx = np.sign(v) * np.expm1(np.abs(v))
+                assert np.allclose(sx, np.round(sx), atol=1e-5), (tn, c)  # symlog of an integer
+
+
+def test_wildcard_and_table_paths_both_exercised():
+    # With a mid wildcard prob and enough rows, some identities come from the tiny fixture set (table
+    # path) and some fall outside it (wildcard uniform over the whole catalog) — both paths must fire.
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SY, "CARD_WILDCARD_PROB", 0.5)
+        mp.setattr(SY, "CREATURE_WILDCARD_PROB", 0.5)
+        zc = SY.synth_batch(["cards"], 200, np.random.default_rng(24))
+        cids = zc["card_idx"][zc["card_mask"]][:, 0]
+        in_tbl = np.isin(cids, _FIXTURE_CARD_IDS)
+        assert in_tbl.any(), "no table-path card rows"
+        assert (~in_tbl).any(), "no wildcard-path card rows"
+
+        zk = SY.synth_batch(["creatures"], 200, np.random.default_rng(25))
+        ids = zk["creature_idx"][zk["creature_mask"]][:, 1]
+        in_tbl = np.isin(ids, _FIXTURE_CREATURE_IDS)
+        assert in_tbl.any(), "no table-path creature rows"
+        assert (~in_tbl).any(), "no wildcard-path creature rows"
+
+
+def test_missing_reachable_artifact_raises_clearly():
+    # With no injected table AND no artifact on disk, the generator raises a clear, actionable error
+    # (it must never silently fall back to the old uniform space).
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SY, "_REACHABLE_TABLE", None)
+        mp.setattr(SY, "_REACHABLE_JSON", os.path.join(os.path.sep, "no", "such", "reachable_v1.json"))
+        with _pytest.raises(FileNotFoundError, match="reachable"):
+            SY.synth_batch(["cards"], 2, np.random.default_rng(26))

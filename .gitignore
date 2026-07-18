@@ -34,10 +34,9 @@ python/lts2_agent/data/*
 # ...but the oracle probe set (seeds + action indices + metadata only, no game content) is committed.
 !python/lts2_agent/data/probes.json
 
-# Transition corpus shards (logged game observations — large, regenerable, never committed)
-python/data/corpus/
-# Pre-tokenized corpus cache (derived from the corpus by lts2_agent.wm.cache; large, regenerable)
-python/data/corpus_tok/
+# All local data artifacts under python/data/ (corpus shards, pre-tokenized caches, measured
+# reachability tables — large and/or regenerable from the local corpus, never committed)
+python/data/
 
 # Data output
 *.jsonl
