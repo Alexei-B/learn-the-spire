@@ -200,6 +200,12 @@ def main() -> int:
                     help="AdamW beta2. The 0.999 default is the textbook late-collapse ingredient at "
                          "sustained LR (stale second moments); 0.95-0.98 is transformer practice and "
                          "raises the stable-LR ceiling.")
+    ap.add_argument("--adam-eps", type=float, default=1e-8,
+                    help="AdamW eps. The 1e-8 default is the OTHER textbook late-collapse ingredient: "
+                         "once an expert converges, per-param grads (and with a low beta2, v_t) go to "
+                         "~0, the effective step lr/(sqrt(v)+eps) balloons, and the model random-walks "
+                         "out of its own minimum at flat LR (observed: both orb probes progressively "
+                         "diverged at ~10-11.5k after thousands of converged steps). 1e-5 for probes.")
     ap.add_argument("--loss-balance", default="term", choices=["term", "expert"],
                     help="factored arch only: 'expert' gives every expert an equal gradient share "
                          "(fixes relic/orb starvation under the per-term default).")
@@ -379,7 +385,7 @@ def main() -> int:
                   f"(source step {(MF.read_meta(src)).get('step')})", flush=True)
 
     opt = torch.optim.AdamW(_freeze_and_params(model), lr=args.lr, weight_decay=args.weight_decay,
-                            betas=(0.9, args.beta2))
+                            betas=(0.9, args.beta2), eps=args.adam_eps)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
 
     def save_fn(path, **kw):
@@ -394,7 +400,7 @@ def main() -> int:
                                             expect_num_head=args.num_head)
         model = model.to(device)
         opt = torch.optim.AdamW(_freeze_and_params(model), lr=args.lr, weight_decay=args.weight_decay,
-                            betas=(0.9, args.beta2))
+                            betas=(0.9, args.beta2), eps=args.adam_eps)
         sched = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda(args.warmup, args.steps))
         if os.path.exists(args.ckpt + ".train"):
             ts = torch.load(args.ckpt + ".train", map_location=device)
@@ -519,6 +525,7 @@ def main() -> int:
               f"(seed {SY.COVERAGE_VAL_SEED:#x})", flush=True)
 
     win = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0}
+    win_gn = 0.0
     win_states = 0
     win_t0 = time.perf_counter()
     model.train()
@@ -540,7 +547,9 @@ def main() -> int:
                     losses = loss_fn(batch, out)
             opt.zero_grad(set_to_none=True)
             losses["loss"].backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # Pre-clip global grad norm, window-averaged into train.grad_norm — the collapse telltale
+            # (a converged run whose grad norm trends UP is walking out of its minimum).
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
             opt.step()
             sched.step()
             if ema is not None:
@@ -548,6 +557,7 @@ def main() -> int:
 
             for k in win:
                 win[k] += float(losses[k])
+            win_gn += grad_norm
             win_states += args.batch
 
             if step % args.log_every == 0:
@@ -563,9 +573,11 @@ def main() -> int:
                     mw.emit("train", step, "train.loss_categorical", avg["loss_categorical"])
                     mw.emit("train", step, "train.loss_numeric", avg["loss_numeric"])
                     mw.emit("train", step, "train.loss_presence", avg["loss_presence"])
+                    mw.emit("train", step, "train.grad_norm", win_gn / args.log_every)
                     mw.emit("train", step, "train.lr", lr)
                     mw.emit("train", step, "train.states_per_s", sps)
                 win = {k: 0.0 for k in win}
+                win_gn = 0.0
                 win_states = 0
                 win_t0 = time.perf_counter()
 
