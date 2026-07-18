@@ -16,11 +16,12 @@ MEASURES the conditional tables from the corpus once and freezes them into a JSO
 ``synth`` loads. Concretely it records, per tokenizer identity index:
 
 * cards  (per ``cardIndex``):    observed type/rarity/targetType, observed enchant/afflict value
-                                 frequencies, observed keyword multi-hot patterns WITH their observed
-                                 frequencies (v3: counts, not just the deduped pattern list — so synth
-                                 samples a card's canonical/alternate patterns at their real rates), and
-                                 per dynamic numeric column (``CARD_NUM`` minus the per-zone count
-                                 vector) the observed ``(lo, hi)`` integer range.
+                                 frequencies, observed ABSOLUTE keyword-flag patterns (7-bit, the
+                                 tokenizer v7 :data:`tokens.KEYWORDS` columns = printed ∪ addedKeywords)
+                                 WITH their observed frequencies (counts, not just the deduped pattern
+                                 list — so synth samples a card's canonical/alternate absolute patterns at
+                                 their real rates), and per dynamic numeric column (the full ``CARD_NUM``
+                                 content block) the observed ``(lo, hi)`` integer range.
 * creatures (per ``identity``):  observed ``kind`` values + per ``CREATURE_NUM`` column ``(lo, hi)``.
 * powers  (per ``powerIndex``):  ``amount`` ``(lo, hi)``.
 * intents (per intent ``type``): per ``INTENT_NUM`` column ``(lo, hi)``.
@@ -38,7 +39,7 @@ thousand states is plenty to see every reachable card/creature and its value env
 
 CLI::
 
-    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v3.json [--n N]
+    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v4.json [--n N]
 """
 
 from __future__ import annotations
@@ -252,7 +253,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Build the conditional-reachability table for the synthetic experts.")
     ap.add_argument("--corpus", default="data/corpus2", help="corpus root to stream (default data/corpus2)")
-    ap.add_argument("--out", default="data/reachable_v3.json", help="output JSON artifact path")
+    ap.add_argument("--out", default="data/reachable_v4.json", help="output JSON artifact path")
     ap.add_argument("--split", default=None, help="restrict to one split (default: all splits)")
     ap.add_argument("--n", type=int, default=400000, help="max states to scan (default 400k)")
     ap.add_argument("--shard-stride", type=int, default=0,
@@ -303,6 +304,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     zfrac = ", ".join("%s %.3f" % (tokens.ZONES[int(zi)], zn.get(str(zi), 0) / ztot)
                       for zi in range(len(tokens.ZONES)))
     print("  card zone marginal: %s" % zfrac)
+    # v7 keyword channel: distinct ABSOLUTE keyword-flag patterns + the share of card INSTANCES whose
+    # absolute flags differ from their card's PRINTED flags (i.e. carry a runtime grant — the rows the
+    # granted-rows eval slice scores). Derived from the on-disk per-card [pattern, count] lists + the
+    # tokenizer's printed-keyword-by-index table.
+    printed_by_idx = tokens.printed_keyword_flags_by_index()
+    distinct_patterns = set()
+    granted = total_inst = 0
+    for cis, e in doc["cards"].items():
+        ci = int(cis)
+        printed = frozenset(int(j) for j in printed_by_idx[ci].nonzero()[0]) if ci < len(printed_by_idx) \
+            else frozenset()
+        for pat, cnt in e["keywords"]:
+            s = frozenset(int(b) for b in pat)
+            distinct_patterns.add(tuple(sorted(s)))
+            total_inst += cnt
+            if s != printed:
+                granted += cnt
+    pct = (100.0 * granted / total_inst) if total_inst else 0.0
+    print("-" * 78)
+    print("  keywords (v7 absolute 7-flag): %d distinct patterns over %d card instances; "
+          "%d (%.4f%%) carry a runtime grant (absolute != printed)"
+          % (len(distinct_patterns), total_inst, granted, pct))
     print("  wrote %s" % args.out)
     print("=" * 78)
     return 0

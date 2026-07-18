@@ -134,7 +134,8 @@ def test_build_hash_names_helper_collects_and_buckets():
     statefmt._collect_strings(st, acc)
     assert "JawWorm" in acc["monster"]
     assert "IRONCLAD" in acc["character"]
-    assert "Retain" in acc["keyword"]
+    # v7: keywords are the closed tokens.KEYWORDS enum, no longer a hashed vocab.
+    assert "keyword" not in statefmt._HASH_VOCABS
 
 
 def test_real_fixtures_render():

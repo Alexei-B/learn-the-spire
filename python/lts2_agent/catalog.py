@@ -81,6 +81,11 @@ class EntityCatalog:
         # Index 0 reserved for "none / id absent from the catalog" (e.g. combat-generated content).
         self.index: Dict[str, int] = {rid: i + 1 for i, rid in enumerate(self._ids)}
         self.size = len(self._ids) + 1
+        # Per-id PRINTED (static, catalog-authored) keyword name lists — the tokenizer v7 keyword channel
+        # unions these with the wire's runtime addedKeywords to form each card's ABSOLUTE keyword state.
+        # (Only cards carry a ``keywords`` field; other kinds keep an empty map, harmlessly.)
+        self._keywords_by_id: Dict[str, List[str]] = {
+            r["id"]: [str(v) for v in (r.get("keywords") or [])] for r in rows}
 
         # Column layout: categorical one-hots, then booleans, then multi-hot list values.
         col: Dict[Tuple[str, str], int] = {}
@@ -136,6 +141,18 @@ class EntityCatalog:
             return ""
         return self._ids[index - 1]
 
+    @property
+    def ids(self) -> List[str]:
+        """The catalog's entity ids in stable (sorted) order (index i+1 == ids[i])."""
+        return list(self._ids)
+
+    def printed_keywords(self, entity_id: Optional[str]) -> List[str]:
+        """The PRINTED (static) keyword names of a card id (empty for none/unknown or a kind with no
+        ``keywords`` field). Source of the printed half of the tokenizer's absolute keyword state."""
+        if not entity_id:
+            return []
+        return self._keywords_by_id.get(entity_id, [])
+
 
 class HashFallback:
     """Drop-in stand-in for :class:`EntityCatalog` when a dump is absent: CRC32 hashing, no static table.
@@ -155,6 +172,13 @@ class HashFallback:
 
     def id_of(self, index: int) -> str:
         return ""  # not invertible under hashing
+
+    @property
+    def ids(self) -> List[str]:
+        return []  # no dump: no enumerable id list
+
+    def printed_keywords(self, entity_id: Optional[str]) -> List[str]:
+        return []  # no dump: printed keywords unknown (absolute state degrades to addedKeywords only)
 
 
 Catalog = Union[EntityCatalog, HashFallback]

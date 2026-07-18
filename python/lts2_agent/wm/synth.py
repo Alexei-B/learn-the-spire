@@ -102,7 +102,7 @@ CARD_BIGDECK_THRESH = 16
 
 _REACHABLE_JSON = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "reachable_v3.json")
+    "data", "reachable_v4.json")   # v7: absolute-keyword-flag patterns (was reachable_v3, hashed added kw)
 
 _REACHABLE_TABLE: Optional[Dict[str, Any]] = None   # module cache (tests may inject a parsed fixture)
 
@@ -226,7 +226,7 @@ def _augment_reachable(tbl: Dict[str, Any]) -> None:
     # table rows draws them WITHOUT a per-identity Python loop: uniform columns (type/rarity/targetType)
     # store the option values + per-card option counts (draw = pick a random slot < count); weighted
     # columns (enchant/afflict) store the values + a per-card cumulative-prob row (draw = inverse-CDF,
-    # ``argmax(cdf >= u)``); the keyword pattern set becomes a per-card [pattern, KW_BUCKETS] multi-hot
+    # ``argmax(cdf >= u)``); the keyword pattern set becomes a per-card [pattern, len(KEYWORDS)] multi-hot
     # tensor (draw = pick a random pattern row). All widths are small (enum sizes / distinct-value counts).
     cards = tbl["cards"]
     cids = tbl["card_ids"]
@@ -260,13 +260,14 @@ def _augment_reachable(tbl: Dict[str, Any]) -> None:
     _pad_weighted("enchant_vals", "enchant_p", "enchant")
     _pad_weighted("afflict_vals", "afflict_p", "afflict")
 
-    # Keyword pattern set becomes a per-card [pattern, KW_BUCKETS] multi-hot tensor PLUS a per-card
+    # Keyword pattern set becomes a per-card [pattern, len(KEYWORDS)] multi-hot tensor PLUS a per-card
     # cumulative-frequency row (draw = inverse-CDF over the OBSERVED pattern frequencies — a card's canonical
-    # pattern is emitted at its real rate and rare alternates stay rare). Widths are tiny (distinct patterns).
+    # ABSOLUTE pattern is emitted at its real rate and rare alternates stay rare). Widths are tiny (distinct
+    # patterns). v7: patterns are ABSOLUTE keyword-flag index tuples (0..6), not the old hashed buckets.
     pats_per = [cards[i]["keywords"] for i in cids.tolist()]
     probs_per = [cards[i]["keyword_p"] for i in cids.tolist()]
     pmax = max((len(p) for p in pats_per), default=1)
-    kw_mat = np.zeros((len(pats_per), max(1, pmax), tokens.KW_BUCKETS), np.float32)
+    kw_mat = np.zeros((len(pats_per), max(1, pmax), len(tokens.KEYWORDS)), np.float32)
     kw_cdf = np.ones((len(pats_per), max(1, pmax)), np.float64)   # pad with 1.0 so a pad slot never wins argmax
     for r, (pats, p) in enumerate(zip(pats_per, probs_per)):
         for pi, pat in enumerate(pats):
@@ -287,7 +288,7 @@ def _load_reachable() -> Dict[str, Any]:
         if not os.path.exists(_REACHABLE_JSON):
             raise FileNotFoundError(
                 "reachability table not found at " + _REACHABLE_JSON + "; build it with:\n"
-                "    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v3.json")
+                "    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v4.json")
         with open(_REACHABLE_JSON, encoding="utf-8") as f:
             _REACHABLE_TABLE = _parse_reachable(json.load(f))
     return _REACHABLE_TABLE
@@ -350,7 +351,7 @@ def _zeros_batch(B: int) -> Dict[str, np.ndarray]:
         "global_idx": np.zeros((B, 1, len(tokens.GLOBAL_IDX)), np.int32),
         "global_num": np.zeros((B, 1, len(tokens.GLOBAL_NUM)), np.float32),
         "pending": np.zeros((B, 1, len(tokens.PENDING_NUM)), np.float32),
-        "card_kw": np.zeros((B, tokens.MAX_CARDS, tokens.KW_BUCKETS), np.float32),
+        "card_kw": np.zeros((B, tokens.MAX_CARDS, len(tokens.KEYWORDS)), np.float32),
     }
     for t in S.VARIABLE_TYPES:
         z[t.idx_key] = np.zeros((B, t.max_slots, len(t.cat_cols)), np.int32)
@@ -853,24 +854,26 @@ def _card_content_key_columns(ci: np.ndarray, cn: np.ndarray, ckw: np.ndarray) -
     * Each dynamic numeric is decoded to the exact integer the tuple key carries: raw flags round; symlog
       columns invert (``round(symexp)``). symlog is monotonic so this is order-preserving, but decoding
       to the integer keeps ties/values byte-identical to the reference.
-    * The keyword multiset (``sorted(present buckets)``, compared as a tuple) becomes KW_BUCKETS
-      fixed-width columns holding the sorted-ascending bucket indices, RIGHT-padded with -1. A shorter
-      sorted list is lexicographically smaller, so an absent slot (-1) must sort BEFORE any real bucket
-      (0..31) — exactly the order Python gives ``tuple(a) < tuple(b)`` for the two sorted lists. (A single
-      packed bitmask can NOT reproduce this: e.g. ``() < (0,) < (0,1) < (1,)`` is not a bitmask order.)"""
+    * The keyword multiset (``sorted(present columns)``, compared as a tuple) becomes len(KEYWORDS)
+      fixed-width columns holding the sorted-ascending set-column indices, RIGHT-padded with -1. A shorter
+      sorted list is lexicographically smaller, so an absent slot (-1) must sort BEFORE any real column
+      (0..6) — exactly the order Python gives ``tuple(a) < tuple(b)`` for the two sorted lists. (A single
+      packed bitmask can NOT reproduce this: e.g. ``() < (0,) < (0,1) < (1,)`` is not a bitmask order.)
+      v7: the columns are the 7 named ABSOLUTE keyword flags, not the old 32 hashed buckets."""
+    kdim = len(tokens.KEYWORDS)
     cols: List[np.ndarray] = [ci[:, j].astype(np.int64) for j in _CARD_CONTENT_CAT_COLS]
     for j, _col, is_raw in _CARD_NONZONE_NUM:
         v = cn[:, j].astype(np.float64)
         dec = np.rint(v) if is_raw else np.rint(np.sign(v) * np.expm1(np.abs(v)))
         cols.append(dec.astype(np.int64))
-    # Sorted-ascending keyword bucket indices per row, padded with -1: set buckets get their index, absent
-    # buckets get KW_BUCKETS (sorts to the tail), then the tail is rewritten to -1 (sorts to the front on
+    # Sorted-ascending keyword-column indices per row, padded with -1: set columns get their index, absent
+    # columns get kdim (sorts to the tail), then the tail is rewritten to -1 (sorts to the front on
     # comparison, matching "shorter tuple is smaller").
     present = ckw > 0
-    grid = np.where(present, np.arange(tokens.KW_BUCKETS, dtype=np.int64)[None, :], tokens.KW_BUCKETS)
+    grid = np.where(present, np.arange(kdim, dtype=np.int64)[None, :], kdim)
     srt = np.sort(grid, axis=1)
-    srt = np.where(srt == tokens.KW_BUCKETS, -1, srt)
-    cols.extend(srt[:, c] for c in range(tokens.KW_BUCKETS))
+    srt = np.where(srt == kdim, -1, srt)
+    cols.extend(srt[:, c] for c in range(kdim))
     return cols
 
 
@@ -922,7 +925,7 @@ def _fill_card_table_rows(rng: np.random.Generator, tbl: Dict[str, Any], cats: n
         pos = np.argmax(tbl["card_" + key + "_cdf"][pick] >= rng.random((n_tab, 1)), axis=1)
         cats[tab_pos, col_i] = vmat[ar, pos]
     # Keyword pattern: inverse-CDF pick by OBSERVED FREQUENCY (first pattern whose cumulative prob >= u) from
-    # the identity's [pattern, KW_BUCKETS] multi-hot table — NOT uniform over the deduped pattern set. The old
+    # the identity's [pattern, len(KEYWORDS)] multi-hot table — NOT uniform over the deduped pattern set. The old
     # uniform draw turned a multi-pattern card into worst-case transmission load (the ~55% keyword residual);
     # weighting by frequency emits the canonical pattern at its true rate and keeps alternates rare.
     pat_idx = np.argmax(tbl["card_kw_cdf"][pick] >= rng.random((n_tab, 1)), axis=1)
@@ -994,19 +997,23 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
     # weighted pattern below. cats' enchant/afflict start uniform but are pinned to 0 on wildcard rows.
     cats = _sample_cats(rng, tspec, N)                                          # [N, 8] (zone/slot rewritten)
     num = _sample_nums(rng, "card", tokens.CARD_NUM, N)                         # [N, 14] content numerics
-    kw = np.zeros((N, tokens.KW_BUCKETS), np.float32)
+    kw = np.zeros((N, len(tokens.KEYWORDS)), np.float32)
     tab_flags = rng.random(N) >= CARD_WILDCARD_PROB
     tab_pos = np.nonzero(tab_flags)[0]                                           # table (non-wildcard) rows
     if tab_pos.shape[0]:
         _fill_card_table_rows(rng, tbl, cats, num, kw, tab_pos)
     # STRUCTURED wildcard tail: uniform cardIndex over the full vocab (kept from _sample_cats) is id-level
-    # insurance for unseen ids, but enchant/afflict are pinned to 0 (their real marginal mode) and keywords
-    # stay empty — no incompressible enchant/afflict/keyword bit noise. Numerics keep the per-spec draw.
+    # insurance for unseen ids, with enchant/afflict pinned to 0 (their real marginal mode) — no
+    # incompressible enchant/afflict bit noise. v7: a wildcard row's ABSOLUTE keywords are that cardIndex's
+    # PRINTED keywords (the 'no runtime grants' absolute state) — gathered from the catalog; a cardIndex
+    # outside the catalog (index 0 / unknown) maps to the all-zero row. NOT random bits. Numerics keep the
+    # per-spec draw.
     enchant_col = [c for c, _ in tspec.cat_cols].index("enchant")
     afflict_col = [c for c, _ in tspec.cat_cols].index("afflict")
     wild_pos = np.nonzero(~tab_flags)[0]
     if wild_pos.shape[0]:
         cats[np.ix_(wild_pos, [enchant_col, afflict_col])] = 0
+        kw[wild_pos] = tokens.printed_keyword_flags_by_index()[cats[wild_pos, 0]]
     # Zone per instance from the measured marginal (all rows — table AND wildcard), overwriting the base.
     cats[:, zone_col] = _hist_draw(rng, tbl["counts"]["card_zone"], N)
 

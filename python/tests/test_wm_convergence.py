@@ -57,7 +57,7 @@ def _fixture_raw():
         "cards": {
             "5": {"type": [1], "rarity": [2], "targetType": [1],
                   "enchant": {"0": 100, "7": 5}, "afflict": {"0": 100},
-                  "keywords": [[], [3, 9]], "num": _fixture_card_num()},
+                  "keywords": [[], [3, 6]], "num": _fixture_card_num()},   # v7: absolute-flag cols 0..6
             "42": {"type": [1, 2], "rarity": [3], "targetType": [1, 2],
                    "enchant": {"0": 50}, "afflict": {"0": 40, "11": 3},
                    "keywords": [[]], "num": _fixture_card_num()},

@@ -118,7 +118,7 @@ class _TypeEmbedder(nn.Module):
             static_dim = tbl.shape[1]
         else:
             self.static = None
-        kw_dim = tokens.KW_BUCKETS if tspec.has_kw else 0
+        kw_dim = len(tokens.KEYWORDS) if tspec.has_kw else 0   # v7: 7 named absolute keyword columns
 
         # Numeric-input featurization: which columns get it, and its extra input width.
         self._use_digits = num_input in ("digits", "both")

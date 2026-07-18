@@ -104,7 +104,7 @@ class _TypeHeads(nn.Module):
         else:
             self.num_head = None
         self.presence_head = nn.Linear(d_model, 1) if tspec.mask_key else None
-        self.kw_head = nn.Linear(d_model, tokens.KW_BUCKETS) if tspec.has_kw else None
+        self.kw_head = nn.Linear(d_model, len(tokens.KEYWORDS)) if tspec.has_kw else None
 
     def forward(self, h: torch.Tensor) -> Dict[str, torch.Tensor]:
         out: Dict[str, torch.Tensor] = {}

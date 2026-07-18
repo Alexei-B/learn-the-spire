@@ -1262,7 +1262,7 @@ def _card_arrays(n_present: int = 3):
     return {
         "card_idx": np.zeros((tokens.MAX_CARDS, len(tokens.CARD_IDX)), np.int32),
         "card_num": np.zeros((tokens.MAX_CARDS, len(tokens.CARD_NUM)), np.float32),
-        "card_kw": np.zeros((tokens.MAX_CARDS, tokens.KW_BUCKETS), np.float32),
+        "card_kw": np.zeros((tokens.MAX_CARDS, len(tokens.KEYWORDS)), np.float32),
         "card_mask": np.array([i < n_present for i in range(tokens.MAX_CARDS)], bool),
     }
 
@@ -1301,12 +1301,61 @@ def test_cards_static_only_report_reduces_card_denominator():
     masked = report.report_pairs_experts_only(batch, out, ["cards"], cards_static_only=True)
     unmasked = report.report_pairs_experts_only(batch, out, ["cards"])
     assert masked["expert_dist::cards"][1].sum() < unmasked["expert_dist::cards"][1].sum()
+    # v7: the granted-rows keyword slice is emitted for a cards-active run.
+    assert "card_kw_granted_exact" in unmasked
+
+
+def test_card_kw_granted_exact_metric_on_synthetic_case():
+    # The granted-rows slice restricts to card rows whose ABSOLUTE keyword flags differ from their card's
+    # PRINTED flags (rows carrying a runtime grant), and scores an exact all-7-bit keyword match. cardIndex
+    # 0 has empty printed flags, so a row with any set target flag is 'granted' regardless of the catalog.
+    K = len(tokens.KEYWORDS)
+    slots = tokens.MAX_CARDS
+    retain = tokens.KEYWORDS.index("Retain")
+    exhaust = tokens.KEYWORDS.index("Exhaust")
+    card_mask = np.zeros((1, slots), bool); card_mask[0, :3] = True
+    tkw = np.zeros((1, slots, K), np.float32)
+    tkw[0, 0, retain] = 1.0        # row0: granted (printed empty, absolute {Retain})
+    # row1: empty -> absolute == printed empty -> NOT granted
+    tkw[0, 2, exhaust] = 1.0       # row2: granted ({Exhaust})
+    batch = {
+        "card_idx": torch.zeros((1, slots, len(tokens.CARD_IDX)), dtype=torch.long),  # cardIndex 0
+        "card_mask": torch.from_numpy(card_mask),
+        "card_kw": torch.from_numpy(tkw),
+    }
+    plogits = np.full((1, slots, K), -10.0, np.float32)
+    plogits[0, 0, retain] = 10.0   # row0 predicted exactly {Retain} -> exact
+    # row2 predicted nothing -> misses Exhaust (wrong)
+    outputs = {"card": {"kw": torch.from_numpy(plogits)}}
+    num, den = report._card_kw_granted_pairs(batch, outputs)
+    assert den[0] == 2.0           # rows 0 and 2 carry grants; row1 (no grant) excluded
+    assert num[0] == 1.0           # only row0 reconstructs all 7 keyword bits exactly
+    # A non-card run (no card kw head) yields no slice.
+    assert report._card_kw_granted_pairs(batch, {"relic": {}}) is None
 
 
 # ==================================================================================================
 # DIAGNOSTIC flags plumb through the trainer CLI and stamp into the run config (MetricsWriter records
 # vars(args) -> manifest.config), and are mutually composable.
 # ==================================================================================================
+
+def test_kw_pos_weight_flag_parses_and_scales_kw_bce():
+    from lts2_agent import train_encdec as TE
+    ap = TE.build_parser()
+    assert ap.parse_args([]).kw_pos_weight == 1.0                       # default OFF
+    assert ap.parse_args(["--kw-pos-weight", "5"]).kw_pos_weight == 5.0
+    # Effect: with positive keyword targets present, weighting the positive class raises the kw BCE (and
+    # hence the categorical loss) vs the default pos_weight 1.0.
+    torch.manual_seed(0)
+    m = _small(); m.eval()
+    batch = {k: v.clone() for k, v in _card_present_batch().items()}
+    batch["card_kw"][:] = 0.0
+    batch["card_kw"][..., 0] = 1.0                                       # present cards "want" column 0 set
+    _z, out = m(batch, active_experts=["cards"])
+    base = float(MF.compute_losses(batch, out, m, active=["cards"])["loss_categorical"])
+    up = float(MF.compute_losses(batch, out, m, active=["cards"], kw_pos_weight=5.0)["loss_categorical"])
+    assert up > base
+
 
 def test_diagnostic_flags_parse_and_are_composable():
     from lts2_agent import train_encdec as TE

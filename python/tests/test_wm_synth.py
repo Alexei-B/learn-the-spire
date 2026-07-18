@@ -72,7 +72,7 @@ def _fixture_raw():
         "cards": {
             "5": {"type": [1], "rarity": [2], "targetType": [1],
                   "enchant": {"0": 100, "7": 5}, "afflict": {"0": 100},
-                  "keywords": [[], [3, 9]], "num": _fixture_card_num()},
+                  "keywords": [[], [3, 6]], "num": _fixture_card_num()},   # v7: absolute-flag cols 0..6
             "42": {"type": [1, 2], "rarity": [3], "targetType": [1, 2],
                    "enchant": {"0": 50}, "afflict": {"0": 40, "11": 3},
                    "keywords": [[]], "num": _fixture_card_num()},
@@ -142,7 +142,7 @@ def test_batch_has_all_keys_and_shapes():
             assert z[t.mask_key].shape == (5, t.max_slots)
             if t.num_key:
                 assert z[t.num_key].shape == (5, t.max_slots, t.num_width)
-        assert z["card_kw"].shape == (5, tokens.MAX_CARDS, tokens.KW_BUCKETS)
+        assert z["card_kw"].shape == (5, tokens.MAX_CARDS, len(tokens.KEYWORDS))
 
 
 def test_non_target_categories_are_empty():
@@ -463,7 +463,7 @@ def _random_card_rows(rng, k):
     pick = rng.integers(0, n_templ, size=k)
     ci = templ_ci[pick]
     cn = _encode_card_num(templ_int[pick])
-    ckw = (rng.random((k, tokens.KW_BUCKETS)) < 0.12).astype(np.float32)         # sparse keyword sets
+    ckw = (rng.random((k, len(tokens.KEYWORDS))) < 0.12).astype(np.float32)      # sparse keyword sets
     return ci, cn, ckw
 
 
@@ -568,20 +568,21 @@ def test_wildcard_and_table_paths_both_exercised():
 
 
 # ==================================================================================================
-# v3 keyword FREQUENCY sampling + STRUCTURED wildcard tail + large-deck boost (branch wm-t3-factored).
-# The generator now (1) draws each card's keyword pattern by OBSERVED FREQUENCY (not uniform over the
-# deduped pattern set), (2) makes the thinned (0.05 -> 0.01) wildcard tail STRUCTURED — full-vocab
-# cardIndex insurance but empty keywords + enchant/afflict 0, no random bit noise, and (3) boosts
-# large-deck exposure on the training stream while the coverage yardstick stays corpus-shaped.
+# keyword FREQUENCY sampling over ABSOLUTE patterns (v7) + STRUCTURED wildcard tail + large-deck boost.
+# The generator (1) draws each card's ABSOLUTE keyword pattern (printed ∪ grants, 7-flag) by OBSERVED
+# FREQUENCY (not uniform over the deduped pattern set), (2) makes the thinned (0.05 -> 0.01) wildcard tail
+# STRUCTURED — full-vocab cardIndex insurance, enchant/afflict 0, and keywords == the cardIndex's PRINTED
+# flags (the 'no runtime grants' absolute state; all-zero for an id outside the catalog), no random bit
+# noise, and (3) boosts large-deck exposure on the training stream while coverage stays corpus-shaped.
 # ==================================================================================================
 
 def _single_card_freq_raw(canonical=95, alternate=5):
-    """A one-card fixture doc whose keyword field carries v3 [pattern, count] pairs: a dominant empty
-    pattern and a rare [3,9] alternate, so a frequency draw emits the alternate at ~alternate/(sum) rate."""
+    """A one-card fixture doc whose keyword field carries [pattern, count] pairs: a dominant empty
+    pattern and a rare [3,6] alternate, so a frequency draw emits the alternate at ~alternate/(sum) rate."""
     raw = _fixture_raw()
     raw["cards"] = {"5": {"type": [1], "rarity": [2], "targetType": [1],
                           "enchant": {"0": 1}, "afflict": {"0": 1},
-                          "keywords": [[[], canonical], [[3, 9], alternate]],
+                          "keywords": [[[], canonical], [[3, 6], alternate]],
                           "num": _fixture_card_num()}}
     return raw
 
@@ -593,7 +594,7 @@ def test_keyword_patterns_drawn_by_frequency(monkeypatch):
     monkeypatch.setattr(SY, "CARD_WILDCARD_PROB", 0.0)
     z = SY.synth_batch(["cards"], 5000, np.random.default_rng(77))
     rows = z["card_kw"][z["card_mask"]]
-    frac_alt = float((rows.sum(axis=1) > 0).mean())          # rows carrying the [3,9] alternate pattern
+    frac_alt = float((rows.sum(axis=1) > 0).mean())          # rows carrying the [3,6] alternate pattern
     assert 0.03 <= frac_alt <= 0.075, frac_alt               # ~0.05 observed freq, not ~0.5 uniform
 
 
@@ -608,16 +609,20 @@ def test_v3_keyword_count_and_legacy_formats_both_parse():
     assert epats == [()] and ecnts == [1.0]                  # empty -> the single empty pattern
 
 
-def test_wildcard_rows_are_structured_no_random_bits(monkeypatch):
-    # Force the all-wildcard tail: every wildcard row must have EMPTY keywords (no random bits) and
-    # enchant/afflict pinned to 0, while its cardIndex spans the full vocab (id-level insurance).
+def test_wildcard_rows_carry_printed_keywords_no_random_bits(monkeypatch):
+    # v7: force the all-wildcard tail — every wildcard row's keywords are EXACTLY its cardIndex's PRINTED
+    # flags (the 'no runtime grants' absolute state; deterministic, NOT random bits), enchant/afflict are
+    # pinned to 0, and cardIndex spans the full vocab (id-level insurance).
     monkeypatch.setattr(SY, "CARD_WILDCARD_PROB", 1.0)
     z = SY.synth_batch(["cards"], 200, np.random.default_rng(78))
     ci, ckw, cm = z["card_idx"], z["card_kw"], z["card_mask"]
-    assert ckw[cm].sum() == 0, "wildcard rows must carry no keyword bits"
+    printed = tokens.printed_keyword_flags_by_index()
+    idx_rows = ci[cm]
+    kw_rows = ckw[cm]
+    # keywords are the PRINTED flags for each row's cardIndex — no runtime grants, no random bits.
+    assert np.array_equal(kw_rows, printed[idx_rows[:, 0]]), "wildcard kw must equal cardIndex printed flags"
     ench = tokens.CARD_IDX.index("enchant")
     affl = tokens.CARD_IDX.index("afflict")
-    idx_rows = ci[cm]
     assert (idx_rows[:, ench] == 0).all() and (idx_rows[:, affl] == 0).all(), "enchant/afflict must be 0"
     assert (~np.isin(idx_rows[:, 0], _FIXTURE_CARD_IDS)).any(), "cardIndex should span beyond the fixture set"
 

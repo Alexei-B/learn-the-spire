@@ -47,6 +47,26 @@ from . import catalog
 # ==================================================================================================
 
 # Bump whenever the token layout / vocab semantics change so stale artifacts reject loudly.
+# v7 (2026-07): **card keywords become SEVEN NAMED BOOLEAN columns of ABSOLUTE state** (roadmap
+# wm-t3-factored). The v6 keyword channel hashed the wire's ``addedKeywords`` (runtime grants only) into 32
+# CRC buckets — collision-lossy AND a *delta* (grants-over-printed), which the owner rejected: a delta does
+# not survive game patches. v7 replaces the 32 hash buckets with the game's CLOSED keyword enum
+# (refsrc ``MegaCrit.Sts2.Core.Entities.Cards.CardKeyword``; ``None`` is the absence, excluded) as SEVEN
+# fixed-order named columns (:data:`KEYWORDS`) holding each card's ABSOLUTE current keyword state — NOT a
+# delta. ABSOLUTE = the card's PRINTED keywords (from the card catalog, keyed by cardId — see
+# :meth:`catalog.EntityCatalog.printed_keywords`) UNION the wire's ``addedKeywords`` (runtime grants: Snap's
+# Retain, Hex's Ethereal, single-turn Retain from Well-Laid Plans, …; NOTE Transfigure is NOT a keyword
+# grant — it raises ``replayCount``, per the owner + the C# ``AddedKeywordsOf`` doc). ONE change this
+# iteration (every other type keeps its v6 semantics EXACTLY). ROUND-TRIP: the canonical card dict stores
+# the ABSOLUTE flags directly (``keywords`` == the sorted list of set keyword-column indices 0..6),
+# REPLACING the hashed bucket list, so tokenize (printed∪added -> flags) and detokenize (flags -> the same
+# sorted index list) agree byte-for-byte with no need to reconstruct the original added list — the cleanest
+# representation that keeps the round-trip exact (if a consumer ever needs the runtime grants alone, derive
+# ``added = absolute MINUS printed(cardId)`` at read time; not stored). card_kw shrinks from [MAX_CARDS,32]
+# to [MAX_CARDS,7]. COVERAGE TRADEOFF of named columns: an ``addedKeywords`` string NOT in :data:`KEYWORDS`
+# (a FUTURE game patch adds a keyword) is logged once + ignored — a new keyword needs a KEYWORDS table bump
+# + reachable/cache re-dump, which a patch forces anyway; the closed named columns are the owner's
+# deliberate trade for patch-durable, collision-free, exactly-invertible absolute keyword state.
 # v6 (2026-07): **cards become INSTANCE rows** (roadmap wm-t3-factored) — the encoding style that solved
 # relics/orbs, applied to cards (ONE change this iteration; creatures/relics/potions/orbs/scalars keep
 # their v5 semantics EXACTLY). The v3 "population rows" (one content-sorted row per distinct content with a
@@ -99,7 +119,7 @@ from . import catalog
 # a single `count`. (Superseded by v6's instance rows.)
 # v2 (2026-07): count-grouped card tokens WITH zone in the grouping key (one `count` per zone-scoped row).
 # v1: raw per-instance card tokens.
-TOKENIZER_VERSION = 6
+TOKENIZER_VERSION = 7
 
 _CARDS = catalog.load("cards")
 _POWERS = catalog.load("powers")
@@ -150,7 +170,15 @@ CHAR_VOCAB = 64
 ORB_VOCAB = 32
 ENCHANT_VOCAB = 128
 AFFLICT_VOCAB = 128
-KW_BUCKETS = 32  # addedKeywords hashed multi-hot on each card token
+
+# v7: the game's CLOSED card-keyword enum, in FIXED order — SEVEN named boolean columns per card token
+# holding ABSOLUTE keyword state (printed ∪ addedKeywords), replacing the v6 hashed buckets. PROVENANCE:
+# refsrc ``MegaCrit.Sts2.Core.Entities.Cards.CardKeyword`` (values after ``None``, which is the absence).
+# The order IS the wire contract for the 7 columns — never reorder without a version bump; a NEW game
+# keyword is appended here (+ a reachable/cache re-dump). Kept as a tuple so it is order-stable + hashable.
+KEYWORDS: Tuple[str, ...] = ("Exhaust", "Ethereal", "Innate", "Unplayable", "Retain", "Sly", "Eternal")
+_KEYWORD_INDEX: Dict[str, int] = {k: i for i, k in enumerate(KEYWORDS)}
+_UNKNOWN_KEYWORDS_SEEN: set = set()  # so an unknown (future-patch) keyword logs exactly once
 
 
 def _enum_idx(name: Optional[str], table: List[str]) -> int:
@@ -294,11 +322,57 @@ def _affl(a: Optional[str]) -> int:
     return catalog.stable_hash(a or "", AFFLICT_VOCAB)
 
 
-def _kw_multi(keywords: Optional[List[str]]) -> List[int]:
-    """Sorted list of set hashed keyword buckets (multi-hot; order/collision lossy)."""
-    if not keywords:
-        return []
-    return sorted({catalog.stable_hash(k, KW_BUCKETS + 1) - 1 for k in keywords})
+def _keyword_index(name: str) -> Optional[int]:
+    """Column index of a keyword name in :data:`KEYWORDS`, or ``None`` if it is not in the closed enum
+    (a FUTURE game patch keyword) — logged exactly once, then ignored. See the v7 header's coverage
+    tradeoff: a new keyword needs a KEYWORDS table bump + a reachable/cache re-dump."""
+    i = _KEYWORD_INDEX.get(name)
+    if i is None and name not in _UNKNOWN_KEYWORDS_SEEN:
+        _UNKNOWN_KEYWORDS_SEEN.add(name)
+        print(f"[tokens] WARNING: card keyword {name!r} not in the closed KEYWORDS enum {KEYWORDS}; "
+              f"ignoring it (named-column coverage tradeoff — a game patch adding a keyword needs a "
+              f"KEYWORDS bump + reachable/cache re-dump).", file=sys.stderr)
+    return i
+
+
+def _card_abs_kw(card: Dict[str, Any]) -> List[int]:
+    """The card's ABSOLUTE keyword state as a sorted list of set :data:`KEYWORDS` column indices (0..6):
+    PRINTED keywords (from the card catalog, keyed by cardId) UNION the wire's runtime ``addedKeywords``.
+    NOT a delta — the absolute current state. Unknown (future-patch) keyword names are dropped (logged
+    once). This list IS the canonical ``keywords`` field, so detokenize (nonzero columns) reproduces it
+    exactly for a byte-exact round-trip."""
+    flags: set = set()
+    for name in _CARDS.printed_keywords(card.get("cardId")):
+        i = _keyword_index(name)
+        if i is not None:
+            flags.add(i)
+    for name in (card.get("addedKeywords") or []):
+        i = _keyword_index(name)
+        if i is not None:
+            flags.add(i)
+    return sorted(flags)
+
+
+_PRINTED_KW_BY_INDEX: Optional[np.ndarray] = None
+
+
+def printed_keyword_flags_by_index() -> np.ndarray:
+    """``[cards_catalog_size, len(KEYWORDS)]`` float matrix of each card's PRINTED keyword flags, indexed
+    by the tokenizer ``cardIndex`` (row 0 = none/unknown, all-zero). The 'no runtime grants' absolute
+    state for a card — used by the synthetic generator's wildcard tail and the report's granted-rows slice
+    (rows whose absolute flags differ from these printed flags carry a runtime grant). Cached; all-zero on
+    a hash-fallback catalog (no dump -> printed keywords unknown)."""
+    global _PRINTED_KW_BY_INDEX
+    if _PRINTED_KW_BY_INDEX is None:
+        mat = np.zeros((_CARDS.size, len(KEYWORDS)), dtype=np.float32)
+        for cid in _CARDS.ids:
+            row = _CARDS.index_of(cid)
+            for name in _CARDS.printed_keywords(cid):
+                j = _KEYWORD_INDEX.get(name)
+                if j is not None:
+                    mat[row, j] = 1.0
+        _PRINTED_KW_BY_INDEX = mat
+    return _PRINTED_KW_BY_INDEX
 
 
 # ==================================================================================================
@@ -333,7 +407,8 @@ def _card_canonical(card: Dict[str, Any], zone: str) -> Dict[str, Any]:
         "baseBlock": _q(card.get("baseBlock")),
         "hasSummon": 1 if has_sum else 0,
         "summon": _q(card.get("summon")),
-        "keywords": _kw_multi(card.get("addedKeywords")),
+        # v7: ABSOLUTE keyword state (printed ∪ addedKeywords) as sorted KEYWORDS column indices (0..6).
+        "keywords": _card_abs_kw(card),
     }
 
 
@@ -556,7 +631,7 @@ def tokenize(state: Dict[str, Any], *, strict: bool = True) -> Dict[str, np.ndar
     _check("cards", len(all_cards), MAX_CARDS)
     card_idx = np.zeros((MAX_CARDS, len(CARD_IDX)), dtype=np.int32)
     card_num = np.zeros((MAX_CARDS, len(CARD_NUM)), dtype=np.float32)
-    card_kw = np.zeros((MAX_CARDS, KW_BUCKETS), dtype=np.float32)
+    card_kw = np.zeros((MAX_CARDS, len(KEYWORDS)), dtype=np.float32)
     card_mask = np.zeros(MAX_CARDS, dtype=bool)
     for i, c in enumerate(all_cards[:MAX_CARDS]):
         row = {**c, "slot": i}                       # slot == the row's index in the zone-major layout
@@ -805,11 +880,14 @@ LOSSY_FIELDS = {
     "state/players[]/combatState/discardPile[]/afflictionId": "CRC32-hashed affliction id",
     "state/players[]/combatState/exhaustPile[]/afflictionId": "CRC32-hashed affliction id",
     "state/pendingChoice/options[]/afflictionId": "CRC32-hashed affliction id",
-    "state/players[]/combatState/hand[]/addedKeywords[]": "hashed multi-hot keyword buckets (order/collision lossy)",
-    "state/players[]/combatState/drawPile[]/addedKeywords[]": "hashed multi-hot keyword buckets",
-    "state/players[]/combatState/discardPile[]/addedKeywords[]": "hashed multi-hot keyword buckets",
-    "state/players[]/combatState/exhaustPile[]/addedKeywords[]": "hashed multi-hot keyword buckets",
-    "state/pendingChoice/options[]/addedKeywords[]": "hashed multi-hot keyword buckets",
+    # v7: addedKeywords (runtime grants) are FOLDED into the card's 7 named ABSOLUTE keyword columns
+    # (printed ∪ added; exactly invertible as absolute flags). The raw added-vs-printed SPLIT is not
+    # separately recoverable from tokens (would need printed(cardId)), so the wire field stays covered-lossy.
+    "state/players[]/combatState/hand[]/addedKeywords[]": "folded into the 7 named absolute keyword columns (printed ∪ added; added-vs-printed split not separately recoverable)",
+    "state/players[]/combatState/drawPile[]/addedKeywords[]": "folded into the 7 named absolute keyword columns (printed ∪ added)",
+    "state/players[]/combatState/discardPile[]/addedKeywords[]": "folded into the 7 named absolute keyword columns (printed ∪ added)",
+    "state/players[]/combatState/exhaustPile[]/addedKeywords[]": "folded into the 7 named absolute keyword columns (printed ∪ added)",
+    "state/pendingChoice/options[]/addedKeywords[]": "folded into the 7 named absolute keyword columns (printed ∪ added)",
 }
 
 # Waivers: wire fields deliberately NOT tokenized, each with a reason. A field waived here (by exact

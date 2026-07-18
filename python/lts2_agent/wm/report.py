@@ -67,6 +67,46 @@ def _symexp_np(y: np.ndarray) -> np.ndarray:
     return np.sign(y) * np.expm1(np.abs(y))
 
 
+_PRINTED_KW_T: Dict[str, torch.Tensor] = {}
+
+
+def _printed_kw_bool(device: torch.device) -> torch.Tensor:
+    """Cached ``[cards_catalog_size, len(KEYWORDS)]`` bool tensor of each card's PRINTED keyword flags,
+    indexed by cardIndex (row 0 all-False). Used to tell a card row that carries a RUNTIME grant (absolute
+    flags != printed flags) from one whose keywords are all printed."""
+    key = str(device)
+    t = _PRINTED_KW_T.get(key)
+    if t is None:
+        arr = tokens.printed_keyword_flags_by_index() >= 0.5
+        t = torch.from_numpy(np.ascontiguousarray(arr)).to(device)
+        _PRINTED_KW_T[key] = t
+    return t
+
+
+def _card_kw_granted_pairs(batch: Dict[str, torch.Tensor],
+                           outputs: Dict[str, Dict[str, torch.Tensor]]
+                           ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Per-sample ``(numerator, denominator)`` for ``card_kw_granted_exact``: the exact keyword-field rate
+    restricted to present target card rows whose ABSOLUTE keyword flags DIFFER from their card's PRINTED
+    flags — i.e. the rows carrying a runtime grant (Snap's Retain, Hex's Ethereal, …). This slice cannot be
+    fooled by a canonical-mode collapse to the printed set: a granted row is only 'exact' if all 7 predicted
+    keyword bits match the target. ``None`` when the outputs carry no card keyword head (non-card run)."""
+    o = outputs.get("card")
+    if o is None or "kw" not in o:
+        return None
+    t = S.TYPE_BY_NAME["card"]
+    mask = batch[t.mask_key].bool()                                 # [B, slots]
+    tkw = batch["card_kw"] >= 0.5                                   # [B, slots, K] absolute target flags
+    pkw = torch.sigmoid(o["kw"]) >= 0.5                             # [B, slots, K] predicted flags
+    cidx = batch[t.idx_key][..., 0].long().clamp_min(0)            # [B, slots] cardIndex
+    printed = _printed_kw_bool(tkw.device)[cidx]                    # [B, slots, K] printed flags
+    granted = mask & (tkw != printed).any(dim=-1)                   # rows carrying a runtime grant
+    exact = (pkw == tkw).all(dim=-1)                                # all 7 keyword bits correct
+    num = (granted & exact).sum(dim=1).float().cpu().numpy()
+    den = granted.sum(dim=1).float().cpu().numpy()
+    return num, den
+
+
 def _target_arrays(batch: Dict[str, torch.Tensor]) -> List[Dict[str, np.ndarray]]:
     """Slice the batched tokenizer target tensors into per-sample numpy array dicts for detokenize."""
     host = {k: v.detach().cpu().numpy() for k, v in batch.items()}
@@ -330,6 +370,12 @@ def report_pairs(batch: Dict[str, torch.Tensor],
             pairs[f"expert_dist::{ename}"] = (exp_num[ename], exp_den[ename])
             pairs[f"expert_exact::{ename}"] = (exp_exact[ename], ones)
         pairs["scalar_exact"] = (scal_ok, np.full(B, float(_SCALAR_EXACT_FIELDS), np.float32))
+        # v7 granted-rows keyword slice (factored cards runs): emitted whenever the card keyword head is
+        # present. Kept in the ``experts`` block so the monolith's report_pairs contract (== METRIC_NAMES)
+        # is unchanged — like the expert_dist::/scalar_exact extra keys.
+        gp = _card_kw_granted_pairs(batch, outputs)
+        if gp is not None:
+            pairs["card_kw_granted_exact"] = gp
     return pairs
 
 
@@ -402,6 +448,10 @@ def report_pairs_experts_only(batch: Dict[str, torch.Tensor],
             ti = [int(x) for x in np.atleast_2d(tgt[b][t.idx_key])[tm][:, 0]] if tm.any() else []
             f1[b] = _set_f1(pi, ti)
         pairs["relic_set_f1"] = (f1, ones)
+    # v7 granted-rows keyword slice (cards runs): from the raw card outputs (present when cards is active).
+    gp = _card_kw_granted_pairs(batch, outputs)
+    if gp is not None:
+        pairs["card_kw_granted_exact"] = gp
     return pairs
 
 

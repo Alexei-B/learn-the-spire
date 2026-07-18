@@ -307,6 +307,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "slot/upgraded + keywords) from transient combat values. Training/eval mask only "
                          "(tokenizer wire format untouched). Card metrics then average over the REMAINING "
                          "fields only — NOT comparable to an unmasked run's card metrics.")
+    ap.add_argument("--kw-pos-weight", type=float, default=1.0, metavar="W",
+                    help="factored only: positive-class weight on the card keyword BCE bits (pos_weight). "
+                         "Default 1.0 = OFF (byte-identical). >1 reinforces the rare runtime-grant signal "
+                         "(keyword grants are sparse, so all-off is a strong local optimum). Flag-gated; "
+                         "the owner has not asked for it by default.")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--buffer", type=int, default=16384, help="shuffle-buffer size (states)")
     ap.add_argument("--val-every", type=int, default=500)
@@ -513,7 +518,8 @@ def main() -> int:
         if factored:
             return MF.compute_losses(batch_, out_, model, balance=args.loss_balance, active=active,
                                       num_targets=args.num_targets, num_loss_norm=args.num_loss_norm,
-                                      z_weight=args.z_loss, cards_static_only=args.cards_static_only)
+                                      z_weight=args.z_loss, cards_static_only=args.cards_static_only,
+                                      kw_pos_weight=args.kw_pos_weight)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.
@@ -738,6 +744,9 @@ def main() -> int:
                                     overall[f"expert_exact::{ename}"], tags={"expert": ename})
                         if "relic_set_f1" in overall:
                             mw.emit("eval", step, "eval.relic_set_f1", overall["relic_set_f1"])
+                        if "card_kw_granted_exact" in overall:
+                            mw.emit("eval", step, "eval.card_kw_granted_exact",
+                                    overall["card_kw_granted_exact"])
                     else:
                         for name in report.METRIC_NAMES:
                             mw.emit("eval", step, f"eval.{name}", overall[name])
@@ -755,6 +764,9 @@ def main() -> int:
                                 mw.emit("eval", step, "eval.expert_exact",
                                         overall[f"expert_exact::{ename}"], tags={"expert": ename})
                             mw.emit("eval", step, "eval.scalar_exact", overall["scalar_exact"])
+                        if "card_kw_granted_exact" in overall:
+                            mw.emit("eval", step, "eval.card_kw_granted_exact",
+                                    overall["card_kw_granted_exact"])
                     # Synthetic coverage-val: DISTINCT metric names (eval.*_cov). Sharing the real
                     # metrics' names with only a val=coverage tag polluted the dashboard: group-by
                     # "expert" merged and AVERAGED the real and coverage series into one line, making
@@ -768,6 +780,9 @@ def main() -> int:
                         if "relic_set_f1" in cov_overall:
                             mw.emit("eval", step, "eval.relic_set_f1_cov",
                                     cov_overall["relic_set_f1"])
+                        if "card_kw_granted_exact" in cov_overall:
+                            mw.emit("eval", step, "eval.card_kw_granted_exact_cov",
+                                    cov_overall["card_kw_granted_exact"])
                 # Best-val checkpoint: the periodic checkpoint overwrites in place, so a late-run
                 # divergence used to destroy the best weights of the run (learned the hard way: the
                 # first gate run collapsed at step ~63k and took its step-51k best with it). Keep the

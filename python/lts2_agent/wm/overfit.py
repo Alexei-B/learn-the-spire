@@ -86,7 +86,7 @@ def synthetic_batch(B: int, seed: int = 0) -> Dict[str, np.ndarray]:
         if t.num_key:
             stacked[t.num_key] = _rand_num(t.name, list(E._num_cols(t)), (B, ms), rng)
         if t.has_kw:
-            stacked["card_kw"] = rng.integers(0, 2, (B, ms, tokens.KW_BUCKETS)).astype(np.float32)
+            stacked["card_kw"] = rng.integers(0, 2, (B, ms, len(tokens.KEYWORDS))).astype(np.float32)
     return stacked
 
 

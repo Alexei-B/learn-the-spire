@@ -63,7 +63,7 @@ def test_shapes_and_masks():
         assert k in tok, k
     assert tok["card_idx"].shape == (tokens.MAX_CARDS, len(tokens.CARD_IDX))
     assert tok["card_num"].shape == (tokens.MAX_CARDS, len(tokens.CARD_NUM))
-    assert tok["card_kw"].shape == (tokens.MAX_CARDS, tokens.KW_BUCKETS)
+    assert tok["card_kw"].shape == (tokens.MAX_CARDS, len(tokens.KEYWORDS))
     assert tok["card_mask"].shape == (tokens.MAX_CARDS,)
     assert tok["creature_idx"].shape == (tokens.MAX_CREATURES, len(tokens.CREATURE_IDX))
     assert tok["global_idx"].shape == (1, len(tokens.GLOBAL_IDX))
@@ -219,7 +219,7 @@ def test_relic_overflow_is_loud():
 
 def test_version_and_signature_stable():
     assert isinstance(tokens.TOKENIZER_VERSION, int)
-    assert tokens.TOKENIZER_VERSION == 6  # v6 = cards positional instance rows (zone + slot; no counts)
+    assert tokens.TOKENIZER_VERSION == 7  # v7 = card keywords as 7 named absolute-state boolean columns
     sig = tokens.tokenizer_signature()
     assert sig == tokens.tokenizer_signature()
     assert sig.startswith("tok-v" + str(tokens.TOKENIZER_VERSION))
@@ -408,3 +408,80 @@ def test_tokenize_does_not_mutate_state():
     before = copy.deepcopy(st)
     tokens.tokenize(st)
     assert st == before
+
+
+# --------------------------------------------------------------------------------------------------
+# v7: card keywords are SEVEN named boolean columns of ABSOLUTE state (printed ∪ addedKeywords), not the
+# v6 hashed added-only buckets.
+# --------------------------------------------------------------------------------------------------
+
+def _card_with_printed_keywords():
+    """A dumped cardId whose PRINTED keyword set is non-empty, or None on a hash-fallback clone."""
+    cat = catalog.load("cards")
+    if isinstance(cat, catalog.HashFallback):
+        return None, cat
+    cid = next((c for c in cat.ids if cat.printed_keywords(c)), None)
+    return cid, cat
+
+
+def test_keyword_named_column_order_stable():
+    # The 7 columns ARE the game's closed CardKeyword enum order (refsrc), a wire contract; KW_BUCKETS gone.
+    assert tokens.KEYWORDS == ("Exhaust", "Ethereal", "Innate", "Unplayable", "Retain", "Sly", "Eternal")
+    assert len(tokens.KEYWORDS) == 7
+    assert not hasattr(tokens, "KW_BUCKETS")
+    assert tokens.tokenizer_signature().startswith("tok-v7")
+
+
+def test_absolute_keyword_union_printed_plus_added():
+    import pytest
+    cid, cat = _card_with_printed_keywords()
+    if cid is None:
+        pytest.skip("no dumped card with printed keywords on this clone")
+    printed = cat.printed_keywords(cid)                      # non-empty printed set
+    grant = next(k for k in tokens.KEYWORDS if k not in printed)   # a keyword this card does NOT print
+    card = _card(cid, addedKeywords=[grant])
+    expected = sorted({tokens.KEYWORDS.index(k) for k in list(printed) + [grant]})
+    # canonical keywords == the ABSOLUTE flag indices (printed ∪ added), NOT the added delta alone.
+    assert tokens._card_abs_kw(card) == expected
+    tok = tokens.tokenize(_state(hand=[card], enemies=[_enemy("JawWorm", 40)]))
+    assert sorted(int(b) for b in np.nonzero(tok["card_kw"][0])[0]) == expected
+    # A grant that is ALREADY printed is idempotent (union, not concat).
+    already = _card(cid, addedKeywords=[printed[0]])
+    assert tokens._card_abs_kw(already) == sorted({tokens.KEYWORDS.index(k) for k in printed})
+
+
+def test_round_trip_byte_exact_with_grants():
+    # States carrying runtime grants (incl. a printed-keyword card that ALSO gains a grant) round-trip exact.
+    cid, cat = _card_with_printed_keywords()
+    hand = [_card("StrikeIronclad", damage=6, baseDamage=6, addedKeywords=["Retain", "Ethereal"])]
+    if cid is not None:
+        hand.append(_card(cid, addedKeywords=["Retain"]))    # printed set nonempty + a grant on top
+    st = _state(hand=hand,
+                draw=[_card("Bash", damage=8, baseDamage=8, addedKeywords=["Exhaust"])],
+                enemies=[_enemy("JawWorm", 40)])
+    ok, diff = tokens.round_trip(st)
+    assert ok, "round-trip mismatch at " + str(diff)
+
+
+def test_unknown_keyword_is_ignored_and_round_trips():
+    # A future-patch keyword name not in the closed enum is dropped (logged once), never crashes.
+    card = _card("StrikeIronclad", damage=6, baseDamage=6,
+                 addedKeywords=["Retain", "FUTURE_PATCH_KEYWORD"])
+    flags = tokens._card_abs_kw(card)
+    assert tokens.KEYWORDS.index("Retain") in flags
+    assert all(0 <= f < len(tokens.KEYWORDS) for f in flags)   # unknown contributed no column
+    ok, diff = tokens.round_trip(_state(hand=[card], enemies=[_enemy("JawWorm", 40)]))
+    assert ok, diff
+
+
+def test_printed_keyword_flags_by_index_matches_catalog():
+    cid, cat = _card_with_printed_keywords()
+    if cid is None:
+        import pytest
+        pytest.skip("no dumped card with printed keywords on this clone")
+    mat = tokens.printed_keyword_flags_by_index()
+    assert mat.shape == (cat.size, len(tokens.KEYWORDS))
+    row = mat[cat.index_of(cid)]
+    assert sorted(int(b) for b in np.nonzero(row)[0]) == \
+        sorted(tokens.KEYWORDS.index(k) for k in cat.printed_keywords(cid))
+    assert not mat[0].any()   # row 0 (none/unknown) is all-zero

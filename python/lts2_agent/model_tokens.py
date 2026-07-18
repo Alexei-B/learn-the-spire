@@ -104,7 +104,7 @@ def _encode_options(state: Dict[str, Any], options: List[Dict[str, Any]]) -> Dic
     opt_kind = np.zeros(MAX_OPTIONS, dtype=np.int64)
     opt_card_idx = np.zeros((MAX_OPTIONS, n_card_idx), dtype=np.int64)
     opt_card_num = np.zeros((MAX_OPTIONS, n_card_num), dtype=np.float32)
-    opt_card_kw = np.zeros((MAX_OPTIONS, tokens.KW_BUCKETS), dtype=np.float32)
+    opt_card_kw = np.zeros((MAX_OPTIONS, len(tokens.KEYWORDS)), dtype=np.float32)
     opt_card_present = np.zeros(MAX_OPTIONS, dtype=np.float32)
     opt_potion_idx = np.zeros(MAX_OPTIONS, dtype=np.int64)
     opt_potion_present = np.zeros(MAX_OPTIONS, dtype=np.float32)
@@ -233,7 +233,7 @@ class TokenActorCritic(nn.Module):
                       _enum_size(tokens.TARGET_TYPES), tokens.ENCHANT_VOCAB, tokens.AFFLICT_VOCAB,
                       _enum_size(tokens.ZONES), tokens.MAX_CARDS]
         self.card_cat = _MultiEmbed(card_sizes, cd)
-        card_in = cd + self._static_dim["cards"] + len(tokens.CARD_NUM) + tokens.KW_BUCKETS
+        card_in = cd + self._static_dim["cards"] + len(tokens.CARD_NUM) + len(tokens.KEYWORDS)
         self.card_proj = nn.Linear(card_in, d_model)
 
         # --- Creature embedder -----------------------------------------------------------------------

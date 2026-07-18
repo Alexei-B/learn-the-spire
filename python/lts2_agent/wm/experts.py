@@ -287,7 +287,7 @@ class RangeBinHeads(nn.Module):
         self.num_decode = num_decode
         self.cat_heads = nn.ModuleList(nn.Linear(d_model, v) for _, v in tspec.cat_cols)
         self.presence_head = nn.Linear(d_model, 1) if tspec.mask_key else None
-        self.kw_head = nn.Linear(d_model, tokens.KW_BUCKETS) if tspec.has_kw else None
+        self.kw_head = nn.Linear(d_model, len(tokens.KEYWORDS)) if tspec.has_kw else None
         self.num_cols: List[str] = list(_num_cols(tspec))
         if self.num_cols:
             raw = RAW_NUM_COLS.get(tspec.name, set())

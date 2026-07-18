@@ -20,10 +20,11 @@ canonical shape (a decoder's output). Pass a raw wire observation and it canonic
 Hashed-lossy ids
 ----------------
 Several wire ids are hashed into fixed vocabs by the tokenizer (:data:`lts2_agent.tokens.LOSSY_FIELDS`
-— monster / character / orb / enchant / affliction / keyword buckets), so a canonical dict stores a
-bucket, not a name. :func:`build_hash_names` scans a corpus once and writes ``data/hash_names.json``,
-a ``{bucket -> [names]}`` reverse map per vocab (collisions list every colliding name). When that map
-is passed in, the printer shows names; otherwise it shows ``#<bucket>``.
+— monster / character / orb / enchant / affliction buckets), so a canonical dict stores a bucket, not a
+name. :func:`build_hash_names` scans a corpus once and writes ``data/hash_names.json``, a
+``{bucket -> [names]}`` reverse map per vocab (collisions list every colliding name). When that map is
+passed in, the printer shows names; otherwise it shows ``#<bucket>``. (Card keywords are NOT hashed since
+tokenizer v7 — they are the closed :data:`lts2_agent.tokens.KEYWORDS` enum, rendered by name directly.)
 
 CLI::
 
@@ -74,8 +75,9 @@ def _enum(idx: int, table: List[str]) -> str:
 # mirror tokens.py exactly so a bucket resolves to the string(s) that produced it.
 # ==================================================================================================
 
-# vocab-name -> (hashing fn, wire-string extractor description). One entry per hashed vocab.
-_HASH_VOCABS = ("monster", "character", "orb", "enchant", "afflict", "keyword")
+# vocab-name -> (hashing fn, wire-string extractor description). One entry per hashed vocab. (v7: card
+# keywords left the hashed vocabs — they are the closed tokens.KEYWORDS enum, rendered by name directly.)
+_HASH_VOCABS = ("monster", "character", "orb", "enchant", "afflict")
 
 
 def _monster_bucket(s: str) -> int:
@@ -98,14 +100,9 @@ def _afflict_bucket(s: str) -> int:
     return tokens._affl(s)
 
 
-def _keyword_bucket(s: str) -> int:
-    # Mirror tokens._kw_multi: bucket = stable_hash(k, KW_BUCKETS + 1) - 1.
-    return catalog.stable_hash(s, tokens.KW_BUCKETS + 1) - 1
-
-
 _BUCKET_FN = {
     "monster": _monster_bucket, "character": _char_bucket, "orb": _orb_bucket,
-    "enchant": _enchant_bucket, "afflict": _afflict_bucket, "keyword": _keyword_bucket,
+    "enchant": _enchant_bucket, "afflict": _afflict_bucket,
 }
 
 
@@ -129,16 +126,12 @@ def _collect_strings(state: Dict[str, Any], acc: Dict[str, set]) -> None:
                     acc["enchant"].add(card["enchantmentId"])
                 if card.get("afflictionId"):
                     acc["afflict"].add(card["afflictionId"])
-                for kw in card.get("addedKeywords") or []:
-                    acc["keyword"].add(kw)
     pc = state.get("pendingChoice") or {}
     for card in pc.get("options") or []:
         if card.get("enchantmentId"):
             acc["enchant"].add(card["enchantmentId"])
         if card.get("afflictionId"):
             acc["afflict"].add(card["afflictionId"])
-        for kw in card.get("addedKeywords") or []:
-            acc["keyword"].add(kw)
 
 
 def build_hash_names(corpus_root: str, limit: Optional[int] = None) -> Dict[str, Any]:
@@ -272,7 +265,10 @@ def _card_line(c: Dict[str, Any], hash_names: Optional[Dict[str, Any]]) -> str:
     aff = _name(hash_names, "afflict", c.get("afflict", 0))
     if aff != "-":
         bits.append(f"affl:{aff}")
-    kws = [_name(hash_names, "keyword", b) for b in c.get("keywords") or []]
+    # v7: keywords are the closed tokens.KEYWORDS enum — the canonical `keywords` list holds column
+    # indices (0..6); render each by its enum name (an out-of-range index shows as #<idx>, never a hash).
+    kws = [tokens.KEYWORDS[b] if 0 <= b < len(tokens.KEYWORDS) else f"#{b}"
+           for b in c.get("keywords") or []]
     if kws:
         bits.append("kw:" + ",".join(kws))
     if not c.get("canPlay", 1):

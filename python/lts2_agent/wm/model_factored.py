@@ -243,7 +243,8 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                    num_targets: str = "hard",
                    num_loss_norm: str = "none",
                    z_weight: float = 0.0,
-                   cards_static_only: bool = False) -> Dict[str, torch.Tensor]:
+                   cards_static_only: bool = False,
+                   kw_pos_weight: float = 1.0) -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
     range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
     (exact by construction, no parameters).
@@ -281,6 +282,11 @@ def compute_losses(batch: Dict[str, torch.Tensor],
     except ``upgraded``) out of the card numeric CE, so the card loss trains only the static identity
     fields (categoricals + keywords + ``upgraded``). Off by default (byte-identical to prior behavior).
     Only the `card` type is affected; every other expert's numeric term is unchanged.
+
+    ``kw_pos_weight`` (default 1.0 = OFF, byte-identical to prior behavior) scales the POSITIVE class in
+    the card keyword BCE (``pos_weight`` in ``binary_cross_entropy_with_logits``) — a rare-grant signal
+    reinforcement knob (runtime keyword grants are sparse, so the all-off solution is a strong local
+    optimum). Flag-gated only; the owner has NOT asked for it by default.
     """
     active_set: Optional[Set[str]] = None if active is None else set(active)
     cat_terms: List[torch.Tensor] = []
@@ -329,8 +335,10 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                 ce = torch.stack(field_ce, dim=0).mean(dim=0)           # [B, slots]
                 _tag(ename, num_terms, _masked_mean(ce, mask))
             if t.has_kw:
-                bce = F.binary_cross_entropy_with_logits(o["kw"], batch["card_kw"],
-                                                         reduction="none").mean(dim=-1)
+                pw = (torch.as_tensor(kw_pos_weight, dtype=o["kw"].dtype, device=o["kw"].device)
+                      if kw_pos_weight != 1.0 else None)
+                bce = F.binary_cross_entropy_with_logits(o["kw"], batch["card_kw"], reduction="none",
+                                                         pos_weight=pw).mean(dim=-1)
                 _tag(ename, cat_terms, _masked_mean(bce, mask))
 
     def _reduce(terms: List[torch.Tensor]) -> torch.Tensor:
