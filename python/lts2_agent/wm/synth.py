@@ -74,7 +74,7 @@ def _symexp_arr(a: np.ndarray) -> np.ndarray:
 
 
 # ==================================================================================================
-# Conditional-reachability table (data/reachable_v1.json, built by wm.reachable). The cards + creatures
+# Conditional-reachability table (data/reachable_v3.json, built by wm.reachable). The cards + creatures
 # generators are REACHABILITY-SHAPED: identities are drawn from the corpus-observed set, and every value
 # a real state derives from an identity (a card's type/rarity/cost envelope, a creature's kind, a power's
 # amount range) is sampled from THAT identity's observed conditional range (+ a 1.5x margin, clamped to
@@ -85,12 +85,24 @@ def _symexp_arr(a: np.ndarray) -> np.ndarray:
 # for the shape) so the suite runs without the (gitignored) artifact.
 # ==================================================================================================
 
-CARD_WILDCARD_PROB = 0.05        # per card row: fall back to fully-uniform sampling (coverage insurance)
+CARD_WILDCARD_PROB = 0.01        # per card row: STRUCTURED id-level insurance tail (v3: 0.05 -> 0.01). A
+                                 # wildcard row draws a uniform cardIndex over the full vocab (coverage for
+                                 # unseen ids) but injects NO incompressible bit noise — empty keywords,
+                                 # enchant/afflict pinned to their real marginal mode (0), numerics per spec.
 CREATURE_WILDCARD_PROB = 0.05    # per creature/power/intent row: same uniform fallback
+
+# Large-deck (>=CARD_BIGDECK_THRESH instances) oversampling for the cards generator. TRAIN-TIME exposure of
+# big decks is deliberately boosted ABOVE corpus frequency (they carry the bulk of real per-row error yet
+# are rare in the instances-per-state histogram tail): with probability CARD_BIGDECK_BOOST a state's
+# instance count is redrawn from the renormalized >=THRESH tail of that histogram. The boost is applied ONLY
+# on the training streams (synth_batches / mixed_batches); coverage_val_sample keeps the UNBOOSTED,
+# corpus-shaped distribution so the coverage yardstick stays comparable to real val.
+CARD_BIGDECK_BOOST = 0.15
+CARD_BIGDECK_THRESH = 16
 
 _REACHABLE_JSON = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "reachable_v2.json")
+    "data", "reachable_v3.json")
 
 _REACHABLE_TABLE: Optional[Dict[str, Any]] = None   # module cache (tests may inject a parsed fixture)
 
@@ -101,6 +113,28 @@ def _norm_probs(counts: Iterable[float]) -> np.ndarray:
     return (a / s) if s > 0 else np.full(len(a), 1.0 / max(1, len(a)))
 
 
+def _parse_kw_patterns(kw_field: Iterable[Any]) -> Tuple[List[Tuple[int, ...]], List[float]]:
+    """Parse a card's on-disk ``keywords`` field into ``(patterns, counts)``. Accepts BOTH shapes:
+
+    * v3 (frequency): a list of ``[on-bucket list, count]`` pairs — patterns sampled by observed frequency.
+    * legacy (deduped list): a list of plain on-bucket lists — each assigned an equal count of 1 (so an old
+      reachable_v2 artifact / a legacy test fixture still parses, just uniform over its patterns).
+
+    An empty field yields the single empty pattern ``[()]`` at count 1 (a card with no observed keywords)."""
+    pats: List[Tuple[int, ...]] = []
+    cnts: List[float] = []
+    for el in kw_field:
+        if len(el) == 2 and isinstance(el[0], list) and isinstance(el[1], (int, float)):
+            pat, c = el[0], float(el[1])          # v3 [pattern, count] pair
+        else:
+            pat, c = el, 1.0                       # legacy bare pattern list
+        pats.append(tuple(int(b) for b in pat))
+        cnts.append(c)
+    if not pats:
+        return [()], [1.0]
+    return pats, cnts
+
+
 def _parse_reachable(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Convert the on-disk JSON (string keys, count dicts) into the parsed in-memory table the fillers
     sample from: integer identity keys, numpy id arrays, per-identity value sets / (value, prob) arrays,
@@ -109,6 +143,7 @@ def _parse_reachable(doc: Dict[str, Any]) -> Dict[str, Any]:
     for k, e in doc["cards"].items():
         ench = sorted((int(vk), vv) for vk, vv in e["enchant"].items())
         affl = sorted((int(vk), vv) for vk, vv in e["afflict"].items())
+        kw_pats, kw_cnts = _parse_kw_patterns(e["keywords"])
         cards[int(k)] = {
             "type": np.asarray(e["type"], np.int64),
             "rarity": np.asarray(e["rarity"], np.int64),
@@ -117,7 +152,8 @@ def _parse_reachable(doc: Dict[str, Any]) -> Dict[str, Any]:
             "enchant_p": _norm_probs(c for _, c in ench),
             "afflict_vals": np.asarray([v for v, _ in affl], np.int64),
             "afflict_p": _norm_probs(c for _, c in affl),
-            "keywords": [tuple(int(b) for b in pat) for pat in e["keywords"]] or [()],
+            "keywords": kw_pats,
+            "keyword_p": _norm_probs(kw_cnts),
             "num": {col: (int(lo), int(hi)) for col, (lo, hi) in e["num"].items()},
         }
     creatures: Dict[int, Dict[str, Any]] = {}
@@ -224,15 +260,23 @@ def _augment_reachable(tbl: Dict[str, Any]) -> None:
     _pad_weighted("enchant_vals", "enchant_p", "enchant")
     _pad_weighted("afflict_vals", "afflict_p", "afflict")
 
+    # Keyword pattern set becomes a per-card [pattern, KW_BUCKETS] multi-hot tensor PLUS a per-card
+    # cumulative-frequency row (draw = inverse-CDF over the OBSERVED pattern frequencies — a card's canonical
+    # pattern is emitted at its real rate and rare alternates stay rare). Widths are tiny (distinct patterns).
     pats_per = [cards[i]["keywords"] for i in cids.tolist()]
+    probs_per = [cards[i]["keyword_p"] for i in cids.tolist()]
     pmax = max((len(p) for p in pats_per), default=1)
     kw_mat = np.zeros((len(pats_per), max(1, pmax), tokens.KW_BUCKETS), np.float32)
-    kw_np = np.array([len(p) for p in pats_per], np.int64)
-    for r, pats in enumerate(pats_per):
+    kw_cdf = np.ones((len(pats_per), max(1, pmax)), np.float64)   # pad with 1.0 so a pad slot never wins argmax
+    for r, (pats, p) in enumerate(zip(pats_per, probs_per)):
         for pi, pat in enumerate(pats):
             for bkt in pat:
                 kw_mat[r, pi, bkt] = 1.0
-    tbl["card_kw_mat"], tbl["card_kw_np"] = kw_mat, kw_np
+        c = np.cumsum(p)
+        if len(c):
+            c[-1] = 1.0                                           # guard fp so some real pattern always wins
+        kw_cdf[r, :len(c)] = c
+    tbl["card_kw_mat"], tbl["card_kw_cdf"] = kw_mat, kw_cdf
 
 
 def _load_reachable() -> Dict[str, Any]:
@@ -243,7 +287,7 @@ def _load_reachable() -> Dict[str, Any]:
         if not os.path.exists(_REACHABLE_JSON):
             raise FileNotFoundError(
                 "reachability table not found at " + _REACHABLE_JSON + "; build it with:\n"
-                "    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v2.json")
+                "    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v3.json")
         with open(_REACHABLE_JSON, encoding="utf-8") as f:
             _REACHABLE_TABLE = _parse_reachable(json.load(f))
     return _REACHABLE_TABLE
@@ -289,7 +333,7 @@ def reach_bins(type_name: str, col: str, lo: int, hi: int) -> int:
 
 # ==================================================================================================
 # v6: cards are INSTANCE rows. Their game-shaped marginals (instances-per-state count histogram + the
-# per-zone instance marginal) now live in the reachability table (data/reachable_v2.json,
+# per-zone instance marginal) now live in the reachability table (data/reachable_v3.json,
 # ``counts["instances_per_state"]`` and ``counts["card_zone"]``), sampled exactly like the creature/power
 # count histograms — so the old population-row constants (_CARD_ROWS_HIST / _CARD_NZONES_HIST /
 # _CARD_ZONE_WEIGHTS / _CARD_ZONE_COUNT_HIST) and the zone-vector sampler are deleted. Only ids + dynamic
@@ -877,14 +921,16 @@ def _fill_card_table_rows(rng: np.random.Generator, tbl: Dict[str, Any], cats: n
         vmat = tbl["card_" + key + "_vals"][pick]
         pos = np.argmax(tbl["card_" + key + "_cdf"][pick] >= rng.random((n_tab, 1)), axis=1)
         cats[tab_pos, col_i] = vmat[ar, pos]
-    # Keyword pattern: pick a random pattern row from the identity's [pattern, KW_BUCKETS] multi-hot table
-    # (replaces the base random bits on table rows).
-    pat_idx = (rng.random(n_tab) * tbl["card_kw_np"][pick]).astype(np.int64)
+    # Keyword pattern: inverse-CDF pick by OBSERVED FREQUENCY (first pattern whose cumulative prob >= u) from
+    # the identity's [pattern, KW_BUCKETS] multi-hot table — NOT uniform over the deduped pattern set. The old
+    # uniform draw turned a multi-pattern card into worst-case transmission load (the ~55% keyword residual);
+    # weighting by frequency emits the canonical pattern at its true rate and keeps alternates rare.
+    pat_idx = np.argmax(tbl["card_kw_cdf"][pick] >= rng.random((n_tab, 1)), axis=1)
     kw[tab_pos] = tbl["card_kw_mat"][pick, pat_idx]
 
 
 def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
-                cards_max_rows: Optional[int] = None) -> None:
+                cards_max_rows: Optional[int] = None, bigdeck_boost: bool = False) -> None:
     """Card INSTANCE rows (v6) — REACHABILITY-SHAPED (see the reachable-table section header). One row per
     physical card copy: the instances-per-state COUNT is drawn from the measured
     ``counts["instances_per_state"]`` histogram; each instance's identity + static fields + dynamic numerics
@@ -901,6 +947,12 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
     presence is still trained, and for ``N==1`` every state gets EXACTLY one card row). This isolates the
     per-row content machinery from all set effects (multi-row pooling / count reconstruction). ``None``
     (default) leaves the natural instances-per-state histogram untouched.
+
+    ``bigdeck_boost`` (TRAIN-TIME only): with probability :data:`CARD_BIGDECK_BOOST` a state's instance count
+    is REDRAWN from the renormalized ``>= CARD_BIGDECK_THRESH`` tail of the instances-per-state histogram, so
+    large decks (which carry most real per-row error yet are rare) get extra training exposure. It is a
+    deliberate departure from corpus frequency, applied ONLY on the training streams; ``coverage_val_sample``
+    leaves it off so the coverage yardstick stays corpus-shaped. Ignored under the ``cards_max_rows`` probe.
 
     Fully VECTORIZED: all instances of all states are generated as one flat block (base uniform, then table
     rows overwritten, then zone drawn), and the whole batch is ordered in a SINGLE ``np.lexsort`` keyed by
@@ -920,19 +972,41 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int,
         # SINGLE-CARD probe cap: min(N, drawn), floored at 1 so presence is always trained (never 0 rows)
         # and N==1 yields exactly one row per state.
         inst_counts = np.clip(np.minimum(inst_counts, int(cards_max_rows)), 1, cap)
+    elif bigdeck_boost:
+        # Large-deck oversampling (train-time only): redraw a CARD_BIGDECK_BOOST fraction of states from the
+        # renormalized >= CARD_BIGDECK_THRESH tail of the histogram (extra exposure of the error-heavy tail).
+        ivals, iprobs = tbl["counts"]["instances_per_state"]
+        tail = ivals >= CARD_BIGDECK_THRESH
+        if tail.any():
+            tvals, tp = ivals[tail], iprobs[tail] / iprobs[tail].sum()
+            boost = rng.random(B) < CARD_BIGDECK_BOOST
+            nb = int(boost.sum())
+            if nb:
+                inst_counts[boost] = np.clip(rng.choice(tvals, size=nb, p=tp), 0, cap).astype(np.int64)
     N = int(inst_counts.sum())
     if N == 0:
         return
     bstate = np.repeat(np.arange(B, dtype=np.int64), inst_counts)
     starts = _exclusive_starts(inst_counts, B)
 
-    # Base = fully-uniform WILDCARD content for every flat instance; table rows overwrite content below.
+    # Base content for every flat instance: uniform cardIndex/type/rarity/targetType (the wildcard tail keeps
+    # this) + per-spec numerics. Keywords start EMPTY (no random bits) and table rows get their frequency-
+    # weighted pattern below. cats' enchant/afflict start uniform but are pinned to 0 on wildcard rows.
     cats = _sample_cats(rng, tspec, N)                                          # [N, 8] (zone/slot rewritten)
     num = _sample_nums(rng, "card", tokens.CARD_NUM, N)                         # [N, 14] content numerics
-    kw = (rng.random((N, tokens.KW_BUCKETS)) < 0.05).astype(np.float32)
-    tab_pos = np.nonzero(rng.random(N) >= CARD_WILDCARD_PROB)[0]                 # table (non-wildcard) rows
+    kw = np.zeros((N, tokens.KW_BUCKETS), np.float32)
+    tab_flags = rng.random(N) >= CARD_WILDCARD_PROB
+    tab_pos = np.nonzero(tab_flags)[0]                                           # table (non-wildcard) rows
     if tab_pos.shape[0]:
         _fill_card_table_rows(rng, tbl, cats, num, kw, tab_pos)
+    # STRUCTURED wildcard tail: uniform cardIndex over the full vocab (kept from _sample_cats) is id-level
+    # insurance for unseen ids, but enchant/afflict are pinned to 0 (their real marginal mode) and keywords
+    # stay empty — no incompressible enchant/afflict/keyword bit noise. Numerics keep the per-spec draw.
+    enchant_col = [c for c, _ in tspec.cat_cols].index("enchant")
+    afflict_col = [c for c, _ in tspec.cat_cols].index("afflict")
+    wild_pos = np.nonzero(~tab_flags)[0]
+    if wild_pos.shape[0]:
+        cats[np.ix_(wild_pos, [enchant_col, afflict_col])] = 0
     # Zone per instance from the measured marginal (all rows — table AND wildcard), overwriting the base.
     cats[:, zone_col] = _hist_draw(rng, tbl["counts"]["card_zone"], N)
 
@@ -968,13 +1042,18 @@ _FILLERS = {
 # ==================================================================================================
 
 def synth_batch(experts: Iterable[str], batch_size: int, rng: np.random.Generator,
-                cards_max_rows: Optional[int] = None) -> Dict[str, np.ndarray]:
+                cards_max_rows: Optional[int] = None,
+                cards_bigdeck_boost: bool = False) -> Dict[str, np.ndarray]:
     """A full model-input batch (all :data:`model.BATCH_KEYS`, stacked ``[B, ...]``) with each named
     expert's category sampled uniformly-with-design and every other category left empty. ``experts`` are
     the trained expert names (:data:`experts.EXPERT_ORDER` keys).
 
     ``cards_max_rows`` (DIAGNOSTIC, ``--cards-max-rows N``): caps the cards generator's instances-per-state
-    to ``min(N, drawn)`` floored at 1 (see :func:`_fill_cards`); ignored by every non-card expert."""
+    to ``min(N, drawn)`` floored at 1 (see :func:`_fill_cards`); ignored by every non-card expert.
+
+    ``cards_bigdeck_boost``: enable the large-deck oversampling (:data:`CARD_BIGDECK_BOOST`) on the cards
+    generator — set by the TRAINING streams, left OFF (default) by :func:`coverage_val_sample` so the
+    coverage yardstick stays corpus-shaped. Ignored by every non-card expert."""
     z = _zeros_batch(batch_size)
     requested = list(experts)
     # Creature-family experts share ONE per-state creature-count context when >1 is requested together, so
@@ -994,7 +1073,8 @@ def synth_batch(experts: Iterable[str], batch_size: int, rng: np.random.Generato
         if filler is None:
             raise KeyError(f"synth: unknown expert {e!r}; known {sorted(_FILLERS)}")
         if e == "cards":
-            filler(rng, z, batch_size, cards_max_rows=cards_max_rows)
+            filler(rng, z, batch_size, cards_max_rows=cards_max_rows,
+                   bigdeck_boost=cards_bigdeck_boost)
         else:
             filler(rng, z, batch_size)
     return z
@@ -1005,9 +1085,11 @@ def synth_batches(experts: List[str], batch_size: int, rng: np.random.Generator,
                   ) -> Iterator[Tuple[Dict[str, np.ndarray], List[Any]]]:
     """Infinite ``(stacked_numpy_batch, acts)`` stream of pure-synthetic batches (acts tagged ``"synth"``
     so the report's by-act group-by keeps them separable). ``cards_max_rows`` threads the SINGLE-CARD probe
-    cap into every generated cards batch (see :func:`synth_batch`)."""
+    cap into every generated cards batch (see :func:`synth_batch`). This is a TRAINING stream, so the cards
+    generator's large-deck oversampling (:data:`CARD_BIGDECK_BOOST`) is ON."""
     while True:
-        yield synth_batch(experts, batch_size, rng, cards_max_rows), ["synth"] * batch_size
+        yield (synth_batch(experts, batch_size, rng, cards_max_rows, cards_bigdeck_boost=True),
+               ["synth"] * batch_size)
 
 
 class _PrefetchError:
@@ -1063,7 +1145,8 @@ def mixed_batches(cache_dir: str, split: str, experts: List[str], batch_size: in
     synthetic and the remainder is real (read from the pre-tokenized cache via
     :func:`data.cache_batches_cpu`). The two halves are concatenated and shuffled so a batch has no
     real/synth ordering structure. ``cards_max_rows`` applies the SINGLE-CARD probe cap to the SYNTHETIC
-    half only (the real half keeps its natural rows — see :func:`synth_batch`)."""
+    half only (the real half keeps its natural rows — see :func:`synth_batch`). The synthetic half is a
+    TRAINING stream, so the cards generator's large-deck oversampling (:data:`CARD_BIGDECK_BOOST`) is ON."""
     from . import data as D
     n_synth = int(round(frac_synth * batch_size))
     n_real = batch_size - n_synth
@@ -1073,7 +1156,7 @@ def mixed_batches(cache_dir: str, split: str, experts: List[str], batch_size: in
         parts: List[Dict[str, np.ndarray]] = []
         acts: List[Any] = []
         if n_synth > 0:
-            parts.append(synth_batch(experts, n_synth, npr, cards_max_rows))
+            parts.append(synth_batch(experts, n_synth, npr, cards_max_rows, cards_bigdeck_boost=True))
             acts += ["synth"] * n_synth
         if real_stream is not None:
             r_arr, r_acts = next(real_stream)
@@ -1095,7 +1178,11 @@ def coverage_val_sample(experts: List[str], n: int, seed: int,
 
     ``cards_max_rows`` (DIAGNOSTIC, ``--cards-max-rows N``): honors the SAME SINGLE-CARD probe cap the
     training stream uses, so train and coverage-val measure the same restricted space (see
-    :func:`synth_batch`)."""
+    :func:`synth_batch`).
+
+    NOTE: the cards large-deck oversampling (:data:`CARD_BIGDECK_BOOST`) is deliberately LEFT OFF here — the
+    coverage yardstick must stay corpus-shaped (unboosted), matching the real-val distribution, while the
+    training stream boosts large decks above corpus frequency."""
     rng = np.random.default_rng(seed)
     return synth_batch(experts, n, rng, cards_max_rows), ["synth"] * n
 

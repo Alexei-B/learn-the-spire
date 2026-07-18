@@ -16,9 +16,11 @@ MEASURES the conditional tables from the corpus once and freezes them into a JSO
 ``synth`` loads. Concretely it records, per tokenizer identity index:
 
 * cards  (per ``cardIndex``):    observed type/rarity/targetType, observed enchant/afflict value
-                                 frequencies, observed keyword multi-hot patterns, and per dynamic
-                                 numeric column (``CARD_NUM`` minus the per-zone count vector) the
-                                 observed ``(lo, hi)`` integer range.
+                                 frequencies, observed keyword multi-hot patterns WITH their observed
+                                 frequencies (v3: counts, not just the deduped pattern list — so synth
+                                 samples a card's canonical/alternate patterns at their real rates), and
+                                 per dynamic numeric column (``CARD_NUM`` minus the per-zone count
+                                 vector) the observed ``(lo, hi)`` integer range.
 * creatures (per ``identity``):  observed ``kind`` values + per ``CREATURE_NUM`` column ``(lo, hi)``.
 * powers  (per ``powerIndex``):  ``amount`` ``(lo, hi)``.
 * intents (per intent ``type``): per ``INTENT_NUM`` column ``(lo, hi)``.
@@ -36,7 +38,7 @@ thousand states is plenty to see every reachable card/creature and its value env
 
 CLI::
 
-    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v1.json [--n N]
+    python -m lts2_agent.wm.reachable --corpus data/corpus2 --out data/reachable_v3.json [--n N]
 """
 
 from __future__ import annotations
@@ -83,7 +85,7 @@ def _card_entry() -> Dict[str, Any]:
     return {
         "type": set(), "rarity": set(), "targetType": set(),
         "enchant": {}, "afflict": {},      # value -> observed frequency
-        "keywords": set(),                 # set of on-bucket tuples (deduped multi-hot patterns)
+        "keywords": {},                    # on-bucket tuple -> observed frequency (v3: counts, not a set)
         "num": {},                         # col -> [lo, hi]
     }
 
@@ -145,7 +147,8 @@ def scan(root: str, split: Optional[str], n: Optional[int], shard_stride: int
                     e["enchant"][ench] = e["enchant"].get(ench, 0) + 1
                     affl = int(row["afflict"])
                     e["afflict"][affl] = e["afflict"].get(affl, 0) + 1
-                    e["keywords"].add(tuple(int(b) for b in row["keywords"]))
+                    kwpat = tuple(int(b) for b in row["keywords"])
+                    e["keywords"][kwpat] = e["keywords"].get(kwpat, 0) + 1
                     for col in _CARD_NUM_COLS:
                         _upd_range(e["num"], col, int(row[col]))
             _bump(counts["instances_per_state"], n_inst)
@@ -207,7 +210,9 @@ def _jsonable(tables: Dict[str, Any], root: str, n_states: int) -> Dict[str, Any
             "targetType": sorted(e["targetType"]),
             "enchant": {str(k): v for k, v in sorted(e["enchant"].items())},
             "afflict": {str(k): v for k, v in sorted(e["afflict"].items())},
-            "keywords": sorted([list(t) for t in e["keywords"]]),
+            # v3: per-pattern frequency — a list of [on-bucket list, count] pairs (sorted by pattern), so
+            # synth._parse_reachable can build a frequency distribution over a card's keyword patterns.
+            "keywords": [[list(pat), cnt] for pat, cnt in sorted(e["keywords"].items())],
             "num": {col: [lo, hi] for col, (lo, hi) in
                     ((c, e["num"][c]) for c in _CARD_NUM_COLS if c in e["num"])},
         }
@@ -247,7 +252,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Build the conditional-reachability table for the synthetic experts.")
     ap.add_argument("--corpus", default="data/corpus2", help="corpus root to stream (default data/corpus2)")
-    ap.add_argument("--out", default="data/reachable_v2.json", help="output JSON artifact path")
+    ap.add_argument("--out", default="data/reachable_v3.json", help="output JSON artifact path")
     ap.add_argument("--split", default=None, help="restrict to one split (default: all splits)")
     ap.add_argument("--n", type=int, default=400000, help="max states to scan (default 400k)")
     ap.add_argument("--shard-stride", type=int, default=0,

@@ -567,6 +567,99 @@ def test_wildcard_and_table_paths_both_exercised():
         assert (~in_tbl).any(), "no wildcard-path creature rows"
 
 
+# ==================================================================================================
+# v3 keyword FREQUENCY sampling + STRUCTURED wildcard tail + large-deck boost (branch wm-t3-factored).
+# The generator now (1) draws each card's keyword pattern by OBSERVED FREQUENCY (not uniform over the
+# deduped pattern set), (2) makes the thinned (0.05 -> 0.01) wildcard tail STRUCTURED — full-vocab
+# cardIndex insurance but empty keywords + enchant/afflict 0, no random bit noise, and (3) boosts
+# large-deck exposure on the training stream while the coverage yardstick stays corpus-shaped.
+# ==================================================================================================
+
+def _single_card_freq_raw(canonical=95, alternate=5):
+    """A one-card fixture doc whose keyword field carries v3 [pattern, count] pairs: a dominant empty
+    pattern and a rare [3,9] alternate, so a frequency draw emits the alternate at ~alternate/(sum) rate."""
+    raw = _fixture_raw()
+    raw["cards"] = {"5": {"type": [1], "rarity": [2], "targetType": [1],
+                          "enchant": {"0": 1}, "afflict": {"0": 1},
+                          "keywords": [[[], canonical], [[3, 9], alternate]],
+                          "num": _fixture_card_num()}}
+    return raw
+
+
+def test_keyword_patterns_drawn_by_frequency(monkeypatch):
+    # A card with a 95%/5% keyword-pattern split must emit the rare alternate at ~5% — NOT ~50% (which the
+    # old uniform-over-the-deduped-set draw gave, the measured 55% keyword residual). Force the table path.
+    monkeypatch.setattr(SY, "_REACHABLE_TABLE", SY._parse_reachable(_single_card_freq_raw(95, 5)))
+    monkeypatch.setattr(SY, "CARD_WILDCARD_PROB", 0.0)
+    z = SY.synth_batch(["cards"], 5000, np.random.default_rng(77))
+    rows = z["card_kw"][z["card_mask"]]
+    frac_alt = float((rows.sum(axis=1) > 0).mean())          # rows carrying the [3,9] alternate pattern
+    assert 0.03 <= frac_alt <= 0.075, frac_alt               # ~0.05 observed freq, not ~0.5 uniform
+
+
+def test_v3_keyword_count_and_legacy_formats_both_parse():
+    # v3 [pattern, count] pairs yield a frequency distribution; the legacy bare-pattern list still parses
+    # (uniform over its patterns) so an old reachable_v2 artifact / fixture keeps working.
+    pats, cnts = SY._parse_kw_patterns([[[], 90], [[3, 9], 10]])
+    assert pats == [(), (3, 9)] and cnts == [90.0, 10.0]
+    lpats, lcnts = SY._parse_kw_patterns([[], [3, 9]])
+    assert lpats == [(), (3, 9)] and lcnts == [1.0, 1.0]     # legacy -> uniform counts
+    epats, ecnts = SY._parse_kw_patterns([])
+    assert epats == [()] and ecnts == [1.0]                  # empty -> the single empty pattern
+
+
+def test_wildcard_rows_are_structured_no_random_bits(monkeypatch):
+    # Force the all-wildcard tail: every wildcard row must have EMPTY keywords (no random bits) and
+    # enchant/afflict pinned to 0, while its cardIndex spans the full vocab (id-level insurance).
+    monkeypatch.setattr(SY, "CARD_WILDCARD_PROB", 1.0)
+    z = SY.synth_batch(["cards"], 200, np.random.default_rng(78))
+    ci, ckw, cm = z["card_idx"], z["card_kw"], z["card_mask"]
+    assert ckw[cm].sum() == 0, "wildcard rows must carry no keyword bits"
+    ench = tokens.CARD_IDX.index("enchant")
+    affl = tokens.CARD_IDX.index("afflict")
+    idx_rows = ci[cm]
+    assert (idx_rows[:, ench] == 0).all() and (idx_rows[:, affl] == 0).all(), "enchant/afflict must be 0"
+    assert (~np.isin(idx_rows[:, 0], _FIXTURE_CARD_IDS)).any(), "cardIndex should span beyond the fixture set"
+
+
+def test_card_wildcard_rate_is_about_one_percent():
+    # Default wildcard rate is now ~1% (down from 5%). Wildcard rows draw a uniform full-vocab cardIndex
+    # that almost never lands on the tiny fixture set, so the out-of-fixture fraction ~= the wildcard rate.
+    assert SY.CARD_WILDCARD_PROB == 0.01
+    z = SY.synth_batch(["cards"], 4000, np.random.default_rng(79))
+    ids = z["card_idx"][z["card_mask"]][:, 0]
+    frac_wild = float((~np.isin(ids, _FIXTURE_CARD_IDS)).mean())
+    assert 0.003 <= frac_wild <= 0.02, frac_wild             # ~0.01, clearly below the old 0.05
+
+
+def _bigdeck_raw():
+    raw = _fixture_raw()
+    # corpus tail (>=16) frequency = 10/100 = 0.10; boost lifts train exposure well above that.
+    raw["counts"]["instances_per_state"] = {"1": 50, "5": 40, "16": 5, "20": 5}
+    return raw
+
+
+def test_bigdeck_boost_oversamples_tail_but_coverage_does_not(monkeypatch):
+    monkeypatch.setattr(SY, "_REACHABLE_TABLE", SY._parse_reachable(_bigdeck_raw()))
+    # TRAIN stream (boost on): large-deck (>=16) share is lifted above the corpus 0.10.
+    z = SY.synth_batch(["cards"], 5000, np.random.default_rng(80), cards_bigdeck_boost=True)
+    boosted = float((z["card_mask"].sum(axis=1) >= SY.CARD_BIGDECK_THRESH).mean())
+    # Coverage-val (boost OFF): stays corpus-shaped (~0.10).
+    zc, _ = SY.coverage_val_sample(["cards"], 5000, SY.COVERAGE_VAL_SEED)
+    cov = float((zc["card_mask"].sum(axis=1) >= SY.CARD_BIGDECK_THRESH).mean())
+    assert cov <= 0.16, cov                                   # unboosted ~ corpus 0.10
+    assert boosted >= cov + 0.08, (boosted, cov)             # boost measurably lifts the tail share
+
+
+def test_synth_batches_stream_boosts_cards(monkeypatch):
+    # The training stream (synth_batches) turns the cards big-deck boost ON.
+    monkeypatch.setattr(SY, "_REACHABLE_TABLE", SY._parse_reachable(_bigdeck_raw()))
+    stream = SY.synth_batches(["cards"], 2000, np.random.default_rng(81))
+    stacked, _ = next(stream)
+    share = float((stacked["card_mask"].sum(axis=1) >= SY.CARD_BIGDECK_THRESH).mean())
+    assert share >= 0.18, share                              # boosted well above the corpus 0.10 tail
+
+
 def test_missing_reachable_artifact_raises_clearly():
     # With no injected table AND no artifact on disk, the generator raises a clear, actionable error
     # (it must never silently fall back to the old uniform space).

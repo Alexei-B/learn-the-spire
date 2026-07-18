@@ -110,25 +110,24 @@ def _card_zone_bits(tbl) -> float:
 
 
 def _card_wild_content_bits() -> float:
-    """Fully-uniform (WILDCARD) per-INSTANCE CONTENT bits: every card CONTENT categorical (cardIndex..
-    afflict — NOT the v6 layout columns `zone`/`slot`) + dynamic numeric sampled independently over its
-    whole range + sparse keywords. This is the over-generating per-row cost the reachability path replaces
-    with the conditional table, keeping only a CARD_WILDCARD_PROB slice of it."""
+    """STRUCTURED (WILDCARD) per-INSTANCE CONTENT bits under the v3 tail design: cardIndex uniform over the
+    full vocab (id-level coverage insurance for unseen ids) + type/rarity/targetType enum + every dynamic
+    numeric over its full range. enchant/afflict are PINNED to 0 (their real marginal mode) and keywords are
+    EMPTY — the structured tail injects NO incompressible enchant/afflict/keyword bit noise (the old random-
+    bit wildcard was the ~27% wildcard residual). zone counted separately; slot is positional (no H)."""
     from .. import tokens as T
     tspec = S.TYPE_BY_NAME["card"]
     bits = 0.0
     for col_name, vocab in tspec.cat_cols:
-        if col_name in ("zone", "slot"):               # zone counted separately; slot is positional (no H)
+        # zone counted separately; slot positional; enchant/afflict pinned to 0 (no entropy); keywords empty.
+        if col_name in ("zone", "slot", "enchant", "afflict"):
             continue
         hi = vocab - 1 if col_name in ("type", "rarity", "targetType") else vocab
         bits += math.log2(max(2, hi))
     for c in T.CARD_NUM:                                # v6: all 14 content numerics
         b = _range_bits("card", c)
         bits += b if b else 1.0                         # flag columns: 1 bit
-    p_kw = 0.05                                          # generator keyword on-prob
-    h_kw = -(p_kw * math.log2(p_kw) + (1 - p_kw) * math.log2(1 - p_kw))
-    bits += T.KW_BUCKETS * h_kw
-    return bits
+    return bits                                          # keywords empty -> 0 kw bits
 
 
 def _dist_bits(probs) -> float:
@@ -139,13 +138,14 @@ def _dist_bits(probs) -> float:
 
 
 def entropy_cards() -> float:
-    """v6 INSTANCE-space REACHABILITY-SHAPED generator (when data/reachable_v2.json exists): the
+    """v6 INSTANCE-space REACHABILITY-SHAPED generator (when data/reachable_v3.json exists): the
     instances-per-state COUNT entropy, then per INSTANCE an identity from the observed cardIndex set + that
     card's OWN conditional content bits (observed type/rarity/targetType choices, enchant/afflict frequency
-    entropy, keyword-pattern choice, per dynamic numeric log2 of its margin-widened observed range), a
-    CARD_WILDCARD_PROB mix with the fully-uniform content, plus per-instance zone bits (the zone marginal
-    entropy). slot carries NO entropy (positional). Falls back to the independent-uniform formula when the
-    table is absent. Structure mirrors entropy_orbs()."""
+    entropy, keyword-pattern FREQUENCY entropy — the Shannon entropy of the observed pattern distribution,
+    not log2 of the deduped pattern count — per dynamic numeric log2 of its margin-widened observed range), a
+    CARD_WILDCARD_PROB mix with the structured wildcard content, plus per-instance zone bits (the zone
+    marginal entropy). slot carries NO entropy (positional). Falls back to the independent-uniform formula
+    when the table is absent. Structure mirrors entropy_orbs()."""
     tbl = SY._try_load_reachable()
     zone_bits = _card_zone_bits(tbl)
     if tbl is None:
@@ -158,7 +158,7 @@ def entropy_cards() -> float:
         b = (math.log2(max(1, len(e["type"]))) + math.log2(max(1, len(e["rarity"])))
              + math.log2(max(1, len(e["targetType"]))))
         b += _dist_bits(e["enchant_p"]) + _dist_bits(e["afflict_p"])
-        b += math.log2(max(1, len(e["keywords"])))
+        b += _dist_bits(e["keyword_p"])                # keyword-pattern FREQUENCY entropy (not log2 #patterns)
         for _, col, _is_raw in SY._CARD_NONZONE_NUM:
             lo, hi = e["num"].get(col, (0, 0))
             b += math.log2(max(1, SY.reach_bins("card", col, lo, hi)))
@@ -390,7 +390,7 @@ def _card_id_bits(e: Dict) -> float:
     b = (math.log2(max(1, len(e["type"]))) + math.log2(max(1, len(e["rarity"])))
          + math.log2(max(1, len(e["targetType"]))))
     b += _dist_bits(e["enchant_p"]) + _dist_bits(e["afflict_p"])
-    b += math.log2(max(1, len(e["keywords"])))
+    b += _dist_bits(e["keyword_p"])                     # keyword-pattern FREQUENCY entropy (not log2 #patterns)
     for _, col, _is_raw in SY._CARD_NONZONE_NUM:
         lo, hi = e["num"].get(col, (0, 0))
         b += math.log2(max(1, SY.reach_bins("card", col, lo, hi)))
