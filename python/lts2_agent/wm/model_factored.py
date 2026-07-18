@@ -33,7 +33,7 @@ from . import experts as E
 DEFAULT_SLICE_WIDTHS: Dict[str, int] = {
     "creatures": 768,    # creatures + their powers + intents (folded)
     "cards": 1536,       # the largest — v3 population rows (content + keywords + zone-count vector)
-    "relics": 512,       # ~298-way set-membership head needs capacity
+    "relics": 512,       # positional relic rows (~298-way id + slot); ample capacity for the set
     "potions": 128,      # <=8 slots, a 66-way catalog id
     "orbs": 128,         # <=16 slots, a small id + 2 numerics
 }
@@ -47,20 +47,19 @@ class FactoredWorldModelAE(nn.Module):
     def __init__(self, d_model: int = 256, n_heads: int = 4, enc_layers: int = 2, dec_layers: int = 2,
                  pool_layers: int = 1, pool_latents: int = 4, n_mem: int = 6, cat_dim: int = 24,
                  simnorm_group: int = 8, slice_widths: Optional[Dict[str, int]] = None,
-                 relic_head: str = "set", expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+                 expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
                  static_tables: Optional[Dict[str, np.ndarray]] = None):
         super().__init__()
         widths = dict(DEFAULT_SLICE_WIDTHS)
         if slice_widths:
             widths.update(slice_widths)
         self.slice_widths = widths
-        self.relic_head = relic_head
-        # Per-expert construction-kwarg overrides (e.g. a deeper relic decoder for the M3.5 bake-off) —
-        # stamped in cfg so save/load/compose reconstruct the exact per-expert architecture.
+        # Per-expert construction-kwarg overrides (e.g. a deeper relic decoder) — stamped in cfg so
+        # save/load/compose reconstruct the exact per-expert architecture.
         self.expert_overrides = {k: dict(v) for k, v in (expert_overrides or {}).items()}
         self.cfg = dict(d_model=d_model, n_heads=n_heads, enc_layers=enc_layers, dec_layers=dec_layers,
                         pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem, cat_dim=cat_dim,
-                        simnorm_group=simnorm_group, slice_widths=widths, relic_head=relic_head,
+                        simnorm_group=simnorm_group, slice_widths=widths,
                         expert_overrides=self.expert_overrides)
         if static_tables is None:
             static_tables = _static_tables()
@@ -83,8 +82,7 @@ class FactoredWorldModelAE(nn.Module):
             "creatures": E.SetExpert("creatures", ["creature", "power", "intent"],
                                      widths["creatures"], **_kw("creatures", deep)),
             "cards": E.SetExpert("cards", ["card"], widths["cards"], **_kw("cards", deep)),
-            "relics": E.RelicExpert("relics", widths["relics"], relic_head=relic_head,
-                                    **_kw("relics", shallow)),
+            "relics": E.SetExpert("relics", ["relic"], widths["relics"], **_kw("relics", shallow)),
             "potions": E.SetExpert("potions", ["potion"], widths["potions"], **_kw("potions", shallow)),
             "orbs": E.SetExpert("orbs", ["orb"], widths["orbs"], **_kw("orbs", shallow)),
         })
@@ -140,7 +138,7 @@ class FactoredWorldModelAE(nn.Module):
 
     def expert_stamp(self, name: str) -> Dict[str, Any]:
         """Per-expert provenance stamp: its slice layout + the tokenizer signature + the exact kwargs its
-        module was built with (relic_head / any override). The compose/warm-start contract validates
+        module was built with (any per-expert override). The compose/warm-start contract validates
         against this, so a slice can only be assembled into a checkpoint whose layout it fits."""
         a, b = self.slice_layout[name]
         cfg: Dict[str, Any] = {"d_model": self.cfg["d_model"], "n_heads": self.cfg["n_heads"],
@@ -148,8 +146,6 @@ class FactoredWorldModelAE(nn.Module):
                                "pool_layers": self.cfg["pool_layers"],
                                "pool_latents": self.cfg["pool_latents"], "n_mem": self.cfg["n_mem"]}
         cfg.update(self.expert_overrides.get(name, {}))
-        if name == "relics":
-            cfg["relic_head"] = self.relic_head
         return {"name": name, "slice": [a, b], "width": b - a,
                 "tokenizer_signature": tokens.tokenizer_signature(), "config": cfg,
                 "param_count": param_count(self.experts[name]) if name != "scalars" else 0}
@@ -185,7 +181,6 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                    outputs: Dict[str, Dict[str, torch.Tensor]],
                    model: FactoredWorldModelAE,
                    balance: str = "term",
-                   relic_pos_weight: float = 5.0,
                    active: Optional[Iterable[str]] = None,
                    num_targets: str = "hard") -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
@@ -220,38 +215,6 @@ def compute_losses(batch: Dict[str, torch.Tensor],
 
     for ename, ex in model.experts.items():
         if active_set is not None and ename not in active_set:
-            continue
-        if ename == "relics":
-            o = outputs["relic"]
-            t = S.TYPE_BY_NAME["relic"]
-            m = batch[t.mask_key]
-            if "set_logits" in o:
-                logits = o["set_logits"]
-                idx = batch[t.idx_key][..., 0]
-                tgt = torch.zeros_like(logits)
-                b_sel, s_sel = torch.where(m)
-                tgt[b_sel, idx[b_sel, s_sel].clamp(0, logits.shape[-1] - 1)] = 1.0
-                # Rare-positive multi-label (about 5 of 298 ids present): unweighted BCE collapses
-                # toward predict-nothing (measured: relic F1 stuck ~0.58 while every other expert
-                # learned). pos_weight rebalances the positive-class gradient DIRECTION, which per-
-                # parameter Adam scale-invariance cannot recover on its own.
-                pw = torch.full((), float(relic_pos_weight), device=logits.device)
-                _tag(ename, cat_terms,
-                     F.binary_cross_entropy_with_logits(logits, tgt, pos_weight=pw))
-                if "count_logits" in o:
-                    true_k = m.sum(dim=1).long().clamp(0, o["count_logits"].shape[-1] - 1)
-                    _tag(ename, cat_terms, F.cross_entropy(o["count_logits"], true_k))
-            else:
-                # Slots relic head: per-slot categorical CE (over present slots) + presence BCE, the
-                # generic per-type loss (the bake-off's monolith-style variant; decode dedups).
-                _tag(ename, pres_terms, F.binary_cross_entropy_with_logits(
-                    o["presence"], m.to(o["presence"].dtype)))
-                tgt_idx = batch[t.idx_key]
-                for c in range(len(t.cat_cols)):
-                    logits = o["cat"][c]
-                    ce = F.cross_entropy(logits.reshape(-1, logits.shape[-1]),
-                                         tgt_idx[..., c].reshape(-1), reduction="none")
-                    _tag(ename, cat_terms, _masked_mean(ce.reshape(tgt_idx.shape[:-1]), m))
             continue
         for t in ex.types:
             o = outputs[t.name]

@@ -14,7 +14,7 @@ from lts2_agent import tokens
 from lts2_agent.wm import model as M
 from lts2_agent.wm import report
 from lts2_agent.wm import spec as S
-from lts2_agent.wm.decoder import (NUM_BINS, _dedup_slot_ids, reconstruct_arrays, symlog_bins,
+from lts2_agent.wm.decoder import (NUM_BINS, reconstruct_arrays, symlog_bins,
                                    twohot_expectation, twohot_targets)
 from lts2_agent.wm.encoder import simnorm
 
@@ -72,12 +72,6 @@ def _twohot_model():
     return M.WorldModelAE(d_model=64, n_heads=2, enc_layers=2, dec_layers=2, n_pool_layers=1,
                           n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8,
                           num_head="twohot")
-
-
-def _set_relic_model():
-    return M.WorldModelAE(d_model=64, n_heads=2, enc_layers=2, dec_layers=2, n_pool_layers=1,
-                          n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8,
-                          relic_head="set")
 
 
 def test_forward_shapes():
@@ -484,172 +478,52 @@ def test_all_flags_off_loss_matches_baseline():
 
 
 # ==================================================================================================
-# CP4 relic-decode fixes: slot-head dedup (fix 1) + multi-hot set head (--relic-head set, fix 2).
+# Relics are a POSITIONAL type (v5): the monolith decodes them through the standard per-slot path
+# (relicIndex + slot categoricals + presence) — the old duplicate-free set head + dedup are gone.
 # ==================================================================================================
 
-def test_relic_slot_dedup_removes_duplicates_and_keeps_confident():
-    # Two present slots both argmax to id 7 (slot0 more confident); a third wants id 3 (even more
-    # confident than slot1). Greedy-by-confidence must: keep 7 on slot0, give slot2 its 3, and push
-    # slot1 to some *other* id -> no duplicates among present slots, most-confident assignment wins.
-    V = 10
-    logits = torch.full((1, 4, V), -5.0)
-    logits[0, 0, 7] = 10.0   # slot0: most confident, wants 7
-    logits[0, 1, 7] = 5.0    # slot1: also wants 7 (less confident) -> must yield
-    logits[0, 1, 3] = 4.0    # slot1: its second choice is 3 ...
-    logits[0, 2, 3] = 8.0    # slot2: wants 3 and is MORE confident than slot1 -> slot2 keeps 3
-    present = np.array([[True, True, True, False]])
-    out = _dedup_slot_ids(logits, present)
-    assert out.shape == (1, 4)
-    assert out[0, 0] == 7                      # highest-confidence slot keeps its argmax
-    assert out[0, 2] == 3                      # next-confident keeps its (distinct) argmax
-    ids = out[0][present[0]].tolist()
-    assert len(ids) == len(set(ids))           # no duplicate ids among present slots
-    assert out[0, 1] not in (7, 3)             # the ambiguous slot got pushed to a free id
-
-
-def test_relic_slot_dedup_noop_when_already_unique():
-    V = 12
-    logits = torch.full((1, 3, V), -5.0)
-    for s, cid in enumerate((4, 9, 1)):
-        logits[0, s, cid] = 9.0
-    present = np.array([[True, True, True]])
-    out = _dedup_slot_ids(logits, present)
-    assert out[0].tolist() == [4, 9, 1]        # distinct argmaxes are left untouched
-
-
-def test_relic_set_head_forward_shape_and_state_dict():
+def test_relic_decodes_through_standard_slot_head():
     batch = _batch([_state(), _state(n_hand=3, n_enemies=2)])
-    model = _set_relic_model()
-    assert model.cfg["relic_head"] == "set"
+    model = _small_model()
     _z, out = model(batch)
-    # The relic type now emits ONE multi-hot vector over the catalog, no per-slot cat/presence.
-    vocab = S.TYPE_BY_NAME["relic"].cat_cols[0][1]
-    assert out["relic"]["set_logits"].shape == (2, vocab)
-    assert "cat" not in out["relic"] and "presence" not in out["relic"]
-    # No relic per-slot head tensors exist; a relic set_head weight does.
+    # No set head anywhere; the relic type emits per-slot categoricals (relicIndex + slot) + presence.
+    assert "set_logits" not in out["relic"]
+    assert len(out["relic"]["cat"]) == len(S.TYPE_BY_NAME["relic"].cat_cols) == 2
+    assert "presence" in out["relic"]
     keys = set(model.state_dict())
-    assert any(k.startswith("decoder.heads.relic.set_head") for k in keys)
-    assert not any(k.startswith("decoder.heads.relic.cat_heads") for k in keys)
-    assert not any(k.startswith("decoder.heads.relic.presence_head") for k in keys)
+    assert not any("set_head" in k for k in keys)
+    assert any(k.startswith("decoder.heads.relic.cat_heads") for k in keys)
+    assert any(k.startswith("decoder.heads.relic.presence_head") for k in keys)
 
 
-def test_relic_set_head_topk_decode_no_duplicates_and_cardinality():
-    model = _set_relic_model()
-    _z, out = model(_batch([_state()]))
-    vocab = out["relic"]["set_logits"].shape[-1]
-    for chosen in ([5, 50, 120], [3, 7, 11, 40, 200]):
-        logits = torch.full((1, vocab), -20.0)     # sigmoid ~0
-        for rid in chosen:
-            logits[0, rid] = 20.0                   # sigmoid ~1
-        out["relic"]["set_logits"] = logits
-        arrays = reconstruct_arrays(out)
-        relics = tokens.detokenize(arrays[0])["relics"]
-        # k = round(sum sigmoid) == len(chosen); top-k are exactly the chosen ids, sorted, no dups.
-        assert sorted(relics) == sorted(chosen)
-        assert len(relics) == len(set(relics))
-
-
-def test_relic_set_head_decode_never_duplicates_on_random_logits():
-    torch.manual_seed(0)
-    model = _set_relic_model()
-    _z, out = model(_batch([_state(), _state(n_hand=2, n_enemies=2)]))
-    vocab = out["relic"]["set_logits"].shape[-1]
-    out["relic"]["set_logits"] = torch.randn(2, vocab) * 3.0
-    for arr in reconstruct_arrays(out):
-        relics = tokens.detokenize(arr)["relics"]
-        assert len(relics) == len(set(relics))
-        assert len(relics) <= tokens.MAX_RELICS
-
-
-def test_relic_set_head_loss_and_report_handoff():
+def test_relic_loss_and_report_handoff():
     batch = _batch([_state(relics=["BurningBlood", "Anchor"]),
                     _state(n_hand=3, n_enemies=2, relics=["BurningBlood"])])
-    model = _set_relic_model()
+    model = _small_model()
     _z, out = model(batch)
-    # compute_losses handles the set head (BCE folded into the categorical bucket) and stays finite.
     losses = M.compute_losses(batch, out)
     for k in ("loss", "loss_categorical", "loss_numeric", "loss_presence"):
         assert torch.isfinite(losses[k])
-    # The full report card + detokenize hand-off still works with the set head.
     pairs = report.report_pairs(batch, out)
     assert set(pairs) == set(report.METRIC_NAMES)
     canon = tokens.detokenize(reconstruct_arrays(out)[0])
     assert set(canon) == {"global", "pending", "cards", "creatures", "orbs", "relics", "potions"}
 
 
-def test_relic_set_head_loss_trains():
-    torch.manual_seed(0)
-    states = [_state(n_hand=i % 3 + 1, relics=["BurningBlood", "Anchor"][: i % 2 + 1]) for i in range(6)]
-    batch = _batch(states)
-    model = _set_relic_model()
-    opt = torch.optim.AdamW(model.parameters(), lr=2e-3)
-    first = last = None
-    for i in range(40):
-        _z, out = model(batch)
-        assert "set_logits" in out["relic"]
-        losses = M.compute_losses(batch, out)
-        opt.zero_grad()
-        losses["loss"].backward()
-        opt.step()
-        if i == 0:
-            first = float(losses["loss"])
-        last = float(losses["loss"])
-    assert last < first, f"set-head loss did not drop: {first:.3f} -> {last:.3f}"
-
-
-def test_relic_head_default_slots_state_dict_identical():
-    # Default (no relic_head arg) must be byte-identical to explicit relic_head="slots".
-    torch.manual_seed(0)
-    default = _small_model()
-    torch.manual_seed(0)
-    explicit = M.WorldModelAE(d_model=64, n_heads=2, enc_layers=2, dec_layers=2, n_pool_layers=1,
-                              n_latents=4, z_dim=128, simnorm_group=8, cat_dim=16, n_mem=8,
-                              relic_head="slots")
-    assert default.cfg["relic_head"] == "slots"
-    ka, kb = default.state_dict(), explicit.state_dict()
-    assert ka.keys() == kb.keys()
-    for k in ka:
-        assert ka[k].shape == kb[k].shape and torch.equal(ka[k], kb[k])
-    # Slots mode still emits per-slot relic cat + presence (never a set head).
-    _z, out = default(_batch([_state()]))
-    assert "set_logits" not in out["relic"]
-    assert len(out["relic"]["cat"]) == 1 and "presence" in out["relic"]
-
-
-def test_dedup_default_off_is_byte_identical_reconstruction():
-    # reconstruct_arrays(dedup=False) is the default and unchanged from before the flag existed.
-    batch = _batch([_state(relics=["BurningBlood", "Anchor"]), _state(n_enemies=2)])
-    model = _small_model()
-    _z, out = model(batch)
-    a = reconstruct_arrays(out)
-    b = reconstruct_arrays(out, dedup=False)
-    for da, db in zip(a, b):
-        assert set(da) == set(db)
-        for k in da:
-            assert np.array_equal(da[k], db[k])
-
-
-def test_checkpoint_relic_head_stamp_and_rejection(tmp_path):
-    # Set-head checkpoint stamps relic_head=set (top-level + config) and rejects a slots load.
-    model = _set_relic_model()
-    path = str(tmp_path / "wm_set.pt")
-    M.save_checkpoint(path, model, step=4)
-    _loaded, meta = M.load_checkpoint(path, "cpu")
-    assert meta["relic_head"] == "set"
-    assert meta["config"]["relic_head"] == "set"
-    try:
-        M.load_checkpoint(path, "cpu", expect_relic_head="slots")
-        assert False, "expected a relic_head-mismatch rejection"
-    except ValueError as e:
-        assert "relic_head" in str(e)
-    # A slots (default) checkpoint stamps slots and rejects a set load.
-    m2 = _small_model()
-    p2 = str(tmp_path / "wm_slots.pt")
-    M.save_checkpoint(p2, m2, step=1)
-    _l2, meta2 = M.load_checkpoint(p2, "cpu")
-    assert meta2["relic_head"] == "slots"
-    try:
-        M.load_checkpoint(p2, "cpu", expect_relic_head="set")
-        assert False, "expected a relic_head-mismatch rejection"
-    except ValueError as e:
-        assert "relic_head" in str(e)
+def test_duplicate_and_ordered_relics_roundtrip_through_reconstruct():
+    # A positional relic array with a DUPLICATE id survives reconstruct -> detokenize with the count and
+    # (via the slot column being scored) the order preserved. Build the target arrays directly.
+    t = S.TYPE_BY_NAME["relic"]
+    from lts2_agent.wm.report import _target_arrays
+    batch = _batch([_state(relics=None)])   # relics default; we overwrite below
+    # Two copies of id 5 then id 9 — duplicates are legal and kept as separate positional rows.
+    ridx = np.zeros((tokens.MAX_RELICS, len(t.cat_cols)), np.int32)
+    rmask = np.zeros(tokens.MAX_RELICS, bool)
+    for i, rid in enumerate([5, 5, 9]):
+        ridx[i] = [rid, i]
+        rmask[i] = True
+    batch[t.idx_key] = torch.tensor(ridx[None])
+    batch[t.mask_key] = torch.tensor(rmask[None])
+    tgt = _target_arrays(batch)[0]
+    relics = tokens.detokenize(tgt)["relics"]
+    assert relics == [5, 5, 9]                 # duplicate kept, wire order preserved

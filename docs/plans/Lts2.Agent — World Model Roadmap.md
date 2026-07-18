@@ -7,11 +7,14 @@ latent + tokenizer-v2 + twohot + lr 6e-4, plain cosine) reconstructs held-out st
 HP MAE 0.96, first nonzero exact reconstructions (mech 0.0013). Legal actions derived from
 *decoded* states: exact-set 0.876 / F1 0.972 (true-state bound 0.998/0.999). Residual mismatch:
 creatures 35% / cards 35% / **relics 19%** (relic slots decode with duplicates — F1 0.905, the
-next structural target). _Relic fix landed:_ a decode-time greedy-by-confidence dedup
-(`reconstruct_arrays(dedup=True)` / `eval_encdec --dedup`) lifts the gate checkpoint's
-`relic_set_f1` 0.920→0.995 on 2k val states with no training change; a `--relic-head set` multi-hot
-alternative (top-k, duplicate-free by construction; stamped in meta) awaits its probe. Corpus scan:
-0.67% of states legitimately hold a duplicate relic, which top-k cannot represent (noted limitation).
+next structural target). _Relic model corrected (tokenizer v5 / v3.2, 2026-07-18):_ two product facts
+overturned the earlier duplicate-free treatments — relic ORDER is semantic (wax relics like Tezcatara
+expire in acquisition order) and duplicate relics DO occur (measured 3238/4.0M `data/corpus2` states,
+max 2 copies). Relics are therefore now a **POSITIONAL** type (the orb treatment): one token per relic
+INSTANCE, wire order preserved (v3.1's `relics.sort()` reverted), an explicit `slot` acquisition-order
+column, `MAX_RELICS` raised 24→40 bounding TOTAL relics. The set-membership head, its cardinality head,
+`_dedup_slot_ids`/`_decode_set_head`, and the `--relic-head`/`--fac-relic-head`/`--dedup` flags are all
+**deleted** (the set-vs-slots bake-off below is now moot — relics ride the standard per-slot decode).
 Findings: gate-run-v1 collapsed at step 63k under sustained mid-LR on
 the stretched schedule (its step-51k best was lost to in-place checkpointing — best-val `.best`
 sidecar now prevents recurrence); LR ladder says 6e-4 is the ceiling (1e-3+ degrade smoothly);
@@ -621,18 +624,27 @@ pretty-printer on random held-out states — do decoded states read as *the same
       belts, empty-slot interleavings), replaces `--focus-present`, and fixes relic frequency imbalance.
       - **Generators** (`wm/synth.py`, per expert, uniformly-with-design, seeded): every array convention
         preserved exactly — left-packed presence + zeroed padding; **potion index-0 = empty belt slot at any
-        position** (non-left-packed + fully-empty belts); **relic ids distinct** (uniqueness = game rule);
+        position** (non-left-packed + fully-empty belts); **relics positional with legal duplicates** (v5 —
+        random ids at explicit slots 0..k−1 in generated order, duplicates injected, order preserved);
         catalog/enum/hashed id ranges; **symlog storage** inside the measured `spec.NUMERIC_RANGES` (reusing
         the tokenizer's encoding so the training target recovers the exact integer). Creatures fold
         powers/intents with **valid parent refs**; cards keep a **game-shaped population structure** (row
-        count + per-zone count vector from measured marginals) with uniform ids/dynamic-numerics.
-      - **Trainer**: `--data real` (default) | `synth` (generator batches, no corpus) | `mixed:R` (fraction
-        R synthetic per batch, 1−R real from the cache). Factored **solo** only. **Val always runs both
-        yardsticks**: the real fixed val (deployment) AND a fixed seeded 2000-config synthetic **coverage
-        val**, the latter emitted a second time tagged `{expert, val:"coverage"}`.
-      - **Probes** (6k steps, batch 512, seed 0, corpus_tok_v3, `--num-targets twohot --loss-balance
-        expert --fac-relic-head slots`; real runs add `--focus-present 0.9`). `expert_exact` ↑ on the real
-        val (deployment) and the synthetic coverage val:
+        count + per-zone count vector from measured marginals) with uniform ids/dynamic-numerics. **All
+        canonicalized/positional types are emitted in canonical order** — the generator-canonicality guard
+        (3.11) asserts synth reproduces the same invariant as `tokenize`.
+      - **Trainer**: `--data synth` (generator batches, no corpus/cache) | `real` | `mixed:R` (fraction R
+        synthetic per batch, 1−R real). Factored **solo** only. **Val always runs both yardsticks**: the
+        real fixed val (deployment) AND a fixed seeded 2000-config synthetic **coverage val**, the latter
+        emitted a second time tagged `{expert, val:"coverage"}`.
+      - **Doctrine amendment (owner, 2026-07-18): synthetic-first / real-data-is-eval-only.** Training is
+        synthetic-first across the board — `--data synth` is now the **DEFAULT for a factored solo run** and
+        **no full-corpus token cache is built any more**. `--cache` defaults to empty; the real fixed val
+        (~2k states) is tokenized **on the fly** each run (seconds) so the deployment yardstick always runs,
+        and `eval_encdec` streams + tokenizes the corpus directly. `real`/`mixed:R` remain opt-in escape
+        hatches (they can still use an explicit `--cache`). Next: **cards** get a full-synthetic attempt,
+        with `mixed:R`/`real` as the cards-specific fallback only if synthetic-only underperforms.
+      - **Probes** (6k steps, batch 512, seed 0, synth, `--num-targets twohot --loss-balance expert`; on-the-
+        fly real-val). `expert_exact` ↑ on the real val (deployment) and the synthetic coverage val:
         <!-- PROBE_TABLE -->
       - **Verdicts:** <!-- VERDICTS -->
 
@@ -671,6 +683,52 @@ pretty-printer on random held-out states — do decoded states read as *the same
         re-measured `ACTION_FOOTPRINT` on `data/corpus2` → **0.1105** (v3 was 0.1224). Round-trip stays
         exact (8000/8000 real corpus2 states).
       - **Canary probes** (6k steps, batch 512, val-every 50, `data/corpus_tok_v31`): <!-- WELLPOSED_PROBES -->
+
+- [x] **3.11 Relics are POSITIONAL — tokenizer v5 (`TOKENIZER_VERSION = 5`, "v3.2")** — _done
+      (`tokens.py` + `wm/spec.py` + `wm/experts.py` + `wm/synth.py` + `wm/model_factored.py` +
+      `wm/model.py`/`decoder.py`/`report.py`; `tests/test_tokens*.py` + `test_wm_*` updated; README +
+      this amendment)._ **Product-fact reversal (owner):** two v3.1/v4 assumptions about relics were
+      wrong — (a) relic ORDER is semantic (wax relics such as Tezcatara via Toy Box expire in acquisition
+      order, carried only by the wire's ordered id list), and (b) duplicate relics DO occur and the total
+      can exceed the old 24 cap in long runs. Both invalidate v4's "sorted, order-free, unique" relic model.
+      **Fix — the orb treatment:** relics become a POSITIONAL type — one token per relic INSTANCE, WIRE
+      ORDER preserved (v4's `relics.sort()` reverted), each token carrying an explicit `slot` (== list index)
+      the permutation-invariant relic expert can see and target; `detokenize` emits the ordered id list
+      verbatim (canonical-dict `relics` returns to a flat wire-order id list — id-based `statefmt`/
+      `legal_actions`/corpus consumers unaffected). `MAX_RELICS` 24→40 bounds TOTAL relics with a
+      strict-overflow loud clamp (`data/corpus2` scan of 4.0M states: max total 8, max copies of one relic
+      2, 3238 states carry a duplicate). **Deletions (simplification is part of the deliverable):** the
+      multi-hot relic **set head** + cardinality head, `_dedup_slot_ids`, `_decode_set_head`, the
+      `--relic-head` / `--fac-relic-head` / `--dedup` flags and their plumbing, and the bespoke
+      `RelicExpert` — relics now ride the generic single-type `SetExpert` (positional per-slot categoricals
+      + presence), identical to potions/orbs. The 3.7 set-vs-slots bake-off above is thus moot.
+      - **Generator-canonicality guard (new):** the synth generators bypass `tokenize`, so a companion
+        regression test asserts each generated type reproduces the SAME canonical invariant (positional
+        types carry `slot == index`; canonicalized cards/creatures emit rows in the tokenizer's sort order).
+        This closed the root cause of the earlier relic plateau — v3.1 synth wrote relic ids in random draw
+        order against a canonically-sorted target (slots-synth F1 ~0.99 but exact ~0.10, the arrangement
+        lottery). `synth._fill_relics` now emits positional rows (slots 0..k−1) with a small duplicate
+        probability so duplicates are LEARNED as legal.
+      - **Cache/footprint:** rebuilt into `data/corpus_tok_v32` (v5 signature invalidates v4/v3 loudly);
+        re-measured `ACTION_FOOTPRINT` on `data/corpus2` → **0.1091** (v4 was 0.1105 — the relic `slot`
+        column widened the field universe slightly).
+      - **Canary probes** (synth training, on-the-fly real-val + seeded coverage-val, batch 512, seed 0,
+        `--num-targets twohot --loss-balance expert`, 2026-07-18):
+
+        | probe | steps | real-val exact | real-val relic_f1 | real-val dist | coverage exact |
+        |-------|------:|---------------:|------------------:|--------------:|---------------:|
+        | **relics** (target) | 6000 | **0.541** | **0.958** | 0.063 | 0.474 |
+        | potions (regression) | 2000 | **1.000** | — | 0.000 | 0.922 |
+        | orbs (regression) | 2000 | 0.807 | — | 0.515 | 0.052 |
+
+        Relics is the headline: the positional representation + the generator-canonicality fix take real-val
+        **exact from the old ~0.10 arrangement-lottery to 0.541** while holding membership quality (relic_f1
+        0.958 ≈ the slots-level F1), and the curve is a smooth log-ascent (f1 0→0.94 by ~3.8k→0.958 at 6k) —
+        no plateau. The remaining exact↔F1 gap is the per-row id+slot order-statistic cascade on larger
+        sets, which the game-sized caps already shrink. Potions (the v4 well-posedness win) is unregressed:
+        real-val exact a perfect 1.000, coverage 0.922. Orbs (untouched by v5) trains normally under the
+        version bump — its low coverage-exact is the expected early state of a 2k-step run over its two
+        wide-range numerics (evokeValue 0..250), not a regression.
 
 ### M4 — Predictor (design P3) — the heart, and the main research risk
 

@@ -361,26 +361,37 @@ python -m lts2_agent.tokens --check python/data/corpus            # add --limit 
   note below); one **creature** token per
   player/Osty/enemy (hp/maxHp/block/active + identity); **power** tokens (power-catalog index + amount,
   parented to a creature); **intent** tokens (type/damage/hits, parented to an enemy); **orb** (orb id +
-  an explicit **`slot`** belt-position column, v4), **relic** (relic-catalog index), **potion** (potion-
-  catalog index, per belt slot incl. empty — the belt is **left-packed/canonical**, v4), and a **pending-
-  choice** token (min/max select + upgrade flag). Fixed-shape padded arrays + boolean masks batch cleanly.
+  an explicit **`slot`** belt-position column, v4), **relic** (relic-catalog index + an explicit **`slot`**
+  acquisition-position column, one row per instance — **positional/duplicates kept**, v5), **potion**
+  (potion-catalog index, per belt slot incl. empty — the belt is **left-packed/canonical**, v4), and a
+  **pending-choice** token (min/max select + upgrade flag). Fixed-shape padded arrays + boolean masks batch
+  cleanly.
 - **The draw pile (and every card zone) is an unordered MULTISET.** Card population rows are sorted by
   their full content tuple, so the wire's shuffle order can *never* leak. Two shuffles of the same pile
   produce byte-identical tokens (`test_tokens.test_draw_pile_is_unordered_multiset`).
-- **Representational well-posedness (v4).** Each per-category expert is a **permutation-invariant set
+- **Representational well-posedness (v4/v5).** Each per-category expert is a **permutation-invariant set
   encoder**, so a per-slot target that varies with wire order but is carried in no per-token field is
   *ill-posed* (proven: permuted potion belts encoded byte-identically while their targets differed —
   `expert_exact` pinned near 0.46). The fix is per-type by semantics: **potions** left-pack (non-empty
   first, sorted by catalog id, then index-0 empties, belt size preserved — position is decision-
-  irrelevant); **orbs** gain an explicit `slot` column (evoke order IS semantic, so it is made visible to
-  the encoder); **creatures/relics** are content-sorted (combatId already carries a creature's identity; a
-  relic set is order-free). `tests/test_tokens_wellposed.py` asserts, for **every** variable token type,
-  that it is either canonical-order-invariant to wire permutations OR carries an explicit slot-index
-  column — the regression guard against reintroducing the trap.
+  irrelevant); **orbs and relics** are POSITIONAL — they gain an explicit `slot` column because their order
+  IS semantic (orb evoke order; relic acquisition order — wax relics expire in the order acquired), so it
+  is made visible to the encoder; **creatures** are content-sorted (combatId already carries a creature's
+  identity). `tests/test_tokens_wellposed.py` asserts, for **every** variable token type, that it is either
+  canonical-order-invariant to wire permutations OR carries an explicit slot-index column — plus a
+  **generator-canonicality twin** asserting the synthetic-space generators (which bypass `tokenize`)
+  reproduce the same invariant, the regression guard against a synth target that varies with generation
+  order (the exact bug that floored relics: random-draw-order ids against a canonical target).
+- **`TOKENIZER_VERSION = 5` — relics are positional (one row per relic instance + a `slot` acquisition-order
+  column; duplicates are legal and kept; `MAX_RELICS` bounds TOTAL relics, raised 24→40).** Product facts
+  corrected v3.1's relic model: relic order is semantic (wax relics) and duplicates DO occur (measured
+  3238/4.0M `data/corpus2` states carry one, max 2 copies), so v3.1's `relics.sort()` + uniqueness rule are
+  reverted. The old duplicate-free set head + slot-dedup machinery is **deleted**. The v5 signature
+  invalidates v4/v3 caches/checkpoints loudly. (No full corpus cache is rebuilt under the synthetic-first
+  doctrine — training is synthetic and the real fixed val is tokenized on the fly; see below.)
 - **`TOKENIZER_VERSION = 4` — representational well-posedness (left-packed potions · orb `slot` column ·
-  canonical creatures/relics).** See the well-posedness bullet above; the v4 signature invalidates v3
-  caches/checkpoints loudly, so rebuild the cache into `data/corpus_tok_v31`. The card population rows
-  (below) are unchanged from v3.
+  canonical creatures; v4 also sorted relics, reverted in v5).** See the well-posedness bullet above. The
+  card population rows (below) are unchanged from v3.
 - **`TOKENIZER_VERSION = 3` — factored population rows (the T3 "expert-per-category" data layer).** Zone
   leaves the card grouping key: there is **one row per distinct card CONTENT** (catalog id + every live
   dynamic field + keywords), carrying a **per-zone count vector** `count_{hand,draw,discard,exhaust,
@@ -517,21 +528,16 @@ an exponential moving average of the weights updated every step; **val passes ev
 (`ema_decay` in meta) that `--resume` restores alongside the raw state. The flags compose (e.g.
 `--num-head twohot --ema 0.999`).
 
-**Relic decode (CP4 fix).** The relic set is the decoder's worst structural field: 24 independent per-slot
-categoricals over the ~298-relic catalog, so under uncertainty several slots argmax onto the same corpus-
-common relic — a duplicate that no real run can hold (and a rare relic gets dropped). Two independent fixes
-address this. (1) A **decode-time dedup** (`reconstruct_arrays(dedup=True)`, `eval_encdec --dedup`) reassigns
-present relic slots greedily by confidence: order slots by their max softmax probability, and give each its
-highest-probability id among those not yet claimed. It is pure inference — no training effect, applies to any
-existing slot-head checkpoint — and lifts the gate checkpoint's `relic_set_f1` from **0.920 → 0.995** over
-2000 val states (`state_dist`/`action_snr` unchanged: 0.0291→0.0289, 5.86→5.89). (2) **`--relic-head set`**
-(default `slots` = the per-slot head, byte-identical) replaces the relic branch with ONE multi-hot head over
-the catalog: `logits [B, relic_vocab]`, trained with BCE against the multi-hot of present relic ids (folded
-into the categorical-loss bucket, replacing both the relic identity-CE and relic presence terms), and decoded
-as top-`k` for `k = clamp(round(Σ sigmoid), 0, MAX_RELICS)` — duplicate-free by construction. Stamped in the
-checkpoint meta; `--resume` rejects a slots/set mismatch. It composes with `--num-head`/`--card-ce`/`--ema`.
-Limitation: a top-`k` set cannot represent a genuine *duplicate* relic, and ~0.67 % of corpus states do hold
-one (e.g. `INFUSED_CORE`, `TOUCH_OF_OROBAS`, `BLACK_BLOOD`); those states lose the repeat.
+**Relic decode (v5 — positional).** Relics decode through the **standard per-slot path** shared by every set
+type: per-slot categoricals (relicIndex + the positional `slot` column) + a presence BCE, one row per relic
+INSTANCE. This supersedes the earlier CP4 "duplicate-free" treatments (a decode-time greedy-by-confidence
+dedup and a multi-hot `--relic-head set` head with a top-`k` cardinality decode), which were built on the
+now-refuted assumption that relics are a unique, order-free set. The product facts are the opposite:
+duplicate relics occur (rare) and relic ORDER is semantic (wax relics like Tezcatara expire in acquisition
+order), so a duplicate-free set literally cannot represent the state. The set head, its cardinality head,
+`_dedup_slot_ids`, `_decode_set_head`, and the `--relic-head` / `--fac-relic-head` / `--dedup` flags are all
+**deleted** (git history preserves them). The `slot` column makes acquisition order visible to the
+permutation-invariant relic expert exactly the way it does for orbs.
 
 ```sh
 # Train (streams the train split; per-field reconstruction metrics stream live to the dashboard).
@@ -546,26 +552,29 @@ python -m lts2_agent.train_encdec --latent-mode tokens --latent-k 16 --steps 500
 python -m lts2_agent.eval_encdec --ckpt checkpoints/wm_encdec.pt --split val   # --json for machine form
 ```
 
-**Pre-tokenized cache (one-time, for speed).** On-the-fly Python tokenization can bottleneck the trainer
-on a corpus that never changes between runs (worse still when the GPU is shared with another job). Build a
-pre-tokenized cache once so tokenization leaves the critical path entirely:
+**Pre-tokenized cache (legacy / opt-in).** Under the **synthetic-first doctrine** (above) no full-corpus
+token cache is built any more — training is synthetic and the real fixed val is tokenized on the fly (~2k
+states = seconds), so `--cache` defaults to empty. The cache remains available as an **opt-in speedup** for a
+real/mixed training run on a large fixed corpus. On-the-fly Python tokenization can bottleneck such a run
+(worse still when the GPU is shared with another job); build a pre-tokenized cache once so tokenization
+leaves the critical path entirely:
 `python -m lts2_agent.wm.cache build --corpus data/corpus --out data/corpus_tok --workers 8` streams every
 record per split, tokenizes with a multiprocessing pool, and writes compressed `.npz` array shards + a
 `manifest.json` stamped with the tokenizer signature (it auto-verifies ~200 states against a fresh
 tokenize). The 2.0M-state corpus builds to ~179 MB in ~39 min (~800 states/s, parent-side gzip/JSON
 bound). `train_encdec` uses the cache automatically when `data/corpus_tok` exists and its signature matches
-(mismatch = loud error, not silent fallback; pass `--cache ""` to force on-the-fly). The cache stores
+(mismatch = loud error, not silent fallback; empty `--cache` — the default — is always on-the-fly). The cache stores
 **both** each record's `state` and `nextState` (no dedup) to preserve exact training-distribution parity
 with the live loader. Measured on an RTX 3090: the cache data path delivers **~7400 states/s** (vs ~960
 states/s single-thread on-the-fly), so training is now fully GPU-bound — the encoder/decoder
 forward+backward itself caps this box at **~470 states/s** (fp32, no flash-attention on the Windows torch
 build), i.e. ~11-12 h for a 50k×384 run. **Rebuild the cache whenever the corpus changes or the
 tokenizer/catalog signature bumps** (`TOKENIZER_VERSION` or any catalog); it is gitignored
-(`python/data/corpus_tok/`). Build into a **new** dir on a version bump rather than overwriting the old
-one — e.g. **tokenizer v4** (well-posedness fix) needs
-`python -m lts2_agent.wm.cache build --corpus data/corpus2 --out data/corpus_tok_v31 --workers 12`
-(then `train_encdec --cache data/corpus_tok_v31`). The old v1/v2/v3 caches stay intact and reject
-loudly if a v4 run points at one.
+(`python/data/corpus_tok/`). If you do opt into a cache, build into a **new** dir on a version bump rather
+than overwriting the old one, and pass it explicitly — e.g. under **tokenizer v5** (relics positional),
+`python -m lts2_agent.wm.cache build --corpus data/corpus2 --out data/corpus_tok_v32 --workers 12` then
+`train_encdec --data real --cache data/corpus_tok_v32`. A cache from an older tokenizer version rejects
+loudly if a v5 run points at one.
 
 Metrics land as a `kind="wm-encdec"` run under `checkpoints/runs/`. **Per train step-window**
 (phase=`train`): `train.loss`, `train.loss_categorical`, `train.loss_numeric`, `train.loss_presence`,
@@ -585,9 +594,9 @@ decoder can learn it, but the slot-assignment ambiguity makes these a conservati
 the decoder can still resolve. The footprint is measured in `state_dist` token-field units, which the
 tokenizer's field universe defines, so it is **re-measured per tokenizer version** (cross-tokenizer
 comparisons use `action_snr`, not raw `state_dist`): `python -m lts2_agent.wm.footprint --corpus
-data/corpus2 --n 3000` prints per-kind medians and the constant to set. Current `ACTION_FOOTPRINT = 0.1105`
-(tokenizer v4, data/corpus2; v3 was 0.1224, v2 0.1704, v1 0.1303 — v4's orb `slot` column + canonical
-creatures/relics nudged the overall median down slightly from v3; PlayCard median 0.040).
+data/corpus2 --n 3000` prints per-kind medians and the constant to set. Current `ACTION_FOOTPRINT = 0.1091`
+(tokenizer v5, data/corpus2; v4 was 0.1105, v3 0.1224, v2 0.1704, v1 0.1303 — v5's relic `slot` column
+widened the field universe slightly, nudging the overall median down from v4; PlayCard median 0.040).
 
 ### Factored expert autoencoder (`--arch factored`, roadmap M3.5)
 
@@ -611,9 +620,10 @@ Three tiers:
   `maxSelect`/HP sentinels): 0.9999 on corpus2 val is 26/24000 choice states hitting the `maxSelect`
   cap, exactly the intended out-of-distribution signal.
 - **Tier 2 — small experts.** creatures (folds its powers + intents into one set expert, keeping the
-  parent-slot association), relics (a multi-hot **set-membership** head, duplicate-free by construction —
-  the monolith's `--relic-head set` ported over), potions (per-slot categorical, since potions can
-  duplicate), orbs. The small single-type experts run at 1 encoder / 1 decoder layer.
+  parent-slot association), relics (**positional per-slot categoricals** — relicIndex + a `slot`
+  acquisition-order column + presence, one row per instance, duplicates kept; a plain single-type
+  `SetExpert` like potions/orbs now the bespoke set head is gone), potions (per-slot categorical, since
+  potions can duplicate), orbs. The small single-type experts run at 1 encoder / 1 decoder layer.
 - **Tier 3 — card-population expert.** the largest slice, a set enc/dec over the v3 population rows
   (content categoricals + keyword multi-hot + dynamic numerics + the per-zone count vector).
 
@@ -630,8 +640,9 @@ once per expert tagged `{"expert": …}`, partitioning `state_dist` *exactly* (t
 report-card metric flows unchanged.
 
 ```sh
-# Factored AE (defaults: latent_dim 3188, ~22.9M params — cards the largest slice). Same knobs/cache as mono.
-python -m lts2_agent.train_encdec --arch factored --cache data/corpus_tok_v3 --corpus data/corpus2 \
+# Joint factored AE over ALL experts on real data (the opt-in escape hatch; solo synth is the default).
+# latent_dim 3188, ~22.9M params — cards the largest slice. Add --cache <dir> to opt into a prebuilt cache.
+python -m lts2_agent.train_encdec --arch factored --data real --corpus data/corpus2 \
     --steps 50000 --batch 384 --val-every 500 --ckpt checkpoints/wm_factored.pt --run-label wm-factored
 ```
 
@@ -687,27 +698,34 @@ problem than cards):
   probes below use **1536** for the small experts (well under the 3090's VRAM), with LR scaled ~√(batch)
   (`3e-4 → 6e-4` at 4× batch — √-scaling is steadier than linear at this ratio).
 
-**Synthetic-space training (`--data`, roadmap M3.5).** A finite-space expert is **decoupled from game
-data** and trained on **synthetic uniform configurations generated mechanically in tokenizer-array space**
-(`wm/synth.py`). Rationale: the decoder is the predictor's API and must decode **any valid configuration**,
-not only the game-frequent ones. Uniform coverage kills the rare-tail floors that game-frequency training
-leaves behind — measured: **potions capped at `expert_exact` 0.995** by ~3 rare belt configs
-(non-left-packed belts, empty-slot interleavings), and relics starved by frequency imbalance. It also
-replaces `--focus-present` (the generator sets presence by design) and needs **no cache or corpus** once an
-expert is decoupled.
+**Synthetic-space training (`--data`, roadmap M3.5) — the DEFAULT doctrine.** Training is **synthetic-first**:
+a factored SOLO expert is **decoupled from game data** and trained on **synthetic uniform configurations
+generated mechanically in tokenizer-array space** (`wm/synth.py`), and **real corpus data is the deployment
+EVAL set, not a training input**. Rationale: the decoder is the predictor's API and must decode **any valid
+configuration**, not only the game-frequent ones. Uniform coverage kills the rare-tail floors that
+game-frequency training leaves behind — measured: **potions capped at `expert_exact` 0.995** by ~3 rare belt
+configs (non-left-packed belts, empty-slot interleavings), and relics starved by frequency imbalance. It
+also replaces `--focus-present` (the generator sets presence by design) and needs **no cache or corpus** for
+training. **No full-corpus token cache is built any more**: the real fixed val sample (~2k states) is
+tokenized **on the fly** each run (seconds) so the deployment yardstick always runs, and `eval_encdec`
+streams + tokenizes the corpus directly. Next up (owner): **cards** get a full-synthetic attempt too, with a
+fallback to `mixed:R`/`real` for cards specifically only if synthetic-only underperforms.
 
-- **`--data real`** (default) — the pre-tokenized corpus cache (the deployment distribution).
-- **`--data synth`** — 100 % synthetic batches. Each generator samples that expert's category
+- **`--data synth`** — **the default for a factored solo run** (`--train-experts` set). 100 % synthetic
+  batches. Each generator samples that expert's category
   uniformly-with-design over its array space, respecting every convention exactly: left-packed presence,
   zeroed padding, **potion index-0 = empty belt slot at any position** (non-left-packed + fully-empty belts
-  included), **relic ids distinct** (uniqueness is a game rule), catalog/enum/hashed id ranges, and
+  included), **relics positional with legal duplicates** (random ids at explicit slots 0..k-1 in generated
+  order — duplicates injected on purpose so they are learned, order preserved not sorted),
+  catalog/enum/hashed id ranges, and
   **symlog storage** inside the measured `spec.NUMERIC_RANGES` (reusing the tokenizer's encoding, so the
   training target recovers the exact integer). Cards keep a **game-shaped population structure** (row count
   + per-zone count vector sampled from measured marginals) with uniform ids/dynamic-numerics — coverage
   insurance for the largest slice, not the primary signal.
-- **`--data mixed:R`** — a fraction `R` synthetic per batch, `1−R` real (e.g. `mixed:0.5`, `mixed:0.25`).
-  The real-heavy mixes are the recommended default for **cards** (game decks are the structured workload
-  the card slice is sized for; uniform populations are a harder super-problem).
+- **`--data real`** / **`--data mixed:R`** — opt back into corpus training (`real` = 100 % real; `mixed:R`
+  = a fraction `R` synthetic, `1−R` real). Under the synthetic-first doctrine these are escape hatches, kept
+  as the fallback if a slice (e.g. **cards** — game decks are a structured workload) underperforms on
+  synthetic-only. They require the corpus (streamed + tokenized on the fly, or an opt-in `--cache`).
 
 `--data` applies to factored **solo** runs only. **Validation always runs both yardsticks**: the standard
 real-data fixed val (the deployment yardstick, emitted as today) **and** a fixed, seeded 2000-config
@@ -716,9 +734,10 @@ the dashboard overlays the two (group by `val`). So a `--data synth` run is stil
 every val, and a `--data real` run is still scored on uniform coverage.
 
 ```sh
-# Potions on pure synthetic space — clears the 0.995 rare-belt coverage floor, no cache needed for training.
-python -m lts2_agent.train_encdec --arch factored --train-experts potions --data synth \
-    --val-experts trained-only --cache data/corpus_tok_v3 --corpus data/corpus2 --steps 6000 --batch 512 \
+# Potions on pure synthetic space (the default for a solo run — clears the 0.995 rare-belt coverage floor).
+# No cache: training is synthetic, real-val is tokenized on the fly from --corpus. --data synth is implicit.
+python -m lts2_agent.train_encdec --arch factored --train-experts potions \
+    --val-experts trained-only --corpus data/corpus2 --steps 6000 --batch 512 \
     --ckpt checkpoints/potions_synth.pt --run-label potions-synth
 ```
 
@@ -733,14 +752,13 @@ Once each expert is trained, **compose** the kept slices into one standard full 
 artifact the M4 predictor consumes):
 
 ```sh
-# Solo-train relics from scratch, focused val, on the GPU (tiny — batch 512 is fine).
+# Solo-train relics from scratch (synthetic-first default; real-val tokenized on the fly, no cache).
 python -m lts2_agent.train_encdec --arch factored --train-experts relics --val-experts trained-only \
-    --cache data/corpus_tok_v3 --corpus data/corpus2 --steps 6000 --batch 512 --val-every 1000 \
+    --corpus data/corpus2 --steps 6000 --batch 512 --val-every 1000 \
     --ckpt checkpoints/relic_solo.pt --run-label relic-solo
 
-# Warm-start a cards solo run from the joint run's cards slice.
+# Cards: synthetic-first too; fall back to --data mixed:0.5 (opt-in --cache) only if synth underperforms.
 python -m lts2_agent.train_encdec --arch factored --train-experts cards --val-experts trained-only \
-    --init-expert-from cards=checkpoints/wm_t3_v3.pt.best --cache data/corpus_tok_v3 \
     --corpus data/corpus2 --steps 20000 --batch 384 --ckpt checkpoints/cards_solo.pt
 
 # Compose: assemble a full checkpoint from the kept per-expert runs (--base fills the rest).
@@ -749,7 +767,8 @@ python -m lts2_agent.wm.compose --out checkpoints/wm_composite.pt \
     --experts relics=checkpoints/relic_solo.pt.best cards=checkpoints/cards_solo.pt.best
 
 # eval_encdec loads a factored/composite checkpoint transparently (auto-detects arch from meta).
-python -m lts2_agent.eval_encdec --ckpt checkpoints/wm_composite.pt --split val --cache data/corpus_tok_v3
+# Real data is the deployment eval set — it streams + tokenizes the corpus on the fly (no cache needed).
+python -m lts2_agent.eval_encdec --ckpt checkpoints/wm_composite.pt --split val --corpus data/corpus2
 ```
 
 Compose is strict: every source must be factored + tokenizer-compatible, all sources must agree on the
@@ -759,12 +778,10 @@ checkpoint meta (`composed_from`). Each factored checkpoint's meta also carries 
 (`experts`: slice layout + tokenizer signature + build kwargs), the contract compose/warm-start validate
 against; the expert weights themselves live in the one full `state_dict` under `experts.<name>.*`.
 
-**Relic decode variant (bake-off).** The relic expert supports two decode heads via **`--fac-relic-head`**
-(factored only): `set` (default) is the multi-hot set-membership head + count head (duplicate-free by
-construction); `slots` is the monolith-style per-slot categoricals + inference **dedup** (greedy-by-
-confidence unique assignment — `_dedup_slot_ids`, auto-enabled in val/eval for a slots model).
-**`--relic-dec-layers N`** (default 1) deepens the relic decoder for a set-head capacity probe. These feed
-the M3.5 relic bake-off (the set head only ships if it *beats* slots+dedup on `expert_exact`).
+**Relic decoder depth.** **`--relic-dec-layers N`** (default 1 = the shallow single-type expert default)
+deepens the relic decoder if it needs more capacity. (The old set-vs-slots relic bake-off and its
+`--fac-relic-head` / `--relic-head` / `--dedup` flags are gone — relics are now unconditionally the
+positional per-slot decode; see "Relic decode (v5 — positional)" above.)
 
 ## Decoded-state printer + diff (roadmap 3.2)
 

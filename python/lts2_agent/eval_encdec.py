@@ -42,15 +42,12 @@ def _load_any(ckpt: str, device):
 
 
 def evaluate(ckpt: str, corpus_root: str, split: str, batch_size: int, device, limit: int = 0,
-             dedup: bool = False, cache_dir: str = ""):
+             cache_dir: str = ""):
     model, meta, factored = _load_any(ckpt, device)
     model.eval()
-    # A factored relic-slots model wants inference dedup; the set-head model is already dup-free.
-    if factored and getattr(model, "relic_head", "set") == "slots":
-        dedup = True
 
     def _pairs(batch, out):
-        return report.report_pairs(batch, out, dedup=dedup, experts=factored)
+        return report.report_pairs(batch, out, experts=factored)
 
     accum: Dict[str, Any] = {}
     n = 0
@@ -101,9 +98,6 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="cap states scanned (0 = whole split)")
     ap.add_argument("--cache", default="", help="pre-tokenized cache dir to read the split from (fast); "
                                                 "empty = stream + tokenize the corpus")
-    ap.add_argument("--dedup", action="store_true",
-                    help="decode-time relic-slot dedup (slot-head models): greedy-by-confidence unique "
-                         "relic assignment. No effect on the relic_head=set model (already dup-free).")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
@@ -113,7 +107,7 @@ def main() -> int:
     device = torch.device(args.device)
 
     overall, by_act, n, meta, dt = evaluate(args.ckpt, args.corpus, args.split, args.batch, device,
-                                            args.limit, dedup=args.dedup, cache_dir=args.cache)
+                                            args.limit, cache_dir=args.cache)
     if args.json:
         print(json.dumps({"ckpt": args.ckpt, "split": args.split, "n_states": n,
                           "step": meta.get("step"), "overall": overall, "by_act": by_act}, indent=2))

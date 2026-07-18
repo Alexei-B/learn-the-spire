@@ -18,8 +18,10 @@ Conventions preserved EXACTLY (mirrors :func:`tokens.tokenize`):
 * **Presence is left-packed**: the first ``k`` slots of a variable-length type are present (mask True),
   the rest padded (mask False, arrays 0). ``k`` is the sampled item count.
 * **index-0 semantics**: a potion slot id 0 is an EMPTY belt slot (a present token); a catalog id 0 is
-  none/unknown. Relic ids are drawn 1..N-1 (a present relic is a real relic) and are **distinct**
-  (uniqueness is a game rule). Enum columns exclude the reserved trailing UNKNOWN slot.
+  none/unknown. Relic ids are drawn 1..N-1 (a present relic is a real relic); duplicates are LEGAL and
+  drawn on purpose (rare in-game, e.g. via wax relics / events) and relics are POSITIONAL (v5) — one row
+  per instance carrying an explicit ``slot`` == its list index (acquisition order is semantic). Enum
+  columns exclude the reserved trailing UNKNOWN slot.
 * **symlog storage**: every non-flag numeric column stores ``tokens.symlog(int)`` (flags store the raw
   0/1), so :meth:`experts.RangeBinHeads.bin_targets` recovers the exact integer — the same integer<->
   stored mapping the tokenizer uses. Values are sampled uniformly inside :data:`spec.NUMERIC_RANGES`.
@@ -206,26 +208,40 @@ def _fill_potions(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) ->
         mask[b, :k] = True
 
 
-RELIC_MAX_SET = 10   # game states hold 1..8 relics (measured corpus max 8) + margin; sampling up to
-                     # the 24-slot PADDED cap made the synthetic task combinatorially harder than any
-                     # real state and misaligned real-val (slots-synth: F1 0.99 but real exact ~0.3).
+RELIC_MAX_SET = 12   # game states hold 0..8 relics (measured data/corpus2 max 8) + margin; a long run can
+                     # accumulate more (this corpus is act-0..2 homogeneous), so 12 covers the near future
+                     # while staying well under the MAX_RELICS=40 padded cap. Sampling the full 40-slot cap
+                     # made the synthetic task combinatorially harder than any real state.
+RELIC_DUP_PROB = 0.05   # per-instance probability a drawn relic REPEATS an earlier one (duplicates are
+                        # legal, rare — measured 3238/4.0M states carry one, max 2 copies). Small, with a
+                        # natural rare high-count tail (>=2 repeats compound), so duplicates are LEARNED.
 
 
 def _fill_relics(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
-    """Relic set: random subset size 0..RELIC_MAX_SET of DISTINCT relic ids (uniqueness is a game
-    rule). Ids drawn 1..N-1 (a present relic slot is a real relic)."""
+    """Relics (v5 POSITIONAL): random count 0..RELIC_MAX_SET of relic ids at explicit slots 0..k-1, in
+    generated (== wire) order. Ids drawn 1..N-1 (a present relic is a real relic). Duplicates are LEGAL
+    and injected on purpose (:data:`RELIC_DUP_PROB`) so the expert learns them; order is preserved (never
+    sorted) and the `slot` categorical == the row index (mirrors the tokenizer's positional stamp — the
+    same treatment as orbs, so the permutation-invariant expert can see the semantic acquisition order)."""
     cap = RELIC_MAX_SET
-    n_relics = S.TYPE_BY_NAME["relic"].cat_cols[0][1]
+    tspec = S.TYPE_BY_NAME["relic"]
+    slot_col = [c for c, _ in tspec.cat_cols].index("slot")
+    n_relics = tspec.cat_cols[0][1]
     counts = rng.integers(0, cap + 1, size=B)
     idx = z["relic_idx"]
     mask = z["relic_mask"]
-    pool = np.arange(1, n_relics)
     for b in range(B):
-        k = int(min(counts[b], len(pool)))
+        k = int(counts[b])
         if k == 0:
             continue
-        ids = rng.choice(pool, size=k, replace=False)       # DISTINCT
-        idx[b, :k, 0] = ids
+        ids: List[int] = []
+        for _ in range(k):
+            if ids and rng.random() < RELIC_DUP_PROB:
+                ids.append(int(rng.choice(ids)))            # duplicate an already-held relic (legal)
+            else:
+                ids.append(int(rng.integers(1, n_relics)))  # a fresh real relic id
+        idx[b, :k, 0] = np.asarray(ids, dtype=np.int64)     # wire order preserved (NOT sorted)
+        idx[b, :k, slot_col] = np.arange(k)                 # positional slot == list index
         mask[b, :k] = True
 
 
@@ -304,12 +320,35 @@ def _sample_from_hist(rng: np.random.Generator, hist: np.ndarray, size: int) -> 
     return rng.choice(len(hist), size=size, p=p)
 
 
+_CARD_RAW_COLS = RAW_NUM_COLS.get("card", set())
+
+
+def _card_content_order(ci_b: np.ndarray, cn_b: np.ndarray, ckw_b: np.ndarray, k: int) -> List[int]:
+    """Row permutation that sorts the first ``k`` synthetic card rows by the SAME content key the
+    tokenizer orders population rows with (:func:`tokens._card_content_key`) — so synthetic card targets
+    obey the identical canonical order as real tokenized states (generator-canonicality guard: synth
+    bypasses tokenize, so it must reproduce the invariant itself). The key excludes the per-zone count
+    columns (they are the count vector, not part of a row's content identity)."""
+    keys = []
+    for r in range(k):
+        d = {name: int(ci_b[r, j]) for j, name in enumerate(tokens.CARD_IDX)}
+        for j, name in enumerate(tokens.CARD_NUM):
+            if name in tokens.ZONE_COUNT_FIELDS:
+                continue
+            v = float(cn_b[r, j])
+            d[name] = int(round(v)) if name in _CARD_RAW_COLS else int(round(tokens.symexp(v)))
+        d["keywords"] = sorted(int(b) for b in np.nonzero(ckw_b[r])[0])
+        keys.append(tokens._card_content_key(d))
+    return sorted(range(k), key=lambda r: keys[r])
+
+
 def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
     """Card population rows (coverage insurance — game-shaped structure, uniform content). Row count from
     the measured rows/state marginal; each row's categoricals + dynamic numerics uniform in ranges;
     keywords random-sparse; the per-zone count vector sampled from the measured game-like small-int
     distribution (n_zones, which zones, per-zone count) with sum >= 1 (a row exists because it has an
-    instance somewhere)."""
+    instance somewhere). Rows are finally CONTENT-SORTED into the tokenizer's canonical order (well-posed
+    targets — a permutation-invariant set encoder needs a content-determined slot assignment)."""
     cap = tokens.MAX_CARDS
     tspec = S.TYPE_BY_NAME["card"]
     zone_cols = list(tokens.ZONE_COUNT_FIELDS)
@@ -337,6 +376,11 @@ def _fill_cards(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> N
                 cnt = int(_sample_from_hist(rng, _CARD_ZONE_COUNT_HIST, 1)[0])
                 cnt = max(1, min(cnt, zone_maxes[zc]))
                 cn[b, r, zone_count_idx[zi]] = _symlog_arr(np.float64(cnt))
+        # Canonicalize row order to the tokenizer's content sort (well-posedness — see helper docstring).
+        order = _card_content_order(ci[b], cn[b], ckw[b], k)
+        ci[b, :k] = ci[b, order]
+        cn[b, :k] = cn[b, order]
+        ckw[b, :k] = ckw[b, order]
         cm[b, :k] = True
 
 

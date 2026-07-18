@@ -10,8 +10,8 @@ PY=.venv/Scripts/python.exe
 CK=/c/Users/Alexe/AppData/Local/Temp/lts2_wp/ck
 LOG=/c/Users/Alexe/AppData/Local/Temp/lts2_wp/logs
 mkdir -p "$CK" "$LOG"
-COMMON="--arch factored --cache data/corpus_tok_v31 --corpus data/corpus2 --lr 3e-4 --beta2 0.95 \
-  --loss-balance expert --val-experts trained-only --num-targets twohot --fac-relic-head slots \
+COMMON="--arch factored --corpus data/corpus2 --lr 3e-4 --beta2 0.95 \
+  --loss-balance expert --val-experts trained-only --num-targets twohot \
   --batch 512 --steps 6000 --warmup 800 --val-every 50 --val-states 2000 --val-batch 512 --seed 0"
 
 run() {  # label expert data extra...

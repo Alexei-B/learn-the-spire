@@ -59,9 +59,6 @@ def test_forward_shapes_and_latent_dim():
     # Every token type is decoded with the monolith's per-type output structure.
     for t in S.TYPES:
         o = out[t.name]
-        if t.name == "relic":
-            assert o["set_logits"].shape == (2, t.cat_cols[0][1])
-            continue
         assert len(o["cat"]) == len(t.cat_cols)
         for c, (_, vocab) in zip(o["cat"], t.cat_cols):
             assert c.shape[-1] == vocab
@@ -182,22 +179,23 @@ def test_range_bin_head_exact_when_argmax_hits_target_bin():
 
 
 # ==================================================================================================
-# Relic set head — duplicate-free by construction.
+# Relic expert — positional per-slot decode (v5): duplicates legal, acquisition order carried.
 # ==================================================================================================
 
-def test_relic_set_head_forward_and_no_duplicates():
+def test_relic_expert_positional_slot_head():
     batch = _batch([_state(relics=["BurningBlood", "Anchor"]), _state(n_enemies=2)])
     m = _small()
     _z, out = m(batch)
-    vocab = S.TYPE_BY_NAME["relic"].cat_cols[0][1]
-    assert out["relic"]["set_logits"].shape == (2, vocab)
-    assert "cat" not in out["relic"] and "presence" not in out["relic"]
-    # Random logits still decode a duplicate-free relic set within the cap.
-    torch.manual_seed(0)
-    out["relic"]["set_logits"] = torch.randn(2, vocab) * 3.0
+    t = S.TYPE_BY_NAME["relic"]
+    # No set head: the relic expert emits per-slot categoricals (relicIndex + slot) + presence, exactly
+    # like the other set experts.
+    assert "set_logits" not in out["relic"]
+    assert len(out["relic"]["cat"]) == len(t.cat_cols) == 2
+    assert out["relic"]["cat"][1].shape[-1] == tokens.MAX_RELICS   # the positional `slot` head
+    assert "presence" in out["relic"]
+    # Reconstruct -> detokenize hands off cleanly (duplicates are legal, no dedup).
     for arr in reconstruct_arrays(out):
         relics = tokens.detokenize(arr)["relics"]
-        assert len(relics) == len(set(relics))
         assert len(relics) <= tokens.MAX_RELICS
 
 
@@ -399,16 +397,16 @@ def test_init_expert_from_copies_slice(tmp_path):
     assert stamp["name"] == "relics"
     for k, v in src.experts["relics"].state_dict().items():
         assert torch.equal(v, dst.experts["relics"].state_dict()[k])
-    # A config mismatch (different relic head) is rejected.
-    slots = MF.FactoredWorldModelAE(
+    # A config mismatch (different slice width) is rejected.
+    narrow = MF.FactoredWorldModelAE(
         d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
-        cat_dim=16, relic_head="slots",
-        slice_widths={"creatures": 128, "cards": 256, "relics": 64, "potions": 32, "orbs": 32})
+        cat_dim=16,
+        slice_widths={"creatures": 128, "cards": 256, "relics": 32, "potions": 32, "orbs": 32})
     try:
-        MF.init_expert_from(slots, "relics", path)
-        assert False, "expected a config-mismatch rejection"
+        MF.init_expert_from(narrow, "relics", path)
+        assert False, "expected a slice-width-mismatch rejection"
     except ValueError as e:
-        assert "architecture differs" in str(e) or "config" in str(e)
+        assert "width" in str(e) or "config" in str(e)
 
 
 # ==================================================================================================
@@ -436,9 +434,9 @@ def test_compose_roundtrip_matches_sources(tmp_path):
         _zb, ob = b(batch)
         _zc, oc = comp(batch)
     # Relic decode is byte-identical to source A; card decode byte-identical to source B.
-    assert torch.equal(oc["relic"]["set_logits"], oa["relic"]["set_logits"])
+    assert torch.equal(oc["relic"]["cat"][0], oa["relic"]["cat"][0])
     assert torch.equal(oc["card"]["cat"][0], ob["card"]["cat"][0])
-    assert not torch.equal(oc["relic"]["set_logits"], ob["relic"]["set_logits"])
+    assert not torch.equal(oc["relic"]["cat"][0], ob["relic"]["cat"][0])
 
 
 # ==================================================================================================
@@ -457,49 +455,6 @@ def test_expert_exact_matches_zero_dist_and_scalars_is_one():
         assert np.array_equal(exact, (dist_num == 0.0).astype(np.float32))
     # scalars is exact by construction -> every state's scalar slice reconstructs exactly.
     assert report.aggregate(pairs)["expert_exact::scalars"] == 1.0
-
-
-# ==================================================================================================
-# Relic slots variant (inside the factored RelicExpert): forward + no duplicates via dedup.
-# ==================================================================================================
-
-def test_relic_slots_variant_forward_loss_and_dedup():
-    m = MF.FactoredWorldModelAE(
-        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
-        cat_dim=16, relic_head="slots",
-        slice_widths={"creatures": 128, "cards": 256, "relics": 64, "potions": 32, "orbs": 32})
-    assert m.relic_head == "slots"
-    batch = _batch([_state(relics=["BurningBlood", "Anchor"]), _state(n_enemies=2)])
-    _z, out = m(batch)
-    # Slot head emits per-slot categoricals + presence (NOT a set head).
-    assert "set_logits" not in out["relic"]
-    assert "cat" in out["relic"] and "presence" in out["relic"]
-    # Loss is finite and includes the relic term.
-    losses = MF.compute_losses(batch, out, m)
-    assert all(torch.isfinite(v) for v in losses.values())
-    # Decode with inference dedup: no relic id repeats within a state.
-    torch.manual_seed(0)
-    for arr in reconstruct_arrays(out, dedup=True):
-        relics = tokens.detokenize(arr)["relics"]
-        assert len(relics) == len(set(relics))
-
-
-def test_relic_slots_variant_composes_with_default_experts(tmp_path):
-    from lts2_agent.wm import compose as CMP
-    slots = MF.FactoredWorldModelAE(
-        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
-        cat_dim=16, relic_head="slots",
-        slice_widths={"creatures": 128, "cards": 256, "relics": 64, "potions": 32, "orbs": 32})
-    base = _small()   # relic_head="set"
-    ps = str(tmp_path / "slots.pt"); pb = str(tmp_path / "base.pt")
-    MF.save_checkpoint(ps, slots, step=1); MF.save_checkpoint(pb, base, step=1)
-    out = str(tmp_path / "comp.pt")
-    CMP.compose(out, {"relics": ps}, base=pb)
-    comp, meta = MF.load_checkpoint(out)
-    # The composite adopts the slots relic head; its non-relic experts stay the set-run defaults.
-    assert comp.relic_head == "slots"
-    _z, o = comp(_batch([_state(relics=["Anchor"])]))
-    assert "set_logits" not in o["relic"]
 
 
 # ==================================================================================================

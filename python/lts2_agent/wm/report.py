@@ -23,7 +23,7 @@ import torch
 
 from .. import tokens
 from . import spec as S
-from .decoder import _decode_set_head, _dedup_slot_ids, reconstruct_arrays
+from .decoder import reconstruct_arrays
 from .experts import EXPERT_ORDER, EXPERT_TYPES
 
 # Per-expert token-type partition for the factored-AE eval.expert_dist metric (emitted tagged by expert).
@@ -45,6 +45,10 @@ METRIC_NAMES = [
 # Median fraction of token-fields changed by ONE real action (state -> nextState, the same
 # _state_dist metric). Re-measure with `python -m lts2_agent.wm.footprint` if the tokenizer layout or
 # corpus changes materially (the field universe sets both the numerator and denominator).
+#   v5 (relics positional: one row per instance + a `slot` acquisition-order column; data/corpus2 val,
+#      2026-07-18, 3,000 transitions): PlayCard median 0.0399, EndTurn 0.2327, SelectCards 0.2781,
+#      UsePotion 0.0487, DiscardPotion 0.0041, overall median 0.1091. The relic `slot` column widened the
+#      field universe slightly, nudging the overall median down from v4's 0.1105.
 #   v4 (well-posedness fix: left-packed potions + orb slot column + canonical creatures/relics;
 #      data/corpus2 val, 2026-07-17, 3,000 transitions): PlayCard median 0.0403, EndTurn 0.2342,
 #      SelectCards 0.2814, UsePotion 0.0492, DiscardPotion 0.0041, overall median 0.1105. Adding the orb
@@ -56,7 +60,7 @@ METRIC_NAMES = [
 #      shared row (draw->discard) instead of moving a whole card token, so its footprint dropped sharply.
 #   v2 (count-grouped cards, zone in key, 3,000 val): PlayCard 0.1409, EndTurn 0.2684, overall 0.1704.
 #   v1 (per-instance card tokens): PlayCard 0.108, EndTurn 0.213, overall 0.1303.
-ACTION_FOOTPRINT = 0.1105
+ACTION_FOOTPRINT = 0.1091
 
 
 def _symexp_np(y: np.ndarray) -> np.ndarray:
@@ -191,12 +195,8 @@ def _set_f1(pred: List[int], tgt: List[int]) -> float:
 @torch.no_grad()
 def report_pairs(batch: Dict[str, torch.Tensor],
                  outputs: Dict[str, Dict[str, torch.Tensor]],
-                 dedup: bool = False,
                  experts: bool = False) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Per-sample ``(numerator, denominator)`` arrays for every contract metric (length B each).
-
-    ``dedup`` forwards to :func:`reconstruct_arrays` — a pure decode-time relic-slot dedup that lifts
-    ``relic_set_f1`` (and ``state_dist``) for the slot-head model without any training change.
 
     ``experts`` (factored AE only) additionally emits, per expert, ``expert_dist::<name>`` — that
     expert's share of ``state_dist`` restricted to its token types (partitions the whole, so the weighted
@@ -257,7 +257,7 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     pairs["energy_acc"] = ((pred_ei == tgt_ei).astype(np.float32), np.ones(B, dtype=np.float32))
 
     # Canonical-dict-derived metrics (relic/potion sets, sizes, pending, exact-state).
-    pred_arrays = reconstruct_arrays(outputs, dedup=dedup)
+    pred_arrays = reconstruct_arrays(outputs)
     tgt_arrays = _target_arrays(batch)
     relic_f1 = np.zeros(B, np.float32); potion_f1 = np.zeros(B, np.float32)
     hand_ok = np.zeros(B, np.float32); pile_num = np.zeros(B, np.float32); pile_den = np.zeros(B, np.float32)
@@ -328,8 +328,8 @@ def report_pairs(batch: Dict[str, torch.Tensor],
     return pairs
 
 
-def _reconstruct_types(outputs: Dict[str, Dict[str, torch.Tensor]], typespecs: List, B: int,
-                       dedup: bool = False) -> List[Dict[str, np.ndarray]]:
+def _reconstruct_types(outputs: Dict[str, Dict[str, torch.Tensor]], typespecs: List, B: int
+                       ) -> List[Dict[str, np.ndarray]]:
     """Per-sample array dicts limited to ``typespecs`` (a subset of :data:`S.TYPES`) — the focused
     reconstruction for ``--val-experts trained-only``, so a solo run decodes ONLY its own token types
     (never the full population/creature decoders). Same array layout :func:`reconstruct_arrays` emits."""
@@ -338,18 +338,10 @@ def _reconstruct_types(outputs: Dict[str, Dict[str, torch.Tensor]], typespecs: L
         o = outputs.get(t.name)
         if o is None:
             continue
-        if "set_logits" in o:                                       # relic set head
-            s_idx, s_mask = _decode_set_head(o, t.max_slots)
-            for b in range(B):
-                results[b][t.idx_key] = s_idx[b].reshape(t.max_slots, len(t.cat_cols)).astype(np.int32)
-                results[b][t.mask_key] = s_mask[b].astype(bool)
-            continue
         cat = [c.detach().argmax(dim=-1).cpu().numpy() for c in o.get("cat", [])]
         presence = None
         if "presence" in o:
             presence = (torch.sigmoid(o["presence"].detach()) >= 0.5).cpu().numpy()
-        if dedup and t.name == "relic" and cat and presence is not None:
-            cat[0] = _dedup_slot_ids(o["cat"][0], presence)
         num = o["num"].detach().cpu().numpy() if "num" in o else None
         kw = ((torch.sigmoid(o["kw"].detach()) >= 0.5).cpu().numpy().astype(np.float32)
               if "kw" in o else None)
@@ -369,7 +361,7 @@ def _reconstruct_types(outputs: Dict[str, Dict[str, torch.Tensor]], typespecs: L
 @torch.no_grad()
 def report_pairs_experts_only(batch: Dict[str, torch.Tensor],
                               outputs: Dict[str, Dict[str, torch.Tensor]],
-                              active: List[str], dedup: bool = False
+                              active: List[str]
                               ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Focused per-expert metrics for ``--val-experts trained-only``: ``expert_dist::<name>`` and
     ``expert_exact::<name>`` for each active expert (+ ``relic_set_f1`` when relics is active), computed
@@ -377,7 +369,7 @@ def report_pairs_experts_only(batch: Dict[str, torch.Tensor],
     for a solo run costs just that expert's decoder pass."""
     B = batch["global_idx"].shape[0]
     active_typespecs = [S.TYPE_BY_NAME[n] for e in active for n in EXPERT_TYPES[e]]
-    pred = _reconstruct_types(outputs, active_typespecs, B, dedup=dedup)
+    pred = _reconstruct_types(outputs, active_typespecs, B)
     tgt = _target_arrays(batch)
     pairs: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
     ones = np.ones(B, np.float32)

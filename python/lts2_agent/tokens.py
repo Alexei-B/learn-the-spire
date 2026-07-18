@@ -47,6 +47,17 @@ from . import catalog
 # ==================================================================================================
 
 # Bump whenever the token layout / vocab semantics change so stale artifacts reject loudly.
+# v5 / "v3.2" (2026-07): **relics become a POSITIONAL type** (roadmap M3.5). Product facts corrected the
+# v3.1 relic model on two counts: (a) relic ORDER IS SEMANTIC — wax relics (e.g. Tezcatara via Toy Box)
+# expire in ACQUISITION order and the wire's ordered id list is the only carrier of that state; and (b)
+# duplicate relics ARE possible (rare) and the total can exceed the old 24 cap in long runs. So relics get
+# the ORB treatment: WIRE ORDER is preserved (v3.1's `relics.sort()` is reverted), one token row per relic
+# INSTANCE (duplicates are separate rows, distinguished by order), and each token carries an explicit
+# `slot` categorical (0..MAX_RELICS-1) == its list index, so the permutation-invariant relic expert can
+# see and target the order. detokenize emits the ordered id list VERBATIM (the canonical `relics` list is
+# back to a flat wire-order id list — id-based consumers unaffected). MAX_RELICS rises to 40 (bounding
+# TOTAL relics again, not distinct) with the strict-overflow loud clamp. The old duplicate-free set head +
+# slot-dedup machinery is deleted (git history preserves it) — a positional slot decode has no use for it.
 # v4 / "v3.1" (2026-07): **representational well-posedness fix** (roadmap M3.5). A set encoder pools its
 # category permutation-invariantly, so a POSITION-SPECIFIC target that varies with input order but is not
 # carried in any per-token field is ill-posed (proven: permuted potion belts encode byte-identically while
@@ -57,9 +68,9 @@ from . import catalog
 #     non-left-packed raw belt (e.g. [empty, empty, X]) round-trips to its canonical [X, empty, empty].
 #   * orbs — position IS semantic (evoke order), so it is made VISIBLE: each orb token gains an explicit
 #     `slot` categorical (0..MAX_ORBS-1) the set encoder can represent.
-#   * creatures / relics — CANONICALIZED (sorted by content) so their per-slot targets are a function of
-#     the multiset, not the wire order (combatId already carries a creature's identity; a relic set is
-#     order-free). This removes the same trap the permutation well-posedness test guards against.
+#   * creatures — CANONICALIZED (sorted by content) so their per-slot targets are a function of the
+#     multiset, not the wire order (combatId already carries a creature's identity). (v3.1 also sorted
+#     relics; v5 reverts that — see above — because relic order turned out to be semantic.)
 # The card population rows were already content-sorted (well-posed) and are unchanged.
 # v3 (2026-07): **factored population rows** — the T3 "expert-per-category" redesign (roadmap M3.5).
 # `zone` leaves the card grouping key: one row per distinct card CONTENT (id + every dynamic field +
@@ -74,7 +85,7 @@ from . import catalog
 # a per-field decoder bins against); the tokenizer keeps symlog storage for cache/decoder compat.
 # v2 (2026-07): count-grouped card tokens WITH zone in the grouping key (one `count` per zone-scoped row).
 # v1: raw per-instance card tokens.
-TOKENIZER_VERSION = 4
+TOKENIZER_VERSION = 5
 
 _CARDS = catalog.load("cards")
 _POWERS = catalog.load("powers")
@@ -164,7 +175,12 @@ MAX_CREATURES = 12     # player + osty + <=6 enemies (measured <=8)
 MAX_POWERS = 96        # across all creatures (measured <=56)
 MAX_INTENTS = 32       # across all enemies (measured <=18)
 MAX_ORBS = 16          # (measured <=8)
-MAX_RELICS = 24        # relics accumulate over a run (measured <=8 in the act0-2 corpus)
+# v5: MAX_RELICS bounds TOTAL relic INSTANCES again (relics are positional, one token/instance, duplicates
+# kept). data/corpus2 scan (4.0M states, 2026-07): max total relics/state 8, max copies of one relic 2
+# (3238 states carry a duplicate — index 198 x2 — so duplicates are real but rare). This corpus is
+# act-0..2 homogeneous; long runs accumulate more, so the cap is raised well past 24 to 40 (generous slack)
+# so a deep run never truncates; the strict-overflow check is the loud clamp.
+MAX_RELICS = 40        # total relic instances over a run (positional; measured max 8 in data/corpus2)
 MAX_POTIONS = 8        # potion belt slots (measured <=5)
 
 # --- Per-token-type field layouts (names double as the detokenize decode order) -------------------
@@ -200,7 +216,11 @@ INTENT_NUM = ["hasDamage", "damage", "baseDamage", "hasHits", "hits"]
 ORB_IDX = ["orb", "slot"]
 ORB_NUM = ["passiveValue", "evokeValue"]
 
-RELIC_IDX = ["relicIndex"]
+# v5: `slot` is the relic's acquisition POSITION (0..MAX_RELICS-1) == its wire list index. Relic order is
+# semantic (wax relics expire in acquisition order) but the relic expert is a permutation-invariant set
+# encoder, so — exactly like orbs — position must be an explicit per-token field for the encoder to
+# represent it and the decoder to target it. Duplicate relics are separate rows kept apart by their slot.
+RELIC_IDX = ["relicIndex", "slot"]
 POTION_IDX = ["potionIndex"]
 
 
@@ -483,8 +503,9 @@ def _canonical_from_state(state: Dict[str, Any]) -> Dict[str, Any]:
     # so its order is not independently semantic. Powers/intents flatten to parent = list index in
     # `tokenize`, so their creature association follows this order automatically.
     creatures.sort(key=_creature_sort_key)
-    # Relics are an order-free set (uniqueness is a game rule): sort so the per-slot target is canonical.
-    relics.sort()
+    # v5: relics keep WIRE ORDER (no sort) — order is semantic (wax relics expire in acquisition order).
+    # The flat id list's index IS each relic's slot (tokenize stamps it as the positional `slot` column),
+    # so the positional relic expert can represent the order the way orbs represent evoke order.
 
     return {"global": g, "pending": pending, "cards": cards, "creatures": creatures,
             "orbs": orbs, "relics": relics, "potions": potions}
@@ -610,12 +631,14 @@ def tokenize(state: Dict[str, Any], *, strict: bool = True) -> Dict[str, np.ndar
     out["orb_idx"], out["orb_num"], out["orb_mask"] = orb_idx, orb_num, orb_mask
     out["token_type_orb"] = np.int32(TOKEN_TYPE_ID["orb"])
 
+    # Relics: v5 positional rows — one row per relic INSTANCE in wire order, carrying its acquisition
+    # `slot` (== list index) so the permutation-invariant relic expert can represent the semantic order.
     relics = cv["relics"]
     _check("relics", len(relics), MAX_RELICS)
     relic_idx = np.zeros((MAX_RELICS, len(RELIC_IDX)), dtype=np.int32)
     relic_mask = np.zeros(MAX_RELICS, dtype=bool)
     for i, rid in enumerate(relics[:MAX_RELICS]):
-        relic_idx[i] = [rid]
+        relic_idx[i] = [rid, min(i, MAX_RELICS - 1)]
         relic_mask[i] = True
     out["relic_idx"], out["relic_mask"] = relic_idx, relic_mask
     out["token_type_relic"] = np.int32(TOKEN_TYPE_ID["relic"])
@@ -734,6 +757,8 @@ def detokenize(tok: Dict[str, np.ndarray]) -> Dict[str, Any]:
             orbs.append({"orb": int(oi[i, 0]), "slot": int(oi[i, 1]),
                          "passiveValue": _int(on[i, 0]), "evokeValue": _int(on[i, 1])})
 
+    # v5: relics are positional rows read in array order (== wire/acquisition order); the flat id list's
+    # index is each relic's slot, so we emit the relicIndex column verbatim (order preserved).
     relics = [int(tok["relic_idx"][i, 0]) for i in range(len(tok["relic_mask"]))
               if tok["relic_mask"][i]]
     potions = [int(tok["potion_idx"][i, 0]) for i in range(len(tok["potion_mask"]))

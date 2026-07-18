@@ -14,8 +14,8 @@ The invariant this suite pins, for EVERY variable-length token type, is exactly 
 * **positional** — the tokens carry an explicit positional categorical column whose value equals the slot
   index for every present slot (so the encoder can see, and the decoder can target, the order).
 
-cards / creatures / powers / intents / relics / potions are canonicalized; orbs are positional (evoke
-order is semantic). A future token type that reintroduces the trap fails here.
+cards / creatures / powers / intents / potions are canonicalized; orbs and relics are positional (evoke
+order / relic acquisition order are semantic). A future token type that reintroduces the trap fails here.
 """
 
 from __future__ import annotations
@@ -27,10 +27,12 @@ import numpy as np
 
 from lts2_agent import tokens
 from lts2_agent.wm import spec as S
+from lts2_agent.wm import synth as SY
 
 # Types whose tokens carry an explicit position column (value == slot index for present slots) instead of
-# being canonical-order-invariant. Everything else must be canonicalized.
-POSITIONAL = {"orb": "slot"}
+# being canonical-order-invariant. Everything else must be canonicalized. Relics joined orbs here in v5:
+# relic order is semantic (wax relics expire in acquisition order), so the belt is positional, not sorted.
+POSITIONAL = {"orb": "slot", "relic": "slot"}
 
 
 def _card(card_id, **kw):
@@ -153,3 +155,61 @@ def test_wellposedness_round_trip_holds_under_permutation():
         st = _shuffle_all_entities(base, seed)
         ok, diff = tokens.round_trip(st)
         assert ok, f"seed {seed} round-trip mismatch at {diff}"
+
+
+# ==================================================================================================
+# Generator-canonicality (the synth twin of the above): the synthetic-space generators bypass tokenize,
+# so they must reproduce the SAME canonical-order invariant per type — otherwise a synth target varies
+# with generation order the permutation-invariant expert can't see (the exact bug that floored relics:
+# random-draw-order ids vs a canonical target). Positional types carry slot==index; canonical types emit
+# rows in the tokenizer's sort order.
+# ==================================================================================================
+
+def test_synth_positional_types_carry_slot_index():
+    for e, tname in (("orbs", "orb"), ("relics", "relic")):
+        z = SY.synth_batch([e], 96, np.random.default_rng(11))
+        tspec = S.TYPE_BY_NAME[tname]
+        col = [c for c, _ in tspec.cat_cols].index(POSITIONAL[tname])
+        for b in range(96):
+            m = z[tspec.mask_key][b]
+            k = int(m.sum())
+            assert list(z[tspec.idx_key][b, m, col]) == list(range(k)), (tname, b)
+
+
+def _synth_card_keys(ci_b, cn_b, ckw_b, k):
+    keys = []
+    for r in range(k):
+        d = {n: int(ci_b[r, j]) for j, n in enumerate(tokens.CARD_IDX)}
+        for j, n in enumerate(tokens.CARD_NUM):
+            if n in tokens.ZONE_COUNT_FIELDS:
+                continue
+            v = float(cn_b[r, j])
+            d[n] = int(round(v)) if n in SY._CARD_RAW_COLS else int(round(tokens.symexp(v)))
+        d["keywords"] = sorted(int(x) for x in np.nonzero(ckw_b[r])[0])
+        keys.append(tokens._card_content_key(d))
+    return keys
+
+
+def test_synth_cards_are_content_sorted():
+    z = SY.synth_batch(["cards"], 48, np.random.default_rng(12))
+    ci, cn, ckw, cm = z["card_idx"], z["card_num"], z["card_kw"], z["card_mask"]
+    for b in range(48):
+        k = int(cm[b].sum())
+        keys = _synth_card_keys(ci[b], cn[b], ckw[b], k)
+        assert keys == sorted(keys), ("synth card rows not in tokenizer content order", b)
+
+
+def test_synth_creatures_are_canonically_sorted():
+    # Match tokens._creature_sort_key: (kind, combatId, identity, currentHp, maxHp, block, active).
+    z = SY.synth_batch(["creatures"], 48, np.random.default_rng(13))
+    ci, cn, cm = z["creature_idx"], z["creature_num"], z["creature_mask"]
+    for b in range(48):
+        k = int(cm[b].sum())
+        keys = []
+        for r in range(k):
+            kind, ident = int(ci[b, r, 0]), int(ci[b, r, 1])
+            cur = int(round(tokens.symexp(cn[b, r, 0]))); mx = int(round(tokens.symexp(cn[b, r, 1])))
+            blk = int(round(tokens.symexp(cn[b, r, 2]))); act = int(round(cn[b, r, 3]))
+            cid = int(round(tokens.symexp(cn[b, r, 4])))
+            keys.append((kind, cid, ident, cur, mx, blk, act))
+        assert keys == sorted(keys), ("synth creature rows not canonically sorted", b)

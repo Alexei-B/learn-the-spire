@@ -78,7 +78,7 @@ def _lr_lambda(warmup: int, total: int):
 
 @torch.no_grad()
 def run_val(model, sample_stacked, sample_acts, batch_size, device, loss_fn, experts=False,
-            active=None, trained_only=False, dedup=False):
+            active=None, trained_only=False):
     """Full pass over the fixed val sample -> (overall metrics, by-act metrics, mean losses).
 
     ``trained_only`` (per-expert solo runs): forward + loss + report are restricted to the ``active``
@@ -95,9 +95,9 @@ def run_val(model, sample_stacked, sample_acts, batch_size, device, loss_fn, exp
             loss_sums[k] += float(losses[k])
         nb += 1
         if trained_only:
-            pairs = report.report_pairs_experts_only(batch, out, active, dedup=dedup)
+            pairs = report.report_pairs_experts_only(batch, out, active)
         else:
-            pairs = report.report_pairs(batch, out, dedup=dedup, experts=experts)
+            pairs = report.report_pairs(batch, out, experts=experts)
         report.merge_pairs(accum, pairs, acts)
     overall, by_act = report.finalize(accum)
     mean_losses = {k: v / max(1, nb) for k, v in loss_sums.items()}
@@ -174,18 +174,21 @@ def _slice_width_overrides(args):
 def main() -> int:
     ap = argparse.ArgumentParser(description="World-model encoder/decoder trainer (roadmap 3.1)")
     ap.add_argument("--corpus", default="data/corpus", help="corpus root (train split streamed)")
-    ap.add_argument("--cache", default="data/corpus_tok",
-                    help="pre-tokenized cache dir; used automatically when it exists and its signature "
-                         "matches (GPU-bound). Empty string disables. Build: python -m "
-                         "lts2_agent.wm.cache build --corpus <corpus> --out <cache>")
-    ap.add_argument("--data", default="real",
-                    help="factored SOLO runs only (--train-experts set): training data source. 'real' "
-                         "(default) = the pre-tokenized corpus cache (deployment distribution); 'synth' = "
-                         "mechanically-generated uniform configurations in tokenizer-array space (no "
-                         "cache/corpus needed — kills the rare-tail coverage floors; roadmap M3.5 "
-                         "synthetic-space training); 'mixed:R' = a fraction R synthetic per batch, 1-R "
-                         "real (e.g. 'mixed:0.5', 'mixed:0.25'). Val ALWAYS runs the real fixed val "
-                         "(deployment yardstick) AND a seeded synthetic coverage val regardless.")
+    ap.add_argument("--cache", default="",
+                    help="OPT-IN pre-tokenized cache dir (default empty = none). Synthetic-first doctrine: "
+                         "training is synthetic and real-val is tokenized on the fly (2k states = seconds), "
+                         "so no full corpus cache is built or required. Pass a dir to opt into cache-backed "
+                         "real/mixed training; used only when it exists and its signature matches.")
+    ap.add_argument("--data", default=None,
+                    help="factored SOLO runs only (--train-experts set): training data source. Default is "
+                         "'synth' for a factored SOLO run (synthetic-space training is the doctrine — real "
+                         "corpus data is EVAL-ONLY): mechanically-generated uniform configurations in "
+                         "tokenizer-array space (no cache/corpus needed — kills the rare-tail coverage "
+                         "floors; roadmap M3.5). 'real' opts back into corpus-cache training (deployment "
+                         "distribution); 'mixed:R' = a fraction R synthetic per batch, 1-R real (e.g. "
+                         "'mixed:0.5'). A joint run always uses real. Val ALWAYS runs the real fixed val "
+                         "(deployment yardstick, tokenized on the fly — no full cache required) AND a "
+                         "seeded synthetic coverage val regardless.")
     ap.add_argument("--steps", type=int, default=50000)
     ap.add_argument("--halt-step", type=int, default=0,
                     help="stop training at this step while the LR schedule still spans --steps — for "
@@ -197,9 +200,6 @@ def main() -> int:
                     help="AdamW beta2. The 0.999 default is the textbook late-collapse ingredient at "
                          "sustained LR (stale second moments); 0.95-0.98 is transformer practice and "
                          "raises the stable-LR ceiling.")
-    ap.add_argument("--relic-pos-weight", type=float, default=5.0,
-                    help="factored arch: pos_weight for the relic set-membership BCE (rare-positive "
-                         "rebalance; ~neg/pos ratio. 1.0 = off).")
     ap.add_argument("--loss-balance", default="term", choices=["term", "expert"],
                     help="factored arch only: 'expert' gives every expert an equal gradient share "
                          "(fixes relic/orb starvation under the per-term default).")
@@ -230,13 +230,9 @@ def main() -> int:
     ap.add_argument("--slice-width", action="append", default=None, metavar="NAME=W",
                     help="factored: override an expert's latent slice width, e.g. --slice-width "
                          "potions=256 (repeatable). Widths must divide by simnorm-group.")
-    ap.add_argument("--fac-relic-head", default="slots", choices=["set", "slots"],
-                    help="factored relic expert decode: 'set' (default) = multi-hot set head + count "
-                         "head (duplicate-free by construction); 'slots' = monolith-style per-slot "
-                         "categoricals + inference dedup (the M3.5 bake-off's slots+dedup variant).")
     ap.add_argument("--relic-dec-layers", type=int, default=1,
                     help="factored only: relic-expert decoder depth (default 1 = the shallow expert "
-                         "default; the bake-off's deeper-decoder variant uses 3).")
+                         "default; a deeper-decoder variant uses e.g. 3).")
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--buffer", type=int, default=16384, help="shuffle-buffer size (states)")
     ap.add_argument("--val-every", type=int, default=500)
@@ -273,12 +269,6 @@ def main() -> int:
                          "DreamerV3 two-hot classification over a 64-bin symlog grid per numeric column "
                          "(CE loss; expectation-decoded, so reconstruction/report are unchanged). "
                          "Stamped in checkpoint meta; --resume rejects a mismatch.")
-    ap.add_argument("--relic-head", default="slots", choices=["slots", "set"],
-                    help="relic decode: 'slots' (default) is 24 independent per-slot categoricals over "
-                         "the relic catalog (can decode duplicate relics under uncertainty); 'set' is ONE "
-                         "multi-hot head over the catalog (BCE loss; top-k-by-cardinality decode, "
-                         "duplicate-free by construction — the CP4 relic-error fix). Stamped in "
-                         "checkpoint meta; --resume rejects a mismatch.")
     ap.add_argument("--card-ce", default="plain", choices=["plain", "balanced"],
                     help="card-identity (card column 0) cross-entropy weighting: 'plain' (default) or "
                          "'balanced' = per-class 1/sqrt(freq), computed once from the corpus card-index "
@@ -329,7 +319,10 @@ def main() -> int:
     if factored and args.train_experts.strip():
         train_active = [n.strip() for n in args.train_experts.split(",") if n.strip()]
     # Synthetic-space training source (roadmap M3.5). Only a factored SOLO run may draw synthetic batches
-    # (the generators are per-expert; a joint run has no single designed category).
+    # (the generators are per-expert; a joint run has no single designed category). DOCTRINE: synthetic is
+    # the DEFAULT for a factored solo run (real corpus data is eval-only); an explicit --data opts back in.
+    if args.data is None:
+        args.data = "synth" if (factored and train_active is not None) else "real"
     data_mode, frac_synth = _parse_data(args.data)
     if data_mode != "real":
         if not factored or train_active is None:
@@ -345,7 +338,6 @@ def main() -> int:
                            if args.relic_dec_layers != 1 else None)
         model = MF.FactoredWorldModelAE(slice_widths=_slice_width_overrides(args), d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
                                         simnorm_group=args.simnorm_group,
-                                        relic_head=args.fac_relic_head,
                                         expert_overrides=relic_overrides).to(device)
         if train_active is not None:
             unknown = [n for n in train_active if n not in model.experts]
@@ -358,7 +350,7 @@ def main() -> int:
                                n_latents=args.latents, z_dim=args.z_dim,
                                simnorm_group=args.simnorm_group, cat_dim=args.cat_dim, n_mem=args.n_mem,
                                latent_mode=args.latent_mode, latent_k=args.latent_k,
-                               num_head=args.num_head, relic_head=args.relic_head).to(device)
+                               num_head=args.num_head).to(device)
 
     def _freeze_and_params(m) -> list:
         """Factored per-expert freeze: set requires_grad per the trained set and return ONLY the trained
@@ -399,8 +391,7 @@ def main() -> int:
             model, meta = MF.load_checkpoint(args.ckpt, device)
         else:
             model, meta = M.load_checkpoint(args.ckpt, device, expect_latent_mode=args.latent_mode,
-                                            expect_num_head=args.num_head,
-                                            expect_relic_head=args.relic_head)
+                                            expect_num_head=args.num_head)
         model = model.to(device)
         opt = torch.optim.AdamW(_freeze_and_params(model), lr=args.lr, weight_decay=args.weight_decay,
                             betas=(0.9, args.beta2))
@@ -428,13 +419,9 @@ def main() -> int:
     # reconstruction loss.
     def loss_fn(batch_, out_, active=None):
         if factored:
-            return MF.compute_losses(batch_, out_, model, balance=args.loss_balance,
-                                      relic_pos_weight=args.relic_pos_weight, active=active,
+            return MF.compute_losses(batch_, out_, model, balance=args.loss_balance, active=active,
                                       num_targets=args.num_targets)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
-
-    # Relic slots variant decodes with inference dedup (the bake-off's slots+dedup path).
-    val_dedup = factored and args.fac_relic_head == "slots"
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.
     ema: Optional[M.EMA] = None
@@ -461,7 +448,7 @@ def main() -> int:
         trained_desc = ("ALL" if train_active is None else ",".join(train_active))
         trained_params = sum(MF.param_count(model.experts[n]) for n in
                              (train_active if train_active is not None else list(model.experts)))
-        print(f"[train_encdec] arch=factored relic_head={args.fac_relic_head} params={n_params:,} "
+        print(f"[train_encdec] arch=factored params={n_params:,} "
               f"d_model={args.d_model} latent_dim={model.latent_dim} slices[{layout}] "
               f"batch={args.batch}", flush=True)
         print(f"[train_encdec] TRAIN experts=[{trained_desc}] trainable_params={trained_params:,} "
@@ -590,14 +577,14 @@ def main() -> int:
                 trained_only = factored and args.val_experts == "trained-only" and train_active is not None
                 overall, by_act, vloss = run_val(model, val_stacked, val_acts, args.val_batch, device,
                                                  loss_fn, experts=factored, active=train_active,
-                                                 trained_only=trained_only, dedup=val_dedup)
+                                                 trained_only=trained_only)
                 # Synthetic coverage-val: the same trained experts, focused, on the fixed synthetic
                 # coverage set — evaluated under the same (EMA) weights as the real val.
                 cov_overall = None
                 if cov_stacked is not None:
                     cov_overall, _cov_by_act, _cov_loss = run_val(
                         model, cov_stacked, cov_acts, args.val_batch, device, loss_fn, experts=True,
-                        active=train_active, trained_only=True, dedup=val_dedup)
+                        active=train_active, trained_only=True)
                 if ema is not None:
                     ema.restore(model)
                 if trained_only:

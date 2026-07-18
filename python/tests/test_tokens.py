@@ -176,9 +176,50 @@ def test_orb_tokens_carry_explicit_slot_position():
     assert [o["slot"] for o in got["orbs"]] == [0, 1, 2]
 
 
+def _relic_id(i):
+    return catalog.load("relics").id_of(i)
+
+
+def test_relics_positional_keep_order_and_duplicates():
+    # v5: relics are positional — one row per instance, wire order preserved, duplicates kept apart by
+    # their slot; the `slot` categorical equals the acquisition index.
+    a, b, c = _relic_id(5), _relic_id(9), _relic_id(5)   # a and c are the SAME relic (a duplicate)
+    st = _state(relics=[a, b, c])
+    tok = tokens.tokenize(st)
+    m = tok["relic_mask"]
+    rows = tok["relic_idx"][m].tolist()                  # [[id, slot], ...] in wire order
+    assert rows == [[5, 0], [9, 1], [5, 2]]              # duplicate id 5 at slots 0 and 2, order kept
+    # Round-trips exactly to the flat wire-order id list (with the duplicate).
+    got = tokens.detokenize(tok)["relics"]
+    assert got == [5, 9, 5]
+    ok, diff = tokens.round_trip(st)
+    assert ok, diff
+
+
+def test_relic_order_is_semantic():
+    # Reversing acquisition order changes the tokens (order carries the wax-relic-expiry state).
+    a, b = _relic_id(5), _relic_id(9)
+    t1 = tokens.tokenize(_state(relics=[a, b]))
+    t2 = tokens.tokenize(_state(relics=[b, a]))
+    assert not np.array_equal(t1["relic_idx"], t2["relic_idx"])
+
+
+def test_relic_overflow_is_loud():
+    a = _relic_id(5)
+    big = _state(relics=[a] * (tokens.MAX_RELICS + 1))
+    try:
+        tokens.tokenize(big, strict=True)
+        assert False, "expected a TokenOverflow past MAX_RELICS"
+    except tokens.TokenOverflow as e:
+        assert "relics" in str(e)
+    # Non-strict truncates to the cap rather than raising.
+    tok = tokens.tokenize(big, strict=False)
+    assert int(tok["relic_mask"].sum()) == tokens.MAX_RELICS
+
+
 def test_version_and_signature_stable():
     assert isinstance(tokens.TOKENIZER_VERSION, int)
-    assert tokens.TOKENIZER_VERSION == 4  # v4 = well-posedness fix (left-packed potions, orb slot column)
+    assert tokens.TOKENIZER_VERSION == 5  # v5 = relics positional (per-instance rows + slot, duplicates)
     sig = tokens.tokenizer_signature()
     assert sig == tokens.tokenizer_signature()
     assert sig.startswith("tok-v" + str(tokens.TOKENIZER_VERSION))

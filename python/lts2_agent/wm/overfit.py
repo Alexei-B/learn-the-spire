@@ -109,8 +109,7 @@ def load_cache_batch(cache_dir: str, split: str, batch_size: int, experts: List[
 def _expert_dist(model: MF.FactoredWorldModelAE, batch: Dict[str, torch.Tensor], expert: str) -> float:
     model.eval()
     _z, out = model(batch, active_experts=[expert])
-    pairs = report.report_pairs_experts_only(batch, out, [expert],
-                                             dedup=(model.relic_head == "slots"))
+    pairs = report.report_pairs_experts_only(batch, out, [expert])
     val = report.aggregate(pairs)[f"expert_dist::{expert}"]
     model.train()
     return float(val)
@@ -190,7 +189,7 @@ def overfit_batch(model: MF.FactoredWorldModelAE, batch: Dict[str, torch.Tensor]
 
 def _run_one(expert: str, args, device) -> Dict[str, Any]:
     torch.manual_seed(args.seed)
-    model = MF.FactoredWorldModelAE(d_model=args.d_model, relic_head=args.fac_relic_head).to(device)
+    model = MF.FactoredWorldModelAE(d_model=args.d_model).to(device)
     if args.synthetic:
         stacked = synthetic_batch(args.batch, seed=args.seed)
     else:
@@ -199,7 +198,7 @@ def _run_one(expert: str, args, device) -> Dict[str, Any]:
     nat = float(D.expert_present_mask(stacked, [expert]).mean())
     batch = M.to_tensors(stacked, device)
     print(f"[overfit] expert={expert} batch={args.batch} present-fraction={nat:.3f} "
-          f"num_targets={args.num_targets} relic_head={args.fac_relic_head}", flush=True)
+          f"num_targets={args.num_targets}", flush=True)
     res = overfit_batch(model, batch, expert, steps=args.steps, lr=args.lr, thresh=args.thresh,
                         num_targets=args.num_targets, report_every=args.report_every,
                         verbose=not args.quiet)
@@ -218,7 +217,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--thresh", type=float, default=0.01, help="expert_dist target (steps-to-hit)")
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--num-targets", default="twohot", choices=["twohot", "hard"])
-    ap.add_argument("--fac-relic-head", default="slots", choices=["set", "slots"])
     ap.add_argument("--focus", type=float, default=0.9,
                     help="present-state fraction of the fixed batch (cache path only)")
     ap.add_argument("--d-model", type=int, default=256)

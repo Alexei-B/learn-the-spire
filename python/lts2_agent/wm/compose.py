@@ -74,22 +74,18 @@ def compose(out_path: str, assignments: Dict[str, str], base: str = "",
             raise SystemExit(f"compose: source for {name!r} ({path}) disagrees on global config {diffs} "
                              f"vs reference {ref_path}; cannot assemble one coherent model.")
 
-    # Composite config: shared globals, then per-expert slice width / override / relic_head from the
-    # source each expert is pulled from.
+    # Composite config: shared globals, then per-expert slice width / override from the source each
+    # expert is pulled from.
     comp_cfg: Dict[str, Any] = {k: ref_cfg[k] for k in _GLOBAL_KEYS}
     slice_widths: Dict[str, int] = {}
     overrides: Dict[str, Dict[str, Any]] = {}
-    relic_head = "set"
     for name in LEARNED:
         cfg = metas[sources[name]]["config"]
         slice_widths[name] = cfg["slice_widths"][name]
         ov = (cfg.get("expert_overrides") or {}).get(name)
         if ov:
             overrides[name] = ov
-        if name == "relics":
-            relic_head = cfg.get("relic_head", "set")
     comp_cfg["slice_widths"] = slice_widths
-    comp_cfg["relic_head"] = relic_head
     comp_cfg["expert_overrides"] = overrides
 
     model = MF.FactoredWorldModelAE(**comp_cfg).to(device)

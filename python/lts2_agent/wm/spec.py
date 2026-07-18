@@ -85,8 +85,12 @@ TYPES: List[TypeSpec] = [
     TypeSpec("orb", "orb_idx", "orb_num", "orb_mask",
              [("orb", tokens.ORB_VOCAB), ("slot", tokens.MAX_ORBS)],
              len(tokens.ORB_NUM), tokens.MAX_ORBS, "", False),
+    # v5: `slot` (relic acquisition position) is an explicit categorical over MAX_RELICS so the
+    # permutation-invariant relic expert can represent the semantic order (wax relics expire in
+    # acquisition order) — the orb treatment. One row per relic instance; duplicates kept, order preserved.
     TypeSpec("relic", "relic_idx", "", "relic_mask",
-             [("relicIndex", _RELICS_N)], 0, tokens.MAX_RELICS, "relics", False),
+             [("relicIndex", _RELICS_N), ("slot", tokens.MAX_RELICS)], 0, tokens.MAX_RELICS, "relics",
+             False),
     TypeSpec("potion", "potion_idx", "", "potion_mask",
              [("potionIndex", _POTIONS_N)], 0, tokens.MAX_POTIONS, "potions", False),
 ]
