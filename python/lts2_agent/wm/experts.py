@@ -313,6 +313,175 @@ def _num_cols(tspec: S.TypeSpec) -> List[str]:
 
 
 # ==================================================================================================
+# QK-norm attention trunk (Wortsman et al. 2023, "Small-scale proxies for large-scale Transformer
+# training instabilities").
+#
+# WHY these blocks exist at all: the factored experts hit the textbook edge-of-stability transformer
+# collapse at sustained flat LR. Once an expert converges hard the attention-logit magnitudes creep up
+# (measured train.grad_norm ~1.5 -> 1.9), one catastrophic spike detonates (loss 0.25 -> 5.1, grad 82),
+# and the grad-norm then ratchets MONOTONICALLY (17 -> 445 -> 1171) into a degenerate all-absent presence
+# solution. Wortsman's fix (a) is QK-norm: normalize queries and keys per head BEFORE the dot product so
+# the attention logits cannot grow without bound (their unbounded growth is the mechanism of the sharpening
+# spiral). Stock nn.TransformerEncoderLayer / nn.TransformerDecoderLayer / the encoder._PoolLayer expose no
+# hook to insert that norm, so the SetExpert swaps its attention internals for these blocks when qk_norm is
+# on. Everything OUTSIDE the attention (pre-norm residual structure, GELU MLP with the same ff_mult,
+# batch_first semantics, key_padding_mask handling, the CLS sentinel that keeps an empty category's softmax
+# finite) is IDENTICAL to the stock layers these replace.
+# ==================================================================================================
+
+class _QKNormAttention(nn.Module):
+    """Multi-head attention with per-head QK LayerNorm — the Wortsman-instability fix (a).
+
+    Same call surface as ``nn.MultiheadAttention(batch_first=True)``: ``forward(query, key, value,
+    key_padding_mask)`` with ``True == pad/ignore`` in the mask. Q and K are projected, split into heads,
+    then each is LayerNorm'd over its head-dim (``elementwise_affine=True`` — a learned per-head-dim scale,
+    the Wortsman default) BEFORE the scaled dot product; this bounds the LOGIT growth that drives the
+    late-training blowup. Standard ``1/sqrt(head_dim)`` scaling is kept (the LayerNorm scale then supplies
+    the effective attention temperature). The CLS sentinel (never padded) still guarantees >=1 valid key
+    per row, so the empty-category all-padded edge case keeps producing a finite softmax — this module does
+    not touch that mechanism.
+
+    Parameter count matches nn.MultiheadAttention (separate q/k/v/out projections total the same weights &
+    biases as the fused in_proj + out_proj) PLUS the two QK LayerNorms (``2 * 2 * head_dim`` params each
+    attention) when ``qk_norm`` is on — that small delta is the entire cost of the stability fix."""
+
+    def __init__(self, d_model: int, n_heads: int, qk_norm: bool = True):
+        super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError(f"d_model {d_model} not divisible by n_heads {n_heads}")
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.scale = self.head_dim ** -0.5
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.q_norm = nn.LayerNorm(self.head_dim) if qk_norm else None
+        self.k_norm = nn.LayerNorm(self.head_dim) if qk_norm else None
+
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
+                key_padding_mask: torch.Tensor = None) -> torch.Tensor:
+        B, Lq, D = query.shape
+        Lk = key.shape[1]
+        H, hd = self.n_heads, self.head_dim
+        q = self.q_proj(query).view(B, Lq, H, hd).transpose(1, 2)   # [B, H, Lq, hd]
+        k = self.k_proj(key).view(B, Lk, H, hd).transpose(1, 2)     # [B, H, Lk, hd]
+        v = self.v_proj(value).view(B, Lk, H, hd).transpose(1, 2)
+        if self.q_norm is not None:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale    # [B, H, Lq, Lk]
+        if key_padding_mask is not None:
+            attn = attn.masked_fill(key_padding_mask[:, None, None, :], float("-inf"))
+        attn = attn.softmax(dim=-1)
+        out = torch.matmul(attn, v).transpose(1, 2).reshape(B, Lq, D)
+        return self.out_proj(out)
+
+
+class _QKNormEncoderLayer(nn.Module):
+    """Pre-norm self-attention encoder block with QK-norm — replaces one ``nn.TransformerEncoderLayer``
+    (``norm_first=True, activation='gelu'``). Structure (``x + attn(norm1(x))``; ``x + ff(norm2(x))``) and
+    the GELU MLP width (``d_model * ff_mult``) are identical to the stock layer."""
+
+    def __init__(self, d_model: int, n_heads: int, ff_mult: int, qk_norm: bool):
+        super().__init__()
+        self.n1 = nn.LayerNorm(d_model)
+        self.attn = _QKNormAttention(d_model, n_heads, qk_norm)
+        self.n2 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(nn.Linear(d_model, d_model * ff_mult), nn.GELU(),
+                                nn.Linear(d_model * ff_mult, d_model))
+
+    def forward(self, x: torch.Tensor, src_key_padding_mask: torch.Tensor = None) -> torch.Tensor:
+        h = self.n1(x)
+        x = x + self.attn(h, h, h, key_padding_mask=src_key_padding_mask)
+        x = x + self.ff(self.n2(x))
+        return x
+
+
+class _QKNormEncoder(nn.Module):
+    """Stack of :class:`_QKNormEncoderLayer` — drop-in for ``nn.TransformerEncoder`` (no final norm, same
+    as the stock construction here). ``forward(x, src_key_padding_mask=...)`` matches the stock signature."""
+
+    def __init__(self, d_model: int, n_heads: int, ff_mult: int, n_layers: int, qk_norm: bool):
+        super().__init__()
+        self.layers = nn.ModuleList(
+            _QKNormEncoderLayer(d_model, n_heads, ff_mult, qk_norm) for _ in range(n_layers))
+
+    def forward(self, x: torch.Tensor, src_key_padding_mask: torch.Tensor = None) -> torch.Tensor:
+        for layer in self.layers:
+            x = layer(x, src_key_padding_mask=src_key_padding_mask)
+        return x
+
+
+class _QKNormPoolLayer(nn.Module):
+    """Perceiver-style pooling block with QK-norm — the QK-normed twin of :class:`encoder._PoolLayer`
+    (latents cross-attend to the token set, then self-attend, pre-norm). Byte-for-byte the same compute
+    graph as ``_PoolLayer`` except the two ``nn.MultiheadAttention`` are :class:`_QKNormAttention`."""
+
+    def __init__(self, d: int, heads: int, ff_mult: int, qk_norm: bool):
+        super().__init__()
+        self.n1 = nn.LayerNorm(d)
+        self.cross = _QKNormAttention(d, heads, qk_norm)
+        self.n2 = nn.LayerNorm(d)
+        self.self_attn = _QKNormAttention(d, heads, qk_norm)
+        self.n3 = nn.LayerNorm(d)
+        self.ff = nn.Sequential(nn.Linear(d, d * ff_mult), nn.GELU(), nn.Linear(d * ff_mult, d))
+
+    def forward(self, lat: torch.Tensor, toks: torch.Tensor, key_pad: torch.Tensor) -> torch.Tensor:
+        q = self.n1(lat)
+        lat = lat + self.cross(q, toks, toks, key_padding_mask=key_pad)
+        s = self.n2(lat)
+        lat = lat + self.self_attn(s, s, s)
+        lat = lat + self.ff(self.n3(lat))
+        return lat
+
+
+class _QKNormDecoderLayer(nn.Module):
+    """Pre-norm self-attn + cross-attn decoder block with QK-norm — replaces one
+    ``nn.TransformerDecoderLayer`` (``norm_first=True, activation='gelu'``). Memory (the ``n_mem`` learned
+    tokens) is never padded, so no memory mask is threaded (matching the stock call the SetExpert makes)."""
+
+    def __init__(self, d_model: int, n_heads: int, ff_mult: int, qk_norm: bool):
+        super().__init__()
+        self.n1 = nn.LayerNorm(d_model)
+        self.self_attn = _QKNormAttention(d_model, n_heads, qk_norm)
+        self.n2 = nn.LayerNorm(d_model)
+        self.cross_attn = _QKNormAttention(d_model, n_heads, qk_norm)
+        self.n3 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(nn.Linear(d_model, d_model * ff_mult), nn.GELU(),
+                                nn.Linear(d_model * ff_mult, d_model))
+
+    def forward(self, tgt: torch.Tensor, mem: torch.Tensor) -> torch.Tensor:
+        s = self.n1(tgt)
+        tgt = tgt + self.self_attn(s, s, s)
+        c = self.n2(tgt)
+        tgt = tgt + self.cross_attn(c, mem, mem)
+        tgt = tgt + self.ff(self.n3(tgt))
+        return tgt
+
+
+class _QKNormDecoder(nn.Module):
+    """Stack of :class:`_QKNormDecoderLayer` — drop-in for ``nn.TransformerDecoder``. ``forward(tgt, mem)``
+    matches the stock two-positional-arg call the SetExpert decode makes."""
+
+    def __init__(self, d_model: int, n_heads: int, ff_mult: int, n_layers: int, qk_norm: bool):
+        super().__init__()
+        self.layers = nn.ModuleList(
+            _QKNormDecoderLayer(d_model, n_heads, ff_mult, qk_norm) for _ in range(n_layers))
+
+    def forward(self, tgt: torch.Tensor, mem: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+            tgt = layer(tgt, mem)
+        return tgt
+
+
+# Attribute prefixes of the swapped attention trunk inside a SetExpert. The warm-start / compose loader
+# uses these to tell a trunk-arch mismatch (qk_norm on vs off changes the trunk param NAMES) from a genuine
+# incompatibility: trunk keys may be skipped with a notice, non-trunk keys must match.
+TRUNK_PREFIXES: Tuple[str, ...] = ("enc_trunk.", "pool.", "dec_trunk.")
+
+
+# ==================================================================================================
 # Generic set expert (creatures / cards / orbs / potions).
 # ==================================================================================================
 
@@ -327,7 +496,7 @@ class SetExpert(nn.Module):
     def __init__(self, name: str, type_names: List[str], latent_width: int, d_model: int,
                  static_tables: Dict[str, np.ndarray], cat_dim: int = 24, n_heads: int = 4,
                  enc_layers: int = 2, dec_layers: int = 2, pool_layers: int = 1, pool_latents: int = 4,
-                 n_mem: int = 6, ff_mult: int = 2, simnorm_group: int = 8):
+                 n_mem: int = 6, ff_mult: int = 2, simnorm_group: int = 8, qk_norm: bool = True):
         super().__init__()
         if latent_width % simnorm_group != 0:
             raise ValueError(f"{name} latent_width {latent_width} not divisible by simnorm_group "
@@ -338,6 +507,7 @@ class SetExpert(nn.Module):
         self.simnorm_group = simnorm_group
         self.d_model = d_model
         self.n_mem = n_mem
+        self.qk_norm = qk_norm
         self.embedders = nn.ModuleDict(
             {t.name: _TypeEmbedder(t, d_model, cat_dim, static_tables) for t in self.types})
         self.enc_type_emb = nn.Embedding(len(self.types), d_model)
@@ -346,11 +516,21 @@ class SetExpert(nn.Module):
         # would leave the encoder set fully padded -> NaN softmax. This learned token is never padded, so
         # every sample has >=1 valid key; it is not decoded (pure attention anchor).
         self.cls = nn.Parameter(torch.randn(d_model) * 0.02)
-        enc_layer = nn.TransformerEncoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
-                                               batch_first=True, norm_first=True, activation="gelu")
-        self.enc_trunk = nn.TransformerEncoder(enc_layer, enc_layers)
+        # qk_norm ON (the default for new runs): custom QK-normed trunk (bounds the attention logits that
+        # ratchet into the late-training collapse). qk_norm OFF: the ORIGINAL stock layers, byte-for-byte —
+        # so an OLD checkpoint (trained before this fix, no qk_norm key in its meta) loads identically.
+        if qk_norm:
+            self.enc_trunk = _QKNormEncoder(d_model, n_heads, ff_mult, enc_layers, qk_norm=True)
+        else:
+            enc_layer = nn.TransformerEncoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
+                                                   batch_first=True, norm_first=True, activation="gelu")
+            self.enc_trunk = nn.TransformerEncoder(enc_layer, enc_layers)
         self.latents = nn.Parameter(torch.randn(pool_latents, d_model) * 0.02)
-        self.pool = nn.ModuleList(_PoolLayer(d_model, n_heads, ff_mult) for _ in range(pool_layers))
+        if qk_norm:
+            self.pool = nn.ModuleList(_QKNormPoolLayer(d_model, n_heads, ff_mult, True)
+                                      for _ in range(pool_layers))
+        else:
+            self.pool = nn.ModuleList(_PoolLayer(d_model, n_heads, ff_mult) for _ in range(pool_layers))
         self.to_slice = nn.Linear(pool_latents * d_model, latent_width)
         # Normalize the pre-SimNorm logits. Without this the unbounded `to_slice` output runs away in
         # magnitude (measured: pre-SimNorm std 0.1 -> 217 across states) and the grouped softmax SATURATES
@@ -366,9 +546,12 @@ class SetExpert(nn.Module):
         self.slot_queries = nn.ParameterDict(
             {t.name: nn.Parameter(torch.randn(t.max_slots, d_model) * 0.02) for t in self.types})
         self.dec_type_emb = nn.Embedding(len(self.types), d_model)
-        dec_layer = nn.TransformerDecoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
-                                               batch_first=True, norm_first=True, activation="gelu")
-        self.dec_trunk = nn.TransformerDecoder(dec_layer, dec_layers)
+        if qk_norm:
+            self.dec_trunk = _QKNormDecoder(d_model, n_heads, ff_mult, dec_layers, qk_norm=True)
+        else:
+            dec_layer = nn.TransformerDecoderLayer(d_model, n_heads, dim_feedforward=d_model * ff_mult,
+                                                   batch_first=True, norm_first=True, activation="gelu")
+            self.dec_trunk = nn.TransformerDecoder(dec_layer, dec_layers)
         self.heads = nn.ModuleDict({t.name: RangeBinHeads(t, d_model) for t in self.types})
         self._offsets: Dict[str, Tuple[int, int]] = {}
         off = 0

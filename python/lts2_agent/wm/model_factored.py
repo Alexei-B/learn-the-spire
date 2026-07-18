@@ -48,25 +48,31 @@ class FactoredWorldModelAE(nn.Module):
                  pool_layers: int = 1, pool_latents: int = 4, n_mem: int = 6, cat_dim: int = 24,
                  simnorm_group: int = 8, slice_widths: Optional[Dict[str, int]] = None,
                  expert_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
-                 static_tables: Optional[Dict[str, np.ndarray]] = None):
+                 static_tables: Optional[Dict[str, np.ndarray]] = None, qk_norm: bool = True):
         super().__init__()
         widths = dict(DEFAULT_SLICE_WIDTHS)
         if slice_widths:
             widths.update(slice_widths)
         self.slice_widths = widths
+        # QK-norm in the expert trunks (Wortsman et al. 2023 fix (a)) — model-wide flag, default ON for new
+        # runs. It bounds the attention logits that ratchet into the flat-LR collapse (grad-norm 17 -> 445
+        # -> 1171 into an all-absent presence solution). Stamped in cfg (below) so save/load/compose
+        # reconstruct the right trunk architecture; an OLD checkpoint's meta has NO qk_norm key, which
+        # load_checkpoint reads as qk_norm=False (stock trunks) so it loads byte-identically.
+        self.qk_norm = qk_norm
         # Per-expert construction-kwarg overrides (e.g. a deeper relic decoder) — stamped in cfg so
         # save/load/compose reconstruct the exact per-expert architecture.
         self.expert_overrides = {k: dict(v) for k, v in (expert_overrides or {}).items()}
         self.cfg = dict(d_model=d_model, n_heads=n_heads, enc_layers=enc_layers, dec_layers=dec_layers,
                         pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem, cat_dim=cat_dim,
-                        simnorm_group=simnorm_group, slice_widths=widths,
+                        simnorm_group=simnorm_group, slice_widths=widths, qk_norm=qk_norm,
                         expert_overrides=self.expert_overrides)
         if static_tables is None:
             static_tables = _static_tables()
         self.scalars = E.ScalarCodec()
         common = dict(d_model=d_model, static_tables=static_tables, cat_dim=cat_dim, n_heads=n_heads,
                       pool_layers=pool_layers, pool_latents=pool_latents, n_mem=n_mem,
-                      simnorm_group=simnorm_group)
+                      simnorm_group=simnorm_group, qk_norm=qk_norm)
         # The two structurally-rich categories (creatures fold powers/intents; cards are the largest,
         # keyword-bearing population) get the full encoder/decoder depth; the small single-type experts
         # (relics/potions/orbs — a flat catalog id + at most two numerics) get 1 enc / 1 dec layer, so
@@ -144,7 +150,8 @@ class FactoredWorldModelAE(nn.Module):
         cfg: Dict[str, Any] = {"d_model": self.cfg["d_model"], "n_heads": self.cfg["n_heads"],
                                "cat_dim": self.cfg["cat_dim"], "simnorm_group": self.cfg["simnorm_group"],
                                "pool_layers": self.cfg["pool_layers"],
-                               "pool_latents": self.cfg["pool_latents"], "n_mem": self.cfg["n_mem"]}
+                               "pool_latents": self.cfg["pool_latents"], "n_mem": self.cfg["n_mem"],
+                               "qk_norm": self.cfg["qk_norm"]}
         cfg.update(self.expert_overrides.get(name, {}))
         return {"name": name, "slice": [a, b], "width": b - a,
                 "tokenizer_signature": tokens.tokenizer_signature(), "config": cfg,
@@ -155,17 +162,32 @@ class FactoredWorldModelAE(nn.Module):
 
     def load_expert_from_state_dict(self, name: str, src_state: Dict[str, torch.Tensor]) -> None:
         """Copy one expert's weights out of a full factored ``state_dict`` (keys ``experts.<name>.*``)
-        into this model — the warm-start / compose primitive. Shapes must match (raises otherwise)."""
+        into this model — the warm-start / compose primitive.
+
+        Non-trunk weights (embedders, to_slice, slice_norm, from_slice, heads, slot_queries, cls,
+        latents, ...) MUST match by name and shape (a mismatch there is a genuine incompatibility and
+        raises). The attention TRUNK (``enc_trunk``/``pool``/``dec_trunk``) is exempt: turning qk_norm on
+        vs off changes the trunk's param NAMES, so warm-starting a qk_norm=True expert from an OLD
+        (qk_norm=False) checkpoint would otherwise fail. Such missing/mismatched trunk keys are SKIPPED
+        with a printed notice (the fresh trunk keeps its init), so the expensive non-trunk weights still
+        warm-start across the fix."""
         if name == "scalars":
             return   # parameter-free deterministic codec; nothing to copy
         prefix = f"experts.{name}."
         own = self.experts[name].state_dict()
         sub = {k[len(prefix):]: v for k, v in src_state.items() if k.startswith(prefix)}
         missing = set(own) - set(sub)
-        if missing:
-            raise ValueError(f"source checkpoint is missing expert {name!r} params: "
-                             f"{sorted(missing)[:4]}{'...' if len(missing) > 4 else ''}")
-        self.experts[name].load_state_dict({k: sub[k] for k in own})
+        mismatched = {k for k in own if k in sub and tuple(sub[k].shape) != tuple(own[k].shape)}
+        skip = missing | mismatched
+        non_trunk = {k for k in skip if not k.startswith(E.TRUNK_PREFIXES)}
+        if non_trunk:
+            raise ValueError(f"source checkpoint is missing/mismatched expert {name!r} non-trunk params: "
+                             f"{sorted(non_trunk)[:4]}{'...' if len(non_trunk) > 4 else ''}")
+        if skip:
+            print(f"[model_factored] warm-start {name!r}: skipping {len(skip)} trunk param(s) "
+                  f"(qk-norm trunk architecture differs from source); non-trunk weights copied.",
+                  flush=True)
+        self.experts[name].load_state_dict({k: sub[k] for k in own if k not in skip}, strict=False)
 
 
 # ==================================================================================================
@@ -182,10 +204,18 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                    model: FactoredWorldModelAE,
                    balance: str = "term",
                    active: Optional[Iterable[str]] = None,
-                   num_targets: str = "hard") -> Dict[str, torch.Tensor]:
+                   num_targets: str = "hard",
+                   z_weight: float = 0.0) -> Dict[str, torch.Tensor]:
     """The three reconstruction losses (categorical / numeric / presence) + their sum. Numerics are
     range-bin cross-entropy (per field, over present slots); the scalar expert contributes nothing
     (exact by construction, no parameters).
+
+    ``z_weight`` (default 0.0 = OFF, so existing behavior is byte-identical) adds Wortsman et al. 2023
+    fix (b) — an output z-loss ``z_weight * mean(logsumexp(logits)^2)`` over the categorical + presence
+    classification heads. It keeps each head's log-partition (logsumexp) near 0, i.e. it penalizes the
+    output logits from growing in magnitude — the OTHER half of the flat-LR collapse (the grad-norm
+    ratchet into a degenerate all-absent presence solution) that QK-norm alone does not fully bound.
+    Emitted as ``loss_zloss`` (0.0 when off).
 
     ``num_targets`` picks the range-bin target geometry: ``"hard"`` (legacy) is one-hot CE on the exact
     bin — no partial credit for a near-miss, which loses the numeric metric structure; ``"twohot"`` is a
@@ -207,6 +237,7 @@ def compute_losses(batch: Dict[str, torch.Tensor],
     cat_terms: List[torch.Tensor] = []
     num_terms: List[torch.Tensor] = []
     pres_terms: List[torch.Tensor] = []
+    zloss_terms: List[torch.Tensor] = []
     owner: Dict[int, str] = {}   # id(tensor) -> expert name, for expert-balanced grouping
 
     def _tag(ename, lst, t):
@@ -221,6 +252,10 @@ def compute_losses(batch: Dict[str, torch.Tensor],
             mask = batch[t.mask_key]
             _tag(ename, pres_terms, F.binary_cross_entropy_with_logits(
                 o["presence"], mask.to(o["presence"].dtype)))
+            if z_weight > 0.0:
+                # Presence is a binary head: logsumexp of the equivalent 2-class logits [z, 0] is
+                # softplus(z). Squaring + meaning penalizes over-large presence logits.
+                _tag(ename, zloss_terms, F.softplus(o["presence"]).pow(2).mean())
             if t.cat_cols:
                 tgt_idx = batch[t.idx_key]
                 for c in range(len(t.cat_cols)):
@@ -229,6 +264,9 @@ def compute_losses(batch: Dict[str, torch.Tensor],
                                          tgt_idx[..., c].reshape(-1), reduction="none")
                     ce = ce.reshape(tgt_idx.shape[:-1])
                     _tag(ename, cat_terms, _masked_mean(ce, mask))
+                    if z_weight > 0.0:
+                        lse = torch.logsumexp(logits, dim=-1)        # [B, slots] log-partition
+                        _tag(ename, zloss_terms, _masked_mean(lse.pow(2), mask))
             if "num_bin_logits" in o:
                 head: E.RangeBinHeads = ex.heads[t.name]
                 field_ce = []
@@ -264,9 +302,12 @@ def compute_losses(batch: Dict[str, torch.Tensor],
     loss_cat = _reduce(cat_terms)
     loss_num = _reduce(num_terms)
     loss_pres = _reduce(pres_terms)
-    total = loss_cat + loss_num + loss_pres
+    # z-loss (0.0 when off — zloss_terms is empty, _reduce returns a zero scalar). Always keyed in the
+    # returned dict so the train-window accumulator can wire it consistently.
+    loss_zloss = z_weight * _reduce(zloss_terms)
+    total = loss_cat + loss_num + loss_pres + loss_zloss
     return {"loss": total, "loss_categorical": loss_cat, "loss_numeric": loss_num,
-            "loss_presence": loss_pres}
+            "loss_presence": loss_pres, "loss_zloss": loss_zloss}
 
 
 # ==================================================================================================
@@ -317,7 +358,11 @@ def load_checkpoint(path: str, device="cpu") -> Tuple[FactoredWorldModelAE, dict
     if meta.get("arch") != "factored":
         raise ValueError(f"Checkpoint {path} arch={meta.get('arch')!r} is not 'factored'; "
                          f"load it with the monolithic loader (wm.model.load_checkpoint).")
-    m = FactoredWorldModelAE(**meta["config"])
+    # Backward compat: a checkpoint trained before the QK-norm fix has NO qk_norm key in its config.
+    # Default it to False so the stock trunks are rebuilt and the old state_dict loads byte-identically.
+    config = dict(meta["config"])
+    config.setdefault("qk_norm", False)
+    m = FactoredWorldModelAE(**config)
     got_layout = m.slice_layout_list()
     if meta.get("slice_layout") != got_layout:
         raise ValueError(
@@ -354,7 +399,12 @@ def init_expert_from(m: FactoredWorldModelAE, name: str, src_path: str, device="
         if src_stamp.get("width") != my_stamp["width"]:
             raise ValueError(f"--init-expert-from {name}: source slice width {src_stamp.get('width')} "
                              f"!= target {my_stamp['width']}.")
-        if src_stamp.get("config") != my_stamp["config"]:
+        # A qk_norm difference is TOLERATED here: it only changes the attention trunk, which the graceful
+        # loader skips (non-trunk weights still warm-start across the fix). Every OTHER config key must
+        # match — those govern shapes the non-trunk copy depends on.
+        src_cfg = {k: v for k, v in (src_stamp.get("config") or {}).items() if k != "qk_norm"}
+        my_cfg = {k: v for k, v in my_stamp["config"].items() if k != "qk_norm"}
+        if src_cfg != my_cfg:
             raise ValueError(f"--init-expert-from {name}: source expert config {src_stamp.get('config')} "
                              f"!= target {my_stamp['config']} (architecture differs).")
     src_state = torch.load(src_path, map_location=device)

@@ -32,8 +32,12 @@ from .experts import EXPERT_ORDER
 # Learned experts (scalars is the parameter-free tier-1 codec — nothing to compose).
 LEARNED = [n for n in EXPERT_ORDER if n != "scalars"]
 # Config keys that must be IDENTICAL across every source (they apply model-wide, not per expert).
+# qk_norm is model-wide (it changes every expert's trunk architecture), so composing mixes it too:
+# an OLD source's meta lacks the key and reads as False (stock trunks) — all sources must still agree.
 _GLOBAL_KEYS = ["d_model", "n_heads", "enc_layers", "dec_layers", "pool_layers", "pool_latents",
-                "n_mem", "cat_dim", "simnorm_group"]
+                "n_mem", "cat_dim", "simnorm_group", "qk_norm"]
+# Default for a global key absent from an OLD source's config (predates that key).
+_GLOBAL_DEFAULTS = {"qk_norm": False}
 
 
 def _parse_assignments(items: List[str]) -> Dict[str, str]:
@@ -64,19 +68,23 @@ def compose(out_path: str, assignments: Dict[str, str], base: str = "",
     # Read every unique source's meta (validates factored + tokenizer signature) and cache it.
     metas: Dict[str, dict] = {p: MF.read_meta(p) for p in set(sources.values())}
 
-    # All sources must agree on the shared global config.
+    # All sources must agree on the shared global config (a key absent from an OLD source resolves to its
+    # documented default, e.g. qk_norm=False, so an old + new mix disagrees loudly rather than silently).
+    def _g(cfg: Dict[str, Any], k: str) -> Any:
+        return cfg.get(k, _GLOBAL_DEFAULTS.get(k))
+
     ref_path = sources[LEARNED[0]]
     ref_cfg = metas[ref_path]["config"]
     for name, path in sources.items():
         cfg = metas[path]["config"]
-        diffs = {k: (ref_cfg.get(k), cfg.get(k)) for k in _GLOBAL_KEYS if ref_cfg.get(k) != cfg.get(k)}
+        diffs = {k: (_g(ref_cfg, k), _g(cfg, k)) for k in _GLOBAL_KEYS if _g(ref_cfg, k) != _g(cfg, k)}
         if diffs:
             raise SystemExit(f"compose: source for {name!r} ({path}) disagrees on global config {diffs} "
                              f"vs reference {ref_path}; cannot assemble one coherent model.")
 
     # Composite config: shared globals, then per-expert slice width / override from the source each
     # expert is pulled from.
-    comp_cfg: Dict[str, Any] = {k: ref_cfg[k] for k in _GLOBAL_KEYS}
+    comp_cfg: Dict[str, Any] = {k: _g(ref_cfg, k) for k in _GLOBAL_KEYS}
     slice_widths: Dict[str, int] = {}
     overrides: Dict[str, Dict[str, Any]] = {}
     for name in LEARNED:
@@ -99,7 +107,11 @@ def compose(out_path: str, assignments: Dict[str, str], base: str = "",
             if stamp.get("width") != my["width"]:
                 raise SystemExit(f"compose: expert {name!r} slice width {stamp.get('width')} from "
                                  f"{path} != composite {my['width']}.")
-            if stamp.get("config") != my["config"]:
+            # Normalize qk_norm (absent in an OLD source's stamp) so an all-old compose validates against
+            # the qk_norm=False composite instead of tripping on the missing key.
+            src_ecfg = dict(stamp.get("config") or {}); src_ecfg.setdefault("qk_norm", False)
+            my_ecfg = dict(my["config"]); my_ecfg.setdefault("qk_norm", False)
+            if src_ecfg != my_ecfg:
                 raise SystemExit(f"compose: expert {name!r} config {stamp.get('config')} from {path} "
                                  f"!= composite {my['config']}.")
         src_state = torch.load(path, map_location=device)

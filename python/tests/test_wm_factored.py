@@ -231,7 +231,8 @@ def test_loss_finite_and_overfits_one_batch():
     for i in range(60):
         _z, out = m(batch)
         losses = MF.compute_losses(batch, out, m)
-        assert set(losses) == {"loss", "loss_categorical", "loss_numeric", "loss_presence"}
+        assert set(losses) == {"loss", "loss_categorical", "loss_numeric", "loss_presence", "loss_zloss"}
+        assert float(losses["loss_zloss"]) == 0.0                 # z-loss OFF by default
         assert all(torch.isfinite(v) for v in losses.values())
         opt.zero_grad()
         losses["loss"].backward()
@@ -637,6 +638,195 @@ def test_slice_norm_keeps_simplex_and_bounds_logits():
         g = slices[name].reshape(slices[name].shape[0], -1, m.cfg["simnorm_group"])
         assert torch.allclose(g.sum(-1), torch.ones_like(g.sum(-1)), atol=1e-5)  # still simplices
     assert m.experts["orbs"].slice_norm.elementwise_affine is False              # no decay-shrinkable scale
+
+
+# ==================================================================================================
+# QK-norm expert trunks (Wortsman et al. 2023 fix (a)) + output z-loss (fix (b)).
+#
+# Motivation: the factored experts hit the textbook edge-of-stability transformer collapse at sustained
+# flat LR — grad_norm creeps 1.5->1.9, one catastrophic spike, then a monotonic grad-norm ratchet
+# (17->445->1171) into a degenerate all-absent presence solution. QK-norm bounds the attention logits;
+# the z-loss bounds the output-logit growth. Backward compat is a hard requirement (wm.compose composes
+# older, pre-fix experts), so an OLD checkpoint with no qk_norm key must rebuild the stock trunks and load
+# byte-identically.
+# ==================================================================================================
+
+def _small_qk(qk_norm: bool) -> MF.FactoredWorldModelAE:
+    return MF.FactoredWorldModelAE(
+        d_model=64, n_heads=2, enc_layers=1, dec_layers=1, pool_layers=1, pool_latents=2, n_mem=4,
+        cat_dim=16, slice_widths={"creatures": 128, "cards": 256, "relics": 64, "potions": 32,
+                                  "orbs": 32}, qk_norm=qk_norm)
+
+
+def test_qk_norm_default_on_and_swaps_trunk_and_adds_params():
+    from lts2_agent.wm.experts import (_QKNormAttention, _QKNormDecoder, _QKNormEncoder,
+                                       _QKNormPoolLayer)
+    on = _small_qk(True)
+    off = _small_qk(False)
+    assert on.cfg["qk_norm"] is True and off.cfg["qk_norm"] is False
+    # Default construction is qk_norm ON for new runs.
+    assert _small().cfg["qk_norm"] is True
+    ex = on.experts["orbs"]
+    assert isinstance(ex.enc_trunk, _QKNormEncoder)
+    assert isinstance(ex.dec_trunk, _QKNormDecoder)
+    assert isinstance(ex.pool[0], _QKNormPoolLayer)
+    # A single attention block carries two QK LayerNorms over the head-dim (elementwise_affine=True).
+    attn = ex.enc_trunk.layers[0].attn
+    assert isinstance(attn, _QKNormAttention)
+    assert attn.q_norm is not None and attn.q_norm.weight.shape == (attn.head_dim,)
+    # qk_norm=False rebuilds the ORIGINAL stock trunk (no QK norm) — byte-identical arch to pre-fix runs.
+    assert isinstance(off.experts["orbs"].enc_trunk, torch.nn.TransformerEncoder)
+    # The only param delta is the QK LayerNorm weights+biases.
+    delta = MF.param_count(on) - MF.param_count(off)
+    assert delta > 0
+
+
+def test_qk_norm_forward_backward_parity_smoke_trains_without_nan():
+    # A qk_norm=True model trains a few steps on a tiny synth batch without NaN and the loss decreases.
+    torch.manual_seed(0)
+    states = [_state(n_hand=i % 4 + 1, n_enemies=i % 2 + 1) for i in range(6)]
+    batch = _batch(states)
+    m = _small_qk(True)
+    opt = torch.optim.AdamW(m.parameters(), lr=2e-3)
+    first = last = None
+    for i in range(40):
+        _z, out = m(batch)
+        losses = MF.compute_losses(batch, out, m, num_targets="twohot")
+        assert all(torch.isfinite(v) for v in losses.values())
+        opt.zero_grad()
+        losses["loss"].backward()
+        # Every parameter must receive a finite gradient (the QK-norm block is differentiable end-to-end).
+        assert all(p.grad is None or torch.isfinite(p.grad).all() for p in m.parameters())
+        opt.step()
+        if i == 0:
+            first = float(losses["loss"])
+        last = float(losses["loss"])
+    assert last < first, f"qk-norm model did not train: {first:.3f} -> {last:.3f}"
+
+
+def test_qk_norm_empty_category_forward_uses_cls_sentinel():
+    # Empty orbs AND potions everywhere (no orb/potion tokens in any sample) must forward cleanly with
+    # qk_norm=True: the CLS sentinel keeps >=1 valid attention key so the softmax never sees an all-padded
+    # row (would be NaN). This is the exact edge case the sentinel mechanism exists for.
+    batch = _batch([_state(), _state(n_hand=3, n_enemies=2)])
+    assert not batch["orb_mask"].any() and not batch["potion_mask"].any()   # truly empty categories
+    m = _small_qk(True)
+    m.eval()
+    with torch.no_grad():
+        z, out = m(batch)
+    assert torch.isfinite(z).all()
+    for o in out.values():
+        for c in o.get("cat", []):
+            assert torch.isfinite(c).all()
+        if "presence" in o:
+            assert torch.isfinite(o["presence"]).all()
+    # The empty-category experts still produce a finite (non-NaN) latent slice.
+    slices = m.encode_slices(batch)
+    assert torch.isfinite(slices["orbs"]).all() and torch.isfinite(slices["potions"]).all()
+
+
+def test_qk_norm_checkpoint_roundtrip_byte_identical(tmp_path):
+    # Save a qk_norm=True model, reload via the same read-meta path compose/init use, and confirm the meta
+    # records qk_norm and the reloaded state dict is byte-identical.
+    torch.manual_seed(0)
+    m = _small_qk(True)
+    path = str(tmp_path / "qk.pt")
+    MF.save_checkpoint(path, m, step=7)
+    meta = MF.read_meta(path)
+    assert meta["config"]["qk_norm"] is True
+    assert meta["experts"]["orbs"]["config"]["qk_norm"] is True
+    loaded, _ = MF.load_checkpoint(path, "cpu")
+    assert loaded.cfg["qk_norm"] is True
+    src, dst = m.state_dict(), loaded.state_dict()
+    assert src.keys() == dst.keys()
+    for k in src:
+        assert torch.equal(src[k], dst[k]), k
+
+
+def test_old_checkpoint_without_qk_norm_key_loads_as_false(tmp_path):
+    # Backward compat (hard requirement): a checkpoint predating the fix has NO qk_norm key in its meta.
+    # Simulate by saving a qk_norm=False model and deleting the key from the saved meta, then reload — the
+    # loader must construct qk_norm=False (stock trunks) and load byte-identically.
+    import json
+    torch.manual_seed(1)
+    m = _small_qk(False)
+    path = str(tmp_path / "old.pt")
+    MF.save_checkpoint(path, m, step=3)
+    with open(path + ".meta.json") as f:
+        meta = json.load(f)
+    del meta["config"]["qk_norm"]                                # pretend this checkpoint predates the fix
+    for st in meta["experts"].values():
+        st["config"].pop("qk_norm", None)
+    with open(path + ".meta.json", "w") as f:
+        json.dump(meta, f)
+    loaded, _ = MF.load_checkpoint(path, "cpu")
+    assert loaded.cfg["qk_norm"] is False                        # defaulted for the pre-fix checkpoint
+    src, dst = m.state_dict(), loaded.state_dict()
+    assert src.keys() == dst.keys()
+    for k in src:
+        assert torch.equal(src[k], dst[k]), k
+
+
+def test_warm_start_new_qk_from_old_checkpoint_skips_trunk_copies_rest(tmp_path, capsys):
+    # --init-expert-from an OLD (qk_norm=False) checkpoint into a NEW (qk_norm=True) model: the trunk param
+    # names differ, so the trunk is skipped with a notice while the non-trunk weights still warm-start.
+    import json
+    torch.manual_seed(2)
+    old = _small_qk(False)
+    path = str(tmp_path / "old.pt")
+    MF.save_checkpoint(path, old, step=5)
+    with open(path + ".meta.json") as f:
+        meta = json.load(f)
+    del meta["config"]["qk_norm"]
+    for st in meta["experts"].values():
+        st["config"].pop("qk_norm", None)
+    with open(path + ".meta.json", "w") as f:
+        json.dump(meta, f)
+    torch.manual_seed(3)
+    new = _small_qk(True)
+    before = {k: v.clone() for k, v in new.experts["relics"].state_dict().items()}
+    MF.init_expert_from(new, "relics", path)
+    out = capsys.readouterr().out
+    assert "skipping" in out and "trunk" in out                  # printed notice for the skipped trunk
+    after = new.experts["relics"].state_dict()
+    # Non-trunk weights were copied from the old checkpoint; the renamed trunk params (QKV projections, QK
+    # norms — absent from the stock trunk's state dict) kept the fresh init. (A few incidentally-named
+    # trunk keys like out_proj share name+shape and copy harmlessly; we don't assert on those.)
+    src = old.experts["relics"].state_dict()
+    trunk = ("enc_trunk.", "pool.", "dec_trunk.")
+    copied = skipped = 0
+    for k in after:
+        in_src = k in src and src[k].shape == after[k].shape
+        if k.startswith(trunk) and not in_src:                   # genuinely renamed -> skipped
+            skipped += 1
+            assert torch.equal(after[k], before[k]), f"skipped trunk {k} should have kept its init"
+        elif not k.startswith(trunk):
+            assert in_src, f"non-trunk {k} unexpectedly absent from source"
+            copied += 1
+            assert torch.equal(after[k], src[k]), f"non-trunk {k} should have been copied"
+    assert copied > 0 and skipped > 0
+
+
+def test_z_loss_off_is_zero_and_on_penalizes_logits():
+    # z-loss default OFF (0.0) leaves the loss dict byte-identical in value; turning it on adds a positive
+    # penalty on the categorical + presence log-partitions, growing with the weight.
+    torch.manual_seed(0)
+    batch = _batch([_state(n_hand=2, n_enemies=2), _state(n_enemies=1)])
+    m = _small()
+    _z, out = m(batch)
+    off = MF.compute_losses(batch, out, m, z_weight=0.0)
+    assert float(off["loss_zloss"]) == 0.0
+    base = float(off["loss"])
+    on = MF.compute_losses(batch, out, m, z_weight=1e-3)
+    assert float(on["loss_zloss"]) > 0.0
+    assert abs(float(on["loss"]) - (base + float(on["loss_zloss"]))) < 1e-5   # added on top of the total
+    stronger = MF.compute_losses(batch, out, m, z_weight=2e-3)
+    assert float(stronger["loss_zloss"]) > float(on["loss_zloss"])            # scales with the weight
+    # z-loss flows gradients (it is a real regularizer on the output logits).
+    m.zero_grad()
+    on["loss_zloss"].backward()
+    assert any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
+               for p in m.experts["cards"].parameters())
 
 
 def test_mono_arch_unchanged_default_state_dict():

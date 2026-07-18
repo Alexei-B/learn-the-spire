@@ -214,6 +214,18 @@ def main() -> int:
                          "distance-aware symmetric triangular target that rewards near-miss bins "
                          "(restores the numeric metric structure — the M3.5 solo-dynamics fix); 'hard' is "
                          "the legacy one-hot CE (no partial credit). Decode stays argmax either way.")
+    ap.add_argument("--qk-norm", action=argparse.BooleanOptionalAction, default=True,
+                    help="factored arch only: per-head QK LayerNorm in the expert attention trunks "
+                         "(Wortsman et al. 2023 fix (a)). Default ON for new runs — it bounds the "
+                         "attention logits that ratchet into the flat-LR collapse (grad-norm 17->445->1171 "
+                         "into an all-absent presence solution). --no-qk-norm reproduces the pre-fix stock "
+                         "trunks. Stamped in checkpoint meta; an OLD checkpoint (no key) loads as False.")
+    ap.add_argument("--z-loss", type=float, default=0.0,
+                    help="factored arch only: weight of the output z-loss "
+                         "z_weight*mean(logsumexp(logits)^2) over the categorical + presence heads "
+                         "(Wortsman et al. 2023 fix (b)). Keeps the classification log-partitions near 0 "
+                         "(bounds output-logit growth — the other half of the collapse QK-norm doesn't "
+                         "fully cover). Default 0.0 = OFF (byte-identical to prior behavior).")
     ap.add_argument("--focus-present", type=float, default=0.0,
                     help="factored SOLO runs only (--train-experts set): oversample states where a "
                          "trained expert has >=1 present token. Fraction R of each batch is drawn from "
@@ -343,7 +355,7 @@ def main() -> int:
         relic_overrides = ({"relics": {"dec_layers": args.relic_dec_layers}}
                            if args.relic_dec_layers != 1 else None)
         model = MF.FactoredWorldModelAE(slice_widths=_slice_width_overrides(args), d_model=args.d_model, n_heads=args.heads, cat_dim=args.cat_dim,
-                                        simnorm_group=args.simnorm_group,
+                                        simnorm_group=args.simnorm_group, qk_norm=args.qk_norm,
                                         expert_overrides=relic_overrides).to(device)
         if train_active is not None:
             unknown = [n for n in train_active if n not in model.experts]
@@ -426,7 +438,7 @@ def main() -> int:
     def loss_fn(batch_, out_, active=None):
         if factored:
             return MF.compute_losses(batch_, out_, model, balance=args.loss_balance, active=active,
-                                      num_targets=args.num_targets)
+                                      num_targets=args.num_targets, z_weight=args.z_loss)
         return M.compute_losses(batch_, out_, card_ce_weights=card_ce_weights)
 
     # Weight EMA (default OFF). Built from the (possibly resumed) live model; restores its shadow too.
@@ -524,7 +536,8 @@ def main() -> int:
         print(f"[train_encdec] coverage-val: {len(cov_acts)} fixed synthetic configs for {train_active} "
               f"(seed {SY.COVERAGE_VAL_SEED:#x})", flush=True)
 
-    win = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0}
+    win = {"loss": 0.0, "loss_categorical": 0.0, "loss_numeric": 0.0, "loss_presence": 0.0,
+           "loss_zloss": 0.0}
     win_gn = 0.0
     win_states = 0
     win_t0 = time.perf_counter()
@@ -556,7 +569,7 @@ def main() -> int:
                 ema.update(model)
 
             for k in win:
-                win[k] += float(losses[k])
+                win[k] += float(losses.get(k, 0.0))   # mono losses have no loss_zloss key
             win_gn += grad_norm
             win_states += args.batch
 
@@ -573,6 +586,8 @@ def main() -> int:
                     mw.emit("train", step, "train.loss_categorical", avg["loss_categorical"])
                     mw.emit("train", step, "train.loss_numeric", avg["loss_numeric"])
                     mw.emit("train", step, "train.loss_presence", avg["loss_presence"])
+                    if args.z_loss > 0.0:
+                        mw.emit("train", step, "train.loss_zloss", avg["loss_zloss"])
                     mw.emit("train", step, "train.grad_norm", win_gn / args.log_every)
                     mw.emit("train", step, "train.lr", lr)
                     mw.emit("train", step, "train.states_per_s", sps)
