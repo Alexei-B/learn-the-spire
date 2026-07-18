@@ -152,7 +152,11 @@ const state = {
   selected: new Set(),    // run ids selected for overlay
   metric: null,
   groupBy: "none",
-  scale: "linear",        // linear | log | pow | nines (display transform only; see SCALES)
+  // Scale is per-metric: each metric shows its classified DEFAULT (see defaultScaleFor) unless the
+  // user has explicitly picked one, recorded here keyed by metric name (a manual pick persists and
+  // overrides the default). Values: linear | log | pow | nines (display transform only; see SCALES).
+  scaleOverrides: {},     // metric name -> user-chosen scale
+  logFloor: Infinity,     // smallest positive value in the current data (log clamp; see redraw)
   bucket: "",             // "" => auto
   paused: false,
   metaByRun: {},          // id -> meta
@@ -268,6 +272,9 @@ async function rebuildMetricOptions() {
   }
   if (gcur !== "none" && keys.has(gcur)) gsel.value = gcur;
   else { state.groupBy = "none"; gsel.value = "none"; }
+
+  // Show the scale that will actually be used for this metric (its default, or the user's override).
+  syncScaleControl();
 }
 
 // ---- metric display names -------------------------------------------------
@@ -358,7 +365,11 @@ function metricLabel(name) {
 // of accuracy one full axis decade (0.9 → 1, 0.99 → 2, 0.999 → 3). log floors at 1e-6 for zeros.
 const SCALES = {
   linear: { fn: v => v, inv: y => y, note: "" },
-  log: { fn: v => Math.log10(Math.max(v, 1e-6)), inv: y => Math.pow(10, y),
+  // log clamps zero/near-zero (e.g. a converged dist of exactly 0.0) to the smallest positive value
+  // in the current data (state.logFloor) instead of a fixed 1e-6, so a single 0 can't crush the axis;
+  // if the whole series is <= 0, effectiveScale() falls back to linear and this fn is never used.
+  log: { fn: v => Math.log10(Math.max(v, Number.isFinite(state.logFloor) ? state.logFloor : 1e-6)),
+         inv: y => Math.pow(10, y),
          note: " · log scale (ticks show real values)" },
   pow: { fn: v => Math.sign(v) * Math.pow(Math.abs(v), Math.E),
          inv: y => Math.sign(y) * Math.pow(Math.abs(y), 1 / Math.E),
@@ -376,20 +387,58 @@ const BOUNDED_01 = new Set([
   "eval.card_id_top1", "eval.card_zone_acc", "eval.power_id_top1", "eval.energy_acc",
   "eval.relic_set_f1", "eval.potion_set_f1", "eval.hand_size_acc", "eval.pile_size_acc",
   "eval.pending_choice_acc", "eval.exact_state_rate", "eval.exact_mech_rate", "eval.state_dist",
-  "eval.expert_dist", "eval.scalar_exact", "eval.expert_exact"
+  "eval.expert_dist", "eval.scalar_exact", "eval.expert_exact", "eval.expert_dist_cov", "eval.expert_exact_cov",
 ]);
 function isBounded01(name) {
   if (BOUNDED_01.has(name)) return true;
   // Heuristic for future metrics: accuracy/rate-style suffixes are [0,1] by convention.
   return /(_acc|_f1|_top1|_rate|\.won)$/.test(name || "");
 }
+// ---- per-metric default scale (classifier) --------------------------------
+// Every ERROR-type metric (0 = best) defaults to LOG; every ACCURACY-type metric (1 = best) defaults
+// to NINES; everything else stays linear. classifyMetric uses (a) explicit exceptions for metrics the
+// substring rules would misjudge, then (b) a substring/suffix fallback so future metrics inherit a
+// sane default. A manual dropdown pick (state.scaleOverrides) always wins — see resolvedScale.
+const SCALE_TYPE_EXCEPTIONS = {
+  "train.states_per_s": "linear",        // throughput, higher-better but unbounded → not an accuracy
+  "collect.transitions_per_s": "linear", // throughput
+  "train.lr": "error",                   // LR schedule spans decades toward 0 → log (via error->log)
+};
+function classifyMetric(name) {
+  name = name || "";
+  if (SCALE_TYPE_EXCEPTIONS[name]) return SCALE_TYPE_EXCEPTIONS[name];
+  // ERROR (0 = best): losses, distances (incl. canon_dist), MAEs, gradient/other error norms.
+  if (/loss|dist|mae|err|grad_norm/.test(name)) return "error";
+  // ACCURACY (1 = best): accuracies, exact-match rates (incl. granted_exact), F1s, top-1, coverage rates.
+  if (/acc|exact|f1|rate|top1/.test(name)) return "accuracy";
+  return "linear";
+}
+function defaultScaleFor(name) {
+  const t = classifyMetric(name);
+  return t === "error" ? "log" : t === "accuracy" ? "nines" : "linear";
+}
+// The scale actually in effect for the current metric: the user's explicit pick if any, else the
+// classified default. This is the "requested" scale; effectiveScale() may still demote it to linear
+// when the transform's domain doesn't fit the data.
+function resolvedScale() {
+  const o = state.scaleOverrides[state.metric];
+  return o || defaultScaleFor(state.metric);
+}
+// Reflect the resolved scale (default or override) in the dropdown so the control shows what's drawn.
+function syncScaleControl() {
+  const sel = document.getElementById("scale");
+  if (sel) sel.value = resolvedScale();
+}
+
 // Tick labels for transformed axes need more precision near the interesting ends (≈1 for rates,
 // tiny values on log) than fmtNum gives.
 // pow/nines are only defined on [0,1]: out-of-domain metrics (MAEs, losses) would clamp to the
 // transform floor and render as a frozen line at the cap (e.g. "0.9999"). Fall back to linear.
+// log likewise falls back when the whole series is <= 0 (no positive value to anchor the clamp).
 function effectiveScale() {
-  const k = state.scale;
+  const k = resolvedScale();
   if ((k === "pow" || k === "nines") && !isBounded01(state.metric)) return "linear";
+  if (k === "log" && !Number.isFinite(state.logFloor)) return "linear";
   return k;
 }
 function fmtTick(v) {
@@ -438,10 +487,16 @@ async function redraw() {
   }
   // Display transform (scale selector). p.value stays raw for tooltips/legend; p.y (the transformed
   // value) drives point placement, while axis ticks are labeled with REAL values via the inverse.
+  // Precompute the smallest positive value across all points first: it is the log clamp floor and
+  // the signal effectiveScale() uses to demote log→linear when nothing is positive.
+  let logFloor = Infinity;
+  for (const s of series) for (const p of s.points) if (p.value > 0 && p.value < logFloor) logFloor = p.value;
+  state.logFloor = logFloor;
+  const requested = resolvedScale();
   const scKey = effectiveScale();
   const sc = SCALES[scKey] || SCALES.linear;
   for (const s of series) for (const p of s.points) p.y = sc.fn(p.value);
-  const scNote = scKey !== state.scale ? " · scale " + state.scale + " n/a (metric not 0–1) → linear" : sc.note;
+  const scNote = scKey !== requested ? " · scale " + requested + " n/a for this data → linear" : sc.note;
   // assign colors in a stable order
   series.forEach((s, i) => { s.color = css(SLOT[i % SLOT.length]); });
   state.lastSeries = series;
@@ -637,7 +692,9 @@ document.getElementById("bucket").addEventListener("change", e => {
   state.bucket = e.target.value; redraw();
 });
 document.getElementById("scale").addEventListener("change", e => {
-  state.scale = e.target.value; redraw();
+  // A manual pick becomes this metric's persistent override (wins over the classified default).
+  if (state.metric) state.scaleOverrides[state.metric] = e.target.value;
+  redraw();
 });
 document.getElementById("pause").addEventListener("click", e => {
   state.paused = !state.paused;
@@ -647,14 +704,13 @@ document.getElementById("pause").addEventListener("click", e => {
 for (const b of document.querySelectorAll(".presets button")) {
   b.addEventListener("click", async () => {
     state.metric = b.dataset.metric;
+    // A preset scale is an explicit choice → record it as this metric's override before rebuild
+    // (which calls syncScaleControl to reflect it). Presets without data-scale use the default.
+    if (b.dataset.scale) state.scaleOverrides[b.dataset.metric] = b.dataset.scale;
     await rebuildMetricOptions();
     state.groupBy = b.dataset.group;
     document.getElementById("groupby").value = b.dataset.group;
     document.getElementById("metric").value = b.dataset.metric;
-    if (b.dataset.scale) {
-      state.scale = b.dataset.scale;
-      document.getElementById("scale").value = b.dataset.scale;
-    }
     await redraw();
   });
 }
