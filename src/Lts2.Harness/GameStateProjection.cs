@@ -295,8 +295,9 @@ internal static class GameStateProjection
 
     /// <summary>
     /// Keywords on the card that aren't part of its printed form — i.e. granted by another card, relic,
-    /// or power (Transfigure's Retain, Hex's Ethereal, …). Its canonical keywords are excluded so only
-    /// the added modification shows. Single-turn Retain (e.g. Well-Laid Plans) is included too.
+    /// or power (Snap's Retain, Hex's Ethereal, …; note Transfigure is a different mechanic — it raises
+    /// ReplayCount, not keywords). Its canonical keywords are excluded so only the added modification
+    /// shows. Single-turn Retain (e.g. Well-Laid Plans) is included too.
     /// </summary>
     private static IReadOnlyList<string> AddedKeywordsOf(CardModel card)
     {
