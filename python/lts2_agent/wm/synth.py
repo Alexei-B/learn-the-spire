@@ -66,6 +66,13 @@ def _symlog_arr(a: np.ndarray) -> np.ndarray:
     return np.sign(a) * np.log1p(np.abs(a))
 
 
+def _symexp_arr(a: np.ndarray) -> np.ndarray:
+    """Array-wise inverse of :func:`_symlog_arr` (== :func:`tokens.symexp` element-wise): recover a stored
+    numeric's real value from symlog storage. Used only to decode a canonical-sort key numeric back to its
+    integer when ordering generated intent rows the way the tokenizer flattens them."""
+    return np.sign(a) * np.expm1(np.abs(a))
+
+
 # ==================================================================================================
 # Conditional-reachability table (data/reachable_v1.json, built by wm.reachable). The cards + creatures
 # generators are REACHABILITY-SHAPED: identities are drawn from the corpus-observed set, and every value
@@ -168,6 +175,16 @@ def _augment_reachable(tbl: Dict[str, Any]) -> None:
         lo, hi = tbl["powers"][pid]
         plo[r], phi[r] = _reach_lohi("power", "amount", lo, hi)
     tbl["power_amt_lo"], tbl["power_amt_hi"] = plo, phi
+
+    # Full-vocab amount bound tables (one entry per powerIndex 0..vocab-1): an observed power keeps its
+    # reachability (lo, hi); any other id (drawn only by the wildcard tail) gets the full spec range. Lets
+    # the distinct-power sampler gather a whole batch of amount bounds by powerIndex in one indexing op.
+    pw_vocab = S.TYPE_BY_NAME["power"].cat_cols[0][1]
+    spec_amt = S.NUMERIC_RANGES["power"]["amount"]
+    amt_lo_by_id = np.full(pw_vocab, spec_amt.lo, np.int64)
+    amt_hi_by_id = np.full(pw_vocab, spec_amt.hi, np.int64)
+    amt_lo_by_id[pids], amt_hi_by_id[pids] = plo, phi
+    tbl["power_amt_lo_by_id"], tbl["power_amt_hi_by_id"] = amt_lo_by_id, amt_hi_by_id
 
     # Ragged->padded gather tables for the card's identity-conditioned categoricals, so a whole batch of
     # table rows draws them WITHOUT a per-identity Python loop: uniform columns (type/rarity/targetType)
@@ -541,41 +558,73 @@ def _reach_num_block(rng: np.random.Generator, lo: np.ndarray, hi: np.ndarray,
     return out.astype(np.float32)
 
 
-def _place_powers(rng: np.random.Generator, tbl: Dict[str, Any], pw_spec: S.TypeSpec,
-                  pw_idx: np.ndarray, pw_num: np.ndarray, pw_mask: np.ndarray,
-                  pstate: np.ndarray, pslot: np.ndarray, pparent: np.ndarray) -> None:
-    """Assign powerIndex/amount for a flat block of already-placed power rows (identity-conditioned amount
-    ranges gathered in bulk; a :data:`CREATURE_WILDCARD_PROB` uniform tail), then scatter into the padded
-    power arrays at ``(pstate, pslot)`` with ``pparent`` (the creature slot) as the parent ref."""
+def _sample_creature_powers(rng: np.random.Generator, tbl: Dict[str, Any], pw_spec: S.TypeSpec,
+                            pc: np.ndarray, bstate: np.ndarray, post_slot: np.ndarray
+                            ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Draw each creature's DISTINCT powerIndex set + amounts. A power stacks its amount rather than
+    duplicating, so two rows on one creature can never share a powerIndex — unreachable in the real game.
+    Ids are drawn per creature by weighted sampling-WITHOUT-replacement (Gumbel-top-k) whose per-id weight
+    is exactly the old per-row reachability marginal: the observed ``power_ids`` uniform mass plus a thin
+    :data:`CREATURE_WILDCARD_PROB` full-vocab tail. So the wildcard/table behavior is preserved — only the
+    duplicates are removed. Each row's amount is uniform in that powerIndex's reachability range (the full
+    spec range for a wildcard id, monotone-safe because amounts can be negative). Returns flat creature-
+    major ``(state, parent, powerIndex, amount)`` row arrays (``parent`` == the creature's canonical slot)."""
+    Nc = pc.shape[0]
+    maxk = int(pc.max()) if Nc else 0
+    if maxk == 0:
+        e = np.empty(0, np.int64)
+        return e, e, e, e
+    vocab = pw_spec.cat_cols[0][1]
+    power_ids = tbl["power_ids"]
+    w = CREATURE_WILDCARD_PROB
+    weight = np.full(vocab, w / vocab, np.float64)            # wildcard tail: every id reachable
+    weight[power_ids] += (1.0 - w) / len(power_ids)           # observed mass (== old per-row marginal)
+    with np.errstate(divide="ignore"):
+        logit = np.log(weight)                               # -inf for a zero-weight id (wildcard off)
+    keys = logit[None, :] + rng.gumbel(size=(Nc, vocab))     # Gumbel-top-k == weighted WOR draw order
+    if maxk < vocab:
+        top = np.argpartition(-keys, maxk - 1, axis=1)[:, :maxk]
+    else:
+        top = np.broadcast_to(np.arange(vocab), (Nc, vocab)).copy()
+    tk = np.take_along_axis(keys, top, axis=1)
+    top = np.take_along_axis(top, np.argsort(-tk, axis=1), axis=1)   # highest-weight id first, per creature
+    keep = np.arange(maxk)[None, :] < pc[:, None]            # each creature keeps its first pc[f] ids
+    pid = top[keep]                                          # flat, creature-major (distinct within group)
+    amt = rng.integers(tbl["power_amt_lo_by_id"][pid], tbl["power_amt_hi_by_id"][pid] + 1)
+    return np.repeat(bstate, pc), np.repeat(post_slot, pc), pid, amt
+
+
+def _place_powers(pw_idx: np.ndarray, pw_num: np.ndarray, pw_mask: np.ndarray,
+                  pstate: np.ndarray, pparent: np.ndarray, pid: np.ndarray, amt: np.ndarray,
+                  B: int) -> None:
+    """Scatter a flat block of power rows into the padded arrays in the tokenizer's CANONICAL flatten
+    order: grouped by (state, parent creature slot) ascending, then within a creature by (powerIndex,
+    amount) ascending — the exact order :func:`tokens.tokenize` emits (parent-slot flatten of powers each
+    creature already sorted by ``(idx, amount)``). ``amt`` is the sampled INTEGER, so the sort is exact
+    even for negative amounts (symlog is monotone, but sorting the integer avoids any float doubt). The
+    per-state MAX_POWERS cap is applied in that slot order (== truncating ``powers[:MAX_POWERS]``)."""
     n = pstate.shape[0]
     if n == 0:
         return
-    power_ids = tbl["power_ids"]
-    wild = rng.random(n) < CREATURE_WILDCARD_PROB
-    pid = np.empty(n, np.int64)
-    amt = np.empty(n, np.int64)
-    nw = int(wild.sum())
-    if nw:
-        lo, hi = _lohi("power", "amount")                    # (lo, hi+1) — integers() excludes the top
-        pid[wild] = rng.integers(0, pw_spec.cat_cols[0][1], size=nw)
-        amt[wild] = rng.integers(lo, hi, size=nw)
-    tabm = ~wild
-    nt = int(tabm.sum())
-    if nt:
-        tp = rng.integers(0, len(power_ids), size=nt)
-        pid[tabm] = power_ids[tp]
-        amt[tabm] = rng.integers(tbl["power_amt_lo"][tp], tbl["power_amt_hi"][tp] + 1)
-    pw_idx[pstate, pslot, 0] = pid
-    pw_idx[pstate, pslot, 1] = pparent
-    pw_num[pstate, pslot, 0] = _symlog_arr(amt.astype(np.float64)).astype(np.float32)
-    pw_mask[pstate, pslot] = True
+    order = np.lexsort((amt, pid, pparent, pstate))          # primary state, then parent, idx, amount
+    ps, pp, pi, am = pstate[order], pparent[order], pid[order], amt[order]
+    rank = np.arange(n) - _exclusive_starts(np.bincount(ps, minlength=B), B)[ps]
+    keep = rank < tokens.MAX_POWERS                          # cap in canonical slot order
+    ps, pp, pi, am, rank = ps[keep], pp[keep], pi[keep], am[keep], rank[keep]
+    pw_idx[ps, rank, 0] = pi
+    pw_idx[ps, rank, 1] = pp
+    pw_num[ps, rank, 0] = _symlog_arr(am.astype(np.float64)).astype(np.float32)
+    pw_mask[ps, rank] = True
 
 
 def _place_intents(rng: np.random.Generator, tbl: Dict[str, Any], in_spec: S.TypeSpec,
                    in_idx: np.ndarray, in_num: np.ndarray, in_mask: np.ndarray,
-                   istate: np.ndarray, islot: np.ndarray, parent: np.ndarray) -> None:
+                   istate: np.ndarray, parent: np.ndarray, B: int) -> None:
     """Assign type + numerics for a flat block of intent rows (per-type numeric ranges gathered in bulk; a
-    uniform wildcard tail using the base numeric sampler), then scatter into the padded intent arrays."""
+    uniform wildcard tail), then scatter them in the tokenizer's CANONICAL flatten order: grouped by
+    (state, parent creature slot) ascending, then within a creature by (type, damage, baseDamage, hits)
+    ascending — the numerics compared as decoded INTEGERS, matching :func:`tokens._creature_canonical`.
+    Parent ASSIGNMENT stays as passed (random creature slot); only the ROW ORDER is made canonical."""
     n = istate.shape[0]
     if n == 0:
         return
@@ -594,10 +643,18 @@ def _place_intents(rng: np.random.Generator, tbl: Dict[str, Any], in_spec: S.Typ
         ip = rng.integers(0, len(intent_ids), size=nt)
         ty[tabm] = intent_ids[ip]
         numblk[tabm] = _reach_num_block(rng, tbl["intent_num_lo"][ip], tbl["intent_num_hi"][ip], _INTENT_RAW)
-    in_idx[istate, islot, 0] = ty
-    in_idx[istate, islot, 1] = parent
-    in_num[istate, islot, :] = numblk
-    in_mask[istate, islot] = True
+    # Decode the sort-key numerics (damage/baseDamage/hits are symlog-stored) back to integers so the row
+    # order matches the tokenizer's integer comparator exactly. INTENT_NUM = [hasDamage, damage,
+    # baseDamage, hasHits, hits]; the intent key is (type, damage, baseDamage, hits).
+    dec = numblk.astype(np.float64)
+    ints = np.rint(np.where(_INTENT_RAW, dec, _symexp_arr(dec))).astype(np.int64)
+    order = np.lexsort((ints[:, 4], ints[:, 2], ints[:, 1], ty, parent, istate))
+    ist, par, tt, nb = istate[order], parent[order], ty[order], numblk[order]
+    rank = np.arange(n) - _exclusive_starts(np.bincount(ist, minlength=B), B)[ist]
+    in_idx[ist, rank, 0] = tt
+    in_idx[ist, rank, 1] = par
+    in_num[ist, rank, :] = nb
+    in_mask[ist, rank] = True
 
 
 def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) -> None:
@@ -605,19 +662,21 @@ def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) 
     Creature count from the measured creatures-per-state histogram (min 1, capped). Per creature: identity
     from the observed set, kind from that identity's observed kinds, numerics uniform in the identity's
     observed range (+margin, clamped). Powers: a per-creature count from the powers-per-creature histogram
-    (capped so the state total <= MAX_POWERS); powerIndex from the observed set; amount from that power's
-    observed range (+margin — amounts may be negative). Intents: a count from the intents-per-state
-    histogram (capped); type from the observed set; numerics per-type range. Each sub-row keeps a
-    :data:`CREATURE_WILDCARD_PROB` uniform tail. Creature order uses the tokenizer's v4 lexsort EXACTLY
-    (unchanged) so per-slot targets stay a function of content.
+    (capped so the state total <= MAX_POWERS); powerIndex DISTINCT within a creature (a power stacks its
+    amount, never duplicates — see :func:`_sample_creature_powers`); amount from that power's observed
+    range (+margin — amounts may be negative). Intents: a count from the intents-per-state histogram
+    (capped); type from the observed set; numerics per-type range. Each sub-row keeps a
+    :data:`CREATURE_WILDCARD_PROB` uniform tail.
 
-    Fully VECTORIZED (roadmap wm-t3-factored perf): creatures/powers/intents are each generated as one
-    flat state-major block (base uniform, then table rows overwritten via bulk per-identity draws), the
-    whole batch of creatures is v4-lexsorted in a SINGLE call (state primary) and scattered to slots, and
-    powers/intents are placed by (state, slot) with no per-row Python. powerIndex/amount and intent type/
-    numerics do NOT depend on the parent creature's identity (the old code drew them independently too), so
-    generating them per slot after the creature sort needs no remap. Distributional equivalence holds; the
-    creature per-slot ORDER key is unchanged."""
+    CANONICAL WIRE ORDER (must match :func:`tokens.tokenize` EXACTLY, else the per-slot target is ill-posed
+    for the permutation-invariant decoder): creatures are v4-lexsorted (state-major); power rows are laid
+    out grouped by parent creature slot ascending, then by (powerIndex, amount) ascending within a creature;
+    intent rows grouped by parent creature slot ascending, then (type, damage, baseDamage, hits) ascending.
+
+    Fully VECTORIZED (roadmap wm-t3-factored perf): creatures/powers/intents are each generated as one flat
+    state-major block, the whole batch of creatures is v4-lexsorted in a SINGLE call (state primary) and
+    scattered to slots, and powers/intents are each placed with a SINGLE ``np.lexsort`` keyed (state, parent
+    slot, content...) then a rank recompute — no per-row Python in the hot path."""
     tbl = _load_reachable()
     creatures = tbl["creatures"]
     creature_ids = tbl["creature_ids"]
@@ -632,7 +691,6 @@ def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) 
     Nc = int(c_arr.sum())
     bstate = np.repeat(np.arange(B, dtype=np.int64), c_arr)
     starts = _exclusive_starts(c_arr, B)
-    within = np.arange(Nc) - starts[bstate]                  # each creature's slot index 0..c-1 in its state
 
     cats = _sample_cats(rng, cr_spec, Nc)                    # [Nc, 2] uniform base (kind, identity)
     nums = _sample_nums(rng, "creature", tokens.CREATURE_NUM, Nc)   # [Nc, 5] symlog-stored base
@@ -658,29 +716,25 @@ def _fill_creatures(rng: np.random.Generator, z: Dict[str, np.ndarray], B: int) 
     cr_num[bs, dstslot] = nums[order]
     cr_mask[bs, dstslot] = True
 
-    # ---- powers: a count per creature SLOT, capped per state at MAX_POWERS in slot order ----
-    pc = _hist_draw(rng, tbl["counts"]["powers_per_creature"], Nc).astype(np.int64)
-    power_parent = np.repeat(within, pc)                     # parent = creature slot (post-sort position)
-    power_state = np.repeat(bstate, pc)                      # state-major (bstate is state-major)
-    Np = power_parent.shape[0]
-    if Np:
-        state_pw_total = np.bincount(bstate, weights=pc, minlength=B).astype(np.int64)
-        pw_start = _exclusive_starts(state_pw_total, B)
-        pw_rank = np.arange(Np) - pw_start[power_state]      # power index within its state (fill order)
-        keep = pw_rank < tokens.MAX_POWERS
-        _place_powers(rng, tbl, pw_spec, z["power_idx"], z["power_num"], z["power_mask"],
-                      power_state[keep], pw_rank[keep], power_parent[keep])
+    # each flat creature's canonical (post-sort) slot — the parent ref powers/intents must point at.
+    post_slot = np.empty(Nc, np.int64)
+    post_slot[order] = dstslot
 
-    # ---- intents: a count per state, each on a random creature slot ----
+    # ---- powers: a per-creature count, DISTINCT powerIndex per creature; rows placed in canonical
+    # (state, parent, powerIndex, amount) order with the per-state MAX_POWERS cap applied in slot order ----
+    pc = _hist_draw(rng, tbl["counts"]["powers_per_creature"], Nc).astype(np.int64)
+    p_state, p_parent, p_pid, p_amt = _sample_creature_powers(rng, tbl, pw_spec, pc, bstate, post_slot)
+    _place_powers(z["power_idx"], z["power_num"], z["power_mask"], p_state, p_parent, p_pid, p_amt, B)
+
+    # ---- intents: a count per state, each on a random creature slot; rows placed in canonical
+    # (state, parent, type, damage, baseDamage, hits) order (random ASSIGNMENT, canonical ROW ORDER) ----
     ni = np.minimum(_hist_draw(rng, tbl["counts"]["intents_per_state"], B), tokens.MAX_INTENTS).astype(np.int64)
     Ni = int(ni.sum())
     if Ni:
         istate = np.repeat(np.arange(B, dtype=np.int64), ni)
-        istart = _exclusive_starts(ni, B)
-        islot = np.arange(Ni) - istart[istate]
         parent = (rng.random(Ni) * c_arr[istate]).astype(np.int64)   # uniform creature slot 0..c-1
         _place_intents(rng, tbl, in_spec, z["intent_idx"], z["intent_num"], z["intent_mask"],
-                       istate, islot, parent)
+                       istate, parent, B)
 
 
 def _sample_from_hist(rng: np.random.Generator, hist: np.ndarray, size: int) -> np.ndarray:

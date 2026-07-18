@@ -515,3 +515,149 @@ def test_missing_reachable_artifact_raises_clearly():
         mp.setattr(SY, "_REACHABLE_JSON", os.path.join(os.path.sep, "no", "such", "reachable_v1.json"))
         with _pytest.raises(FileNotFoundError, match="reachable"):
             SY.synth_batch(["cards"], 2, np.random.default_rng(26))
+
+
+# ==================================================================================================
+# Power / intent CANONICAL WIRE ORDER (roadmap wm-t3-factored — the generator-canonicality bug fix).
+# The tokenizer flattens each creature's POWERS sorted by (powerIndex, amount) and INTENTS sorted by
+# (type, damage, baseDamage, hits), following the v4-sorted creature slots (parent-slot flatten). The
+# generator MUST emit rows in that exact order, else per-slot targets are ill-posed for the permutation-
+# invariant decoder (the measured ~0.27-0.29 unresolvable creatures floor). These tests assert the
+# generator obeys the order, that a power's powerIndex is DISTINCT within a creature (a power stacks its
+# amount — duplicates are an unreachable state), and pin the generator's comparator to tokenize() itself.
+# ==================================================================================================
+
+def _decode_symlog_int(v):
+    """Recover the stored integer from a symlog-stored float block (== the tokenizer's inverse)."""
+    return np.rint(np.sign(v) * np.expm1(np.abs(v))).astype(np.int64)
+
+
+def _assert_left_packed(mask):
+    row = mask.astype(bool)
+    k = int(row.sum())
+    assert row[:k].all() and not row[k:].any(), "presence not left-packed"
+    return k
+
+
+def _check_power_order(pidx, pnum, pmask, *, require_distinct):
+    """Assert one state's present power rows are in the tokenizer's canonical flatten order — grouped by
+    parent creature slot ascending, then (powerIndex, amount-integer) ascending. With ``require_distinct``
+    (the GENERATOR invariant: a power stacks its amount, so a repeat is unreachable) also assert a DISTINCT
+    powerIndex within every (parent) group — the twin tokenizer state omits it, deliberately holding a
+    same-idx pair to exercise the amount tiebreak. Returns (n_distinct_parents, max_group_size)."""
+    k = _assert_left_packed(pmask)
+    m = pmask.astype(bool)
+    idx = pidx[:, 0][m].astype(np.int64)
+    parent = pidx[:, 1][m].astype(np.int64)
+    amt = _decode_symlog_int(pnum[:, 0][m])
+    if k == 0:
+        return 0, 0
+    # Canonical order: sorting by (parent, powerIndex, amount) is the identity permutation.
+    assert list(np.lexsort((amt, idx, parent))) == list(range(k)), \
+        ("power rows not in (parent, idx, amount) canonical order", list(zip(parent, idx, amt)))
+    max_group = 0
+    for p in np.unique(parent):
+        gi = idx[parent == p]
+        if require_distinct:
+            assert len(set(gi.tolist())) == len(gi), \
+                ("duplicate powerIndex on one creature (unreachable — a power stacks its amount)", p, gi)
+        max_group = max(max_group, len(gi))
+    return len(np.unique(parent)), max_group
+
+
+def _check_intent_order(iidx, inum, imask):
+    """Assert one state's present intent rows are in the tokenizer's canonical flatten order — grouped by
+    parent creature slot ascending, then (type, damage, baseDamage, hits) ascending. Returns
+    (n_distinct_parents, max_group_size)."""
+    k = _assert_left_packed(imask)
+    m = imask.astype(bool)
+    typ = iidx[:, 0][m].astype(np.int64)
+    parent = iidx[:, 1][m].astype(np.int64)
+    dmg = _decode_symlog_int(inum[:, 1][m])       # INTENT_NUM = [hasDamage, damage, baseDamage, hasHits, hits]
+    base = _decode_symlog_int(inum[:, 2][m])
+    hits = _decode_symlog_int(inum[:, 4][m])
+    if k == 0:
+        return 0, 0
+    assert list(np.lexsort((hits, base, dmg, typ, parent))) == list(range(k)), \
+        ("intent rows not in (parent, type, damage, baseDamage, hits) canonical order",
+         list(zip(parent, typ, dmg, base, hits)))
+    groups = {int(p): int((parent == p).sum()) for p in np.unique(parent)}
+    return len(groups), max(groups.values())
+
+
+def test_generated_powers_are_canonical_and_distinct():
+    z = SY.synth_batch(["creatures"], 64, np.random.default_rng(30))
+    saw_multi_group = saw_multi_parent = False
+    for b in range(z["power_mask"].shape[0]):
+        n_par, max_group = _check_power_order(z["power_idx"][b], z["power_num"][b], z["power_mask"][b],
+                                              require_distinct=True)
+        saw_multi_group |= max_group >= 2         # a creature with >=2 (distinct) powers
+        saw_multi_parent |= n_par >= 2            # powers spread over >=2 parent creatures
+    assert saw_multi_group, "no creature carried >=2 powers — distinctness/within-group order not exercised"
+    assert saw_multi_parent, "powers never spanned >=2 parents — parent grouping not exercised"
+
+
+def test_generated_intents_are_canonical():
+    z = SY.synth_batch(["creatures"], 64, np.random.default_rng(31))
+    saw_multi_group = saw_multi_parent = False
+    for b in range(z["intent_mask"].shape[0]):
+        n_par, max_group = _check_intent_order(z["intent_idx"][b], z["intent_num"][b], z["intent_mask"][b])
+        saw_multi_group |= max_group >= 2
+        saw_multi_parent |= n_par >= 2
+    assert saw_multi_group, "no creature carried >=2 intents — within-group order not exercised"
+    assert saw_multi_parent, "intents never spanned >=2 parents — parent grouping not exercised"
+
+
+def _twin_state():
+    """A small CANONICAL-input state (tokenize() shape) exercising every ordering degree of freedom the
+    generator's comparator enforces: 3 creatures (player + 2 enemies); powers spread across them INCLUDING
+    two powers with the SAME powerIndex and different amounts on one creature (the amount tiebreak); and
+    intents across two enemies including two out-of-order intents on one (the type/damage tiebreak)."""
+    player = {
+        "netId": 1, "character": "IRONCLAD", "currentHp": 50, "maxHp": 70, "block": 3,
+        "gold": 10, "maxEnergy": 3, "deck": [], "relics": [], "potions": [],
+        "combatState": {
+            "energy": 3, "maxEnergy": 3, "stars": 0, "turnNumber": 1, "phase": "Play",
+            "hand": [], "drawPile": [], "discardPile": [], "exhaustPile": [],
+            "orbs": [], "orbSlots": 0, "osty": None,
+            # deliberately UNSORTED, with a same-idx (ACCELERANT) pair whose amounts must break the tie.
+            "powers": [
+                {"powerId": "ACCURACY_POWER", "amount": 5},      # idx 2
+                {"powerId": "ACCELERANT_POWER", "amount": 2},    # idx 1
+                {"powerId": "ACCELERANT_POWER", "amount": -1},   # idx 1 (same idx, smaller amount)
+            ]},
+    }
+    enemy1 = {"combatId": 100, "monsterId": "M1", "currentHp": 30, "maxHp": 40, "block": 0,
+              "isHittable": True,
+              "powers": [{"powerId": "ADAPTABLE_POWER", "amount": 3}],
+              "intents": [  # deliberately out of canonical order (Buff type 1 before Attack type 0).
+                  {"type": "Buff", "damage": None, "baseDamage": None, "hits": None},
+                  {"type": "Attack", "damage": 6, "baseDamage": 6, "hits": 2}]}
+    enemy2 = {"combatId": 200, "monsterId": "M2", "currentHp": 20, "maxHp": 25, "block": 0,
+              "isHittable": True,
+              "powers": [{"powerId": "AFTERIMAGE_POWER", "amount": 4}],
+              "intents": [{"type": "Defend", "damage": None, "baseDamage": None, "hits": None}]}
+    return {"phase": "Combat", "seed": "T", "actIndex": 1, "floor": 3, "ascensionLevel": 0,
+            "isGameOver": False, "isVictory": False, "score": 0, "players": [player],
+            "combat": {"roundNumber": 1, "currentSide": "Player", "enemies": [enemy1, enemy2]}}
+
+
+def test_generator_and_tokenizer_share_one_order_contract():
+    # TWIN test: run the real tokenizer on a canonical state and assert the power/intent ROW ORDER it emits
+    # is already canonical under the SAME comparator the generator enforces (applying it is a no-op
+    # permutation). This pins generator and tokenizer to one wire-order contract going forward.
+    tok = tokens.tokenize(_twin_state())
+    n_par_p, max_group_p = _check_power_order(tok["power_idx"], tok["power_num"], tok["power_mask"],
+                                              require_distinct=False)
+    n_par_i, max_group_i = _check_intent_order(tok["intent_idx"], tok["intent_num"], tok["intent_mask"])
+    assert n_par_p == 3 and max_group_p == 3, (n_par_p, max_group_p)   # 3 parents; player holds 3 powers
+    assert n_par_i == 2 and max_group_i == 2, (n_par_i, max_group_i)   # 2 enemies; enemy1 holds 2 intents
+
+    # The amount tiebreak is genuinely exercised: the two same-idx (ACCELERANT) rows on the player appear
+    # adjacent with amounts ascending (-1 before 2).
+    m = tok["power_mask"].astype(bool)
+    idx = tok["power_idx"][:, 0][m].astype(np.int64)
+    parent = tok["power_idx"][:, 1][m].astype(np.int64)
+    amt = _decode_symlog_int(tok["power_num"][:, 0][m])
+    accel = [(int(p), int(a)) for p, i, a in zip(parent, idx, amt) if i == tokens._POWERS.index_of("ACCELERANT_POWER")]
+    assert accel == [(0, -1), (0, 2)], accel     # same parent (player slot 0), amount-ascending tiebreak
